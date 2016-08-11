@@ -110,15 +110,56 @@ main (int argc, char **argv)
 
   mach_port_deallocate (mach_task_self (), proc);
 
+  mach_port_t portset;
+  mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
+
   /* Launch */
   while (1)
     {
-      /* The timeout here is 10 minutes */
-#if 0
-      err = mach_msg_server_timeout (fsys_server, 0, control,
-				     MACH_RCV_TIMEOUT, 1000 * 60 * 10);
-#endif
-      if (err == MACH_RCV_TIMED_OUT)
-	exit (0);
+      mach_msg_header_t msg;
+      mach_msg_return_t mr;
+
+      mr = mach_msg (&msg, MACH_RCV_MSG,
+		     0, max_size, portset,
+		     MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+
+      /* A message has been received via IPC.  Transmit it across the network.
+       *
+       * If the remote queue is full, we want to remove this port from our
+       * portset until space is available on the remote.
+       */
     }
+
+  /* A message has been received via the network.
+   *
+   * It was targeted at a remote port that corresponds to a local send right.
+   *
+   * If we're a server, then the very first message on a new
+   * connection is targeted at a remote port that we've never seen
+   * before.  It's the control port on the client/translator and it
+   * maps to the root of our local filesystem (or whatever filesystem
+   * object we want to present to the client).
+   *
+   * Otherwise, it came in on a remote receive right, and we should
+   * have seen the port before when the remote got the receive right
+   * and relayed it to us.  So we've got a send port to transmit the
+   * message on.
+   *
+   * We don't want to block on the send.
+   *
+   * Possible port rights:
+   *
+   * SEND - Check to see if we've seen this remote port before.  If
+   * not, create a port, hold onto its receive right, make a send
+   * right, and transmit the send right on via IPC.  If so, make a new
+   * send right on the existing port and send it on.
+   *
+   * SEND-ONCE - Always on a new name.  Create a new send-once right
+   * (do we need a new receive port?) and send it on via IPC.
+   *
+   * RECEIVE - Check to see if we've seen this remote port before.  If
+   * so, we got send rights before, so we have a receive port already.
+   * Send it on via IPC.  Otherwise, create a new port, save a send
+   * right for ourselves, and send the receive port on.
+   */
 }
