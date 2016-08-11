@@ -25,7 +25,7 @@
 #include <errno.h>
 #include <error.h>
 #include <version.h>
-#include "fsys_S.h"
+// #include "fsys_S.h"
 
 mach_port_t realnode;
 
@@ -115,8 +115,10 @@ main (int argc, char **argv)
   while (1)
     {
       /* The timeout here is 10 minutes */
+#if 0
       err = mach_msg_server_timeout (fsys_server, 0, control,
 				     MACH_RCV_TIMEOUT, 1000 * 60 * 10);
+#endif
       if (err == MACH_RCV_TIMED_OUT)
 	exit (0);
     }
