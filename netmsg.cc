@@ -15,16 +15,20 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 
-#include <hurd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <argp.h>
-#include <hurd/fsys.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <error.h>
+#undef E2BIG
+#include <argp.h>
 #include <version.h>
+
+extern "C" {
+#include <hurd.h>
+#include <hurd/fsys.h>
+};
 
 mach_port_t realnode;
 
@@ -61,7 +65,7 @@ parse_opt (int key, char *arg, struct argp_state *state)
     argp_usage (state);
   else
     return ARGP_ERR_UNKNOWN;
-  return 0;
+  return ESUCCESS;
 }
 
 static struct argp argp = { options, parse_opt, args_doc, doc };
@@ -72,7 +76,7 @@ main (int argc, char **argv)
 {
   mach_port_t bootstrap;
   mach_port_t control;
-  error_t err;
+  kern_return_t err;
 
   /* Parse our options...  */
   argp_parse (&argp, argc, argv, 0, 0, 0);
