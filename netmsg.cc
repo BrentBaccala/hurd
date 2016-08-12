@@ -1,5 +1,6 @@
-/* Translator for S_IFLNK nodes
-   Copyright (C) 1994, 2000, 2001, 2002 Free Software Foundation
+/* Mach/Hurd Network Server / Translator
+
+   Copyright (C) 2016 Brent Baccala <cosine@freesoft.org>
 
    This program is free software; you can redistribute it and/or
    modify it under the terms of the GNU General Public License as
@@ -44,9 +45,7 @@ mach_port_t realnodenoauth;
 /* We return this for non O_NOLINK lookups */
 char *linktarget;
 
-extern int fsys_server (mach_msg_header_t *, mach_msg_header_t *);
-
-const char *argp_program_version = STANDARD_HURD_VERSION (symlink);
+const char *argp_program_version = STANDARD_HURD_VERSION (netmsg);
 
 static const struct argp_option options[] =
   {
@@ -54,12 +53,12 @@ static const struct argp_option options[] =
   };
 
 static const char args_doc[] = "TARGET";
-static const char doc[] = "A translator for symlinks."
-"\vA symlink is an alias for another node in the filesystem."
+static const char doc[] = "Network message server."
 "\n"
-"\nA symbolic link refers to its target `by name', and contains no actual"
-" reference to the target.  The target referenced by the symlink is"
-" looked up in the namespace of the client.";
+"\nThe network message server transfers Mach IPC messages across a TCP network connection."
+"\vIn server mode, the program waits for incoming TCP connections."
+"\n"
+"\nWhen run as a translator, the program connects to a remote netmsg server.";
 
 /* Parse a single option/argument.  */
 static error_t
