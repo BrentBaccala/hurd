@@ -79,7 +79,7 @@ static struct argp argp = { options, parse_opt, args_doc, doc };
 #define TM_BUF_SIZE 1024
 
 void
-tcpServerHandler(int inSocket)
+tcpHandler(int inSocket)
 {
   int errorCode;
   char testBuffer[TM_BUF_SIZE];
@@ -98,8 +98,7 @@ tcpServerHandler(int inSocket)
 	}
 
       /* Receiving 0 bytes of data means the connection has been
-       * closed.  If this happens, close the new socket and break out
-       * of this (the inner) loop.
+       * closed.  If this happens, close the socket and return.
        */
 
       if (errorCode == 0)
@@ -108,6 +107,41 @@ tcpServerHandler(int inSocket)
 	  break;
 	}
     }
+}
+
+void
+tcpClient(const char * hostname, int targetPort)
+{
+  int newSocket;
+  struct sockaddr_in destAddr;
+  int errorCode;
+
+  /* Specify the address family */
+  destAddr.sin_family = AF_INET;
+  /* Specify the destination port */
+  destAddr.sin_port = htons(targetPort);
+  /* Specify the destination IP address */
+  destAddr.sin_addr.s_addr = inet_addr(hostname);
+
+  /* Create a socket */
+  newSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+  /* Verify the socket was created correctly */
+  if (newSocket < 0)
+    {
+      error (2, newSocket, "TCP socket");
+    }
+
+  /* Connect to the server */
+  errorCode = connect(newSocket, (const struct sockaddr *) &destAddr, sizeof(destAddr));
+
+  /* Verify that we connected correctly */
+  if (errorCode < 0)
+    {
+      error (2, errorCode, "TCP connect");
+    }
+
+  tcpHandler(newSocket);
 }
 
 void
@@ -186,8 +220,11 @@ tcpServer(int listenPort)
 	}
       else
 	{
-	  /* Spawn a new thread to handle the new socket */
-	  new std::thread(tcpServerHandler, newSocket);
+	  /* Spawn a new thread to handle the new socket
+	   *
+	   * XXX maybe we should do something to collect dead threads
+	   */
+	  new std::thread(tcpHandler, newSocket);
 	}
     }
 }
