@@ -16,7 +16,14 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+   XXX known issues XXX
+
+   - no byte order swapping
+   - if sends (either network or IPC) block, the server blocks
+   - can't detect if a port is sent across the net and returned back
+*/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -127,8 +134,9 @@ ipcHandler(std::iostream * const network)
   mach_msg_return_t mr;
 
   mach_port_t portset;
-  mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
+  const mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
   char buffer[max_size];
+  mach_msg_header_t * const msg = (mach_msg_header_t *) buffer;
 
   mr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_PORT_SET, &portset);
 
@@ -141,8 +149,6 @@ ipcHandler(std::iostream * const network)
   /* Launch */
   while (1)
     {
-      mach_msg_header_t * msg = (mach_msg_header_t *) buffer;
-
       /* XXX Specify MACH_RCV_LARGE to handle messages larger than the buffer */
 
       /* Ports can be added and removed while a receive from a portset is in progress. */
@@ -176,45 +182,52 @@ ipcHandler(std::iostream * const network)
 
 }
 
-  /* A message has been received via the network.
-   *
-   * It was targeted at a remote port that corresponds to a local send right.
-   *
-   * If we're a server, then the very first message on a new
-   * connection is targeted at a remote port that we've never seen
-   * before.  It's the control port on the client/translator and it
-   * maps to the root of our local filesystem (or whatever filesystem
-   * object we want to present to the client).
-   *
-   * Otherwise, it came in on a remote receive right, and we should
-   * have seen the port before when the remote got the receive right
-   * and relayed it to us.  So we've got a send port to transmit the
-   * message on.
-   *
-   * We don't want to block on the send.
-   *
-   * Possible port rights:
-   *
-   * SEND - Check to see if we've seen this remote port before.  If
-   * not, create a port, hold onto its receive right, make a send
-   * right, and transmit the send right on via IPC.  If so, make a new
-   * send right on the existing port and send it on.
-   *
-   * SEND-ONCE - Always on a new name.  Create a new send-once right
-   * (do we need a new receive port?) and send it on via IPC.
-   *
-   * RECEIVE - Check to see if we've seen this remote port before.  If
-   * so, we got send rights before, so we have a receive port already.
-   * Send it on via IPC.  Otherwise, create a new port, save a send
-   * right for ourselves, and send the receive port on.
-   */
+/* A message has been received via the network.
+ *
+ * It was targeted at a remote port that corresponds to a local send
+ * right.
+ *
+ * If we're a server, then the very first message on a new connection
+ * is targeted at a remote port that we've never seen before.  It's
+ * the control port on the client/translator and it maps to the root
+ * of our local filesystem (or whatever filesystem object we want to
+ * present to the client).
+ *
+ * Otherwise, it came in on a remote receive right, and we should have
+ * seen the port before when the remote got the receive right and
+ * relayed it to us.  So we've got a send port to transmit the message
+ * on.
+ *
+ * We don't want to block on the send.
+ *
+ * Possible port rights:
+ *
+ * SEND - Check to see if we've seen this remote port before.  If not,
+ * create a port, hold onto its receive right, make a send right, and
+ * transmit the send right on via IPC.  If so, make a new send right
+ * on the existing port and send it on.
+ *
+ * SEND-ONCE - Always on a new name.  Create a new send-once right (do
+ * we need a new receive port?) and send it on via IPC.
+ *
+ * RECEIVE - Check to see if we've seen this remote port before.  If
+ * so, we got send rights before, so we have a receive port already.
+ * Send it on via IPC.  Otherwise, create a new port, save a send
+ * right for ourselves, and send the receive port on.
+ */
+
+void
+translateMessage(const mach_msg_header_t * const msg)
+{
+}
 
 void
 tcpHandler(int inSocket)
 {
   int errorCode;
-  const int TM_BUF_SIZE = 1024;
-  char testBuffer[TM_BUF_SIZE];
+  const mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
+  char buffer[max_size];
+  mach_msg_header_t * const msg = (mach_msg_header_t *) buffer;
 
   /* Use a non-standard GNU extension to wrap the socket in a C++
    * iostream that will provide buffering.
@@ -241,25 +254,40 @@ tcpHandler(int inSocket)
   while (1)
     {
 
-      /* Receive data on the new socket created by accept */
-      fs.read(testBuffer, TM_BUF_SIZE);
+      /* Receive a single Mach message on the network socket */
+
+      fs.read(buffer, sizeof(mach_msg_header_t));
+      if (fs) fs.read(buffer + sizeof(mach_msg_header_t), msg->msgh_size);
 
       if (! fs)
         {
-          /* Receiving 0 bytes of data means the connection has been
-           * closed.  If this happens, close the socket and return.
-           *
-           * Destroying the iostream will do nothing to the underlying filebuf.
-           */
+          /* Destroying the iostream will do nothing to the underlying filebuf. */
 
-          if (fs.eof()) {
-            std::cerr << "EOF on network socket" << std::endl;
-            filebuf.close();
-            //close(inSocket);
-            break;
-          }
+          if (fs.eof())
+            {
+              std::cerr << "EOF on network socket" << std::endl;
+            }
+          else
+            {
+              std::cerr << "Error on network socket" << std::endl;
+            }
+          filebuf.close();
+          //close(inSocket);
+          /* XXX signal ipcHandler that the network socket died */
+          return;
+        }
 
-          std::cerr << "Error on network socket" << std::endl;
+      translateMessage(msg);
+
+      mach_msg_return_t mr;
+
+      mr = mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
+                    0, msg->msgh_remote_port,
+                    MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+
+      if (mr != MACH_MSG_SUCCESS)
+        {
+          mach_error("mach_msg send", mr);
         }
     }
 }
