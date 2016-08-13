@@ -29,7 +29,9 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 
+#include <iostream>
 #include <thread>
 
 extern "C" {
@@ -47,7 +49,7 @@ char *linktarget;
 
 const char *argp_program_version = STANDARD_HURD_VERSION (netmsg);
 
-const int defaultPort = 2345;
+const char * defaultPort = "2345";
 
 static const struct argp_option options[] =
   {
@@ -175,35 +177,45 @@ tcpHandler(int inSocket)
 }
 
 void
-tcpClient(const char * hostname, int targetPort = defaultPort)
+tcpClient(const char * hostname, const char * targetPort = defaultPort)
 {
   int newSocket;
+  struct addrinfo hints;
+  struct addrinfo *result;
   struct sockaddr_in destAddr;
   int errorCode;
 
-  /* Specify the address family */
-  destAddr.sin_family = AF_INET;
-  /* Specify the destination port */
-  destAddr.sin_port = htons(targetPort);
-  /* Specify the destination IP address */
-  destAddr.sin_addr.s_addr = inet_addr(hostname);
+  bzero(&hints, sizeof(hints));
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+
+  errorCode = getaddrinfo(hostname, targetPort, &hints, &result);
+  if (errorCode != 0) {
+    error (2, errno, "getaddrinfo: %s", gai_strerror(errorCode));
+  }
+
+  if (result == NULL) {
+    error (2, 0, "getaddrinfo: no results");
+  }
 
   /* Create a socket */
-  newSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  newSocket = socket(result[0].ai_family, result[0].ai_socktype, result[0].ai_protocol);
 
   /* Verify the socket was created correctly */
   if (newSocket < 0)
     {
-      error (2, newSocket, "TCP socket");
+      error (2, errno, "TCP socket");
     }
 
   /* Connect to the server */
-  errorCode = connect(newSocket, (const struct sockaddr *) &destAddr, sizeof(destAddr));
+  errorCode = connect(newSocket, result[0].ai_addr, result[0].ai_addrlen);
+
+  // std::cerr << ntohs(((struct sockaddr_in *) result[0].ai_addr)->sin_port) << std::endl;
 
   /* Verify that we connected correctly */
   if (errorCode < 0)
     {
-      error (2, errorCode, "TCP connect");
+      error (2, errno, "TCP connect");
     }
 
   tcpHandler(newSocket);
@@ -237,7 +249,7 @@ tcpServer(int listenPort)
   /* Make sure the socket was created successfully */
   if (listenSocket < 0)
     {
-      error (2, listenSocket, "TCP socket");
+      error (2, errno, "TCP socket");
     }
 
   /*
@@ -249,7 +261,7 @@ tcpServer(int listenPort)
   /* Check for an error in bind */
   if (errorCode < 0)
     {
-      error (2, listenSocket, "TCP bind");
+      error (2, errno, "TCP bind");
     }
 
   /* Set up the socket as a listening socket */
@@ -258,7 +270,7 @@ tcpServer(int listenPort)
   /* Check for an error in listen */
   if (errorCode < 0)
     {
-      error (2, errorCode, "TCP listen");
+      error (2, errno, "TCP listen");
     }
 
   /* Do this forever... */
@@ -281,7 +293,7 @@ tcpServer(int listenPort)
 
       if (newSocket < 0)
 	{
-	  error (2, newSocket, "TCP accept");
+	  error (2, errno, "TCP accept");
 	}
       else
 	{
@@ -341,6 +353,8 @@ main (int argc, char **argv)
   /* Parse our options...  */
   argp_parse (&argp, argc, argv, 0, 0, 0);
 
-  linktarget = argv[1];
+  //linktarget = argv[1];
+  tcpClient(linktarget);
+  //startAsTranslator();
 
 }
