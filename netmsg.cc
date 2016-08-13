@@ -33,7 +33,10 @@
 #include <netdb.h>
 
 #include <iostream>
+#include <iosfwd>
 #include <thread>
+
+#include <ext/stdio_filebuf.h>
 
 extern "C" {
 #include <hurd.h>
@@ -115,7 +118,7 @@ parse_opt (int key, char *arg, struct argp_state *state)
 static struct argp argp = { options, parse_opt, args_doc, doc };
 
 void
-ipcHandler(int inSocket)
+ipcHandler(std::iostream * const network)
 {
   mach_port_t portset;
   mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
@@ -186,32 +189,44 @@ tcpHandler(int inSocket)
   const int TM_BUF_SIZE = 1024;
   char testBuffer[TM_BUF_SIZE];
 
+  /* Use a non-standard GNU extension to wrap the socket in a C++
+   * iostream that will provide buffering.
+   *
+   * XXX alternative to GNU - use boost?
+   *
+   * Error handling can be done with exception (upon request), or by
+   * testing fs to see if it's false.
+   */
+
+  __gnu_cxx::stdio_filebuf<char> filebuf(inSocket, std::ios::in | std::ios::out | std::ios::binary);
+  std::iostream fs(&filebuf);
+
   /* Spawn a new thread to handle inbound Mach IPC messages.
+   *
+   * std::thread passes by value, so I use a pointer instead of a reference (yuck).
+   *
+   * See http://stackoverflow.com/questions/21048906
    *
    * XXX maybe we should do something to collect dead threads
    */
-  new std::thread(ipcHandler, inSocket);
+  new std::thread(ipcHandler, &fs);
 
   while (1)
     {
 
       /* Receive data on the new socket created by accept */
-      errorCode = recv(inSocket, testBuffer, TM_BUF_SIZE, 0);
+      fs.read(testBuffer, TM_BUF_SIZE);
 
-      /* Make sure there wasn’t an error */
-      if (errorCode < 0)
+      if (! fs)
         {
-          close(inSocket);
-          break;
-        }
+          /* Receiving 0 bytes of data means the connection has been
+           * closed.  If this happens, close the socket and return.
+           *
+           * Destroying the iostream will do nothing to the underlying filebuf.
+           */
 
-      /* Receiving 0 bytes of data means the connection has been
-       * closed.  If this happens, close the socket and return.
-       */
-
-      if (errorCode == 0)
-        {
-          close(inSocket);
+          //close(inSocket);
+          filebuf.close();
           break;
         }
     }
