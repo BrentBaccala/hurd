@@ -1,4 +1,6 @@
-/* Mach/Hurd Network Server / Translator
+/* -*- mode: C++; indent-tabs-mode: nil -*-
+
+   Mach/Hurd Network Server / Translator
 
    Copyright (C) 2016 Brent Baccala <cosine@freesoft.org>
 
@@ -22,7 +24,6 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <error.h>
-#undef E2BIG
 #include <argp.h>
 #include <version.h>
 
@@ -44,37 +45,70 @@ mach_port_t realnode;
 /* We return this for O_NOLINK lookups */
 mach_port_t realnodenoauth;
 
-/* We return this for non O_NOLINK lookups */
-char *linktarget;
+const char * argp_program_version = STANDARD_HURD_VERSION (netmsg);
 
-const char *argp_program_version = STANDARD_HURD_VERSION (netmsg);
+const char * const defaultPort = "2345";
+const char * targetPort = defaultPort;
+const char * targetHost;   /* required argument */
 
-const char * defaultPort = "2345";
+bool serverMode = false;
 
 static const struct argp_option options[] =
   {
     { "port", 'p', "N", 0, "TCP port number" },
+    { "server", 's', 0, 0, "server mode" },
     { 0 }
   };
 
-static const char args_doc[] = "TARGET";
+static const char args_doc[] = "HOSTNAME";
 static const char doc[] = "Network message server."
 "\n"
 "\nThe network message server transfers Mach IPC messages across a TCP network connection."
 "\vIn server mode, the program waits for incoming TCP connections."
 "\n"
-"\nWhen run as a translator, the program connects to a remote netmsg server.";
+"\nWhen run as a translator, the program connects to a netmsg server at HOSTNAME.";
+
+/* XXX For parse_opt(), we want constants from the error_t enum, and
+ * not preprocessor defines for ARGP_ERR_UNKNOWN (E2BIG) and EINVAL.
+ */
+
+#undef E2BIG
+#undef EINVAL
 
 /* Parse a single option/argument.  */
 static error_t
 parse_opt (int key, char *arg, struct argp_state *state)
 {
-  if (key == ARGP_KEY_ARG && state->arg_num == 0)
-    linktarget = arg;
-  else if (key == ARGP_KEY_ARG || key == ARGP_KEY_NO_ARGS)
-    argp_usage (state);
-  else
-    return ARGP_ERR_UNKNOWN;
+  switch (key)
+    {
+    case 'p':
+      targetPort = arg;
+      break;
+
+    case 's':
+      serverMode = true;
+      break;
+
+    case ARGP_KEY_ARG:
+      if (state->arg_num == 0)
+        {
+          targetHost = arg;
+        }
+      else
+        {
+          argp_usage (state);
+          return ARGP_ERR_UNKNOWN;
+        }
+      break;
+
+    case ARGP_KEY_NO_ARGS:
+      if (!serverMode)
+        {
+          argp_usage (state);
+          return EINVAL;
+        }
+    }
+
   return ESUCCESS;
 }
 
@@ -93,13 +127,20 @@ ipcHandler(int inSocket)
       mach_msg_return_t mr;
 
       mr = mach_msg (&msg, MACH_RCV_MSG,
-		     0, max_size, portset,
-		     MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+                     0, max_size, portset,
+                     MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
 
-      /* A message has been received via IPC.  Transmit it across the network.
+      /* A message has been received via IPC.  Transmit it across the
+       * network, letting the receiver translate it.
        *
-       * If the remote queue is full, we want to remove this port from our
-       * portset until space is available on the remote.
+       * XXX several problems with this:
+       *
+       * - Flow control: If the remote queue is full, we want to
+       * remove this port from our portset until space is available on
+       * the remote.
+       *
+       * - Error handling: If the remote port died, or some other
+       * error is returned, we want to relay it back to the sender.
        */
     }
 
@@ -159,25 +200,25 @@ tcpHandler(int inSocket)
 
       /* Make sure there wasn’t an error */
       if (errorCode < 0)
-	{
-	  close(inSocket);
-	  break;
-	}
+        {
+          close(inSocket);
+          break;
+        }
 
       /* Receiving 0 bytes of data means the connection has been
        * closed.  If this happens, close the socket and return.
        */
 
       if (errorCode == 0)
-	{
-	  close(inSocket);
-	  break;
-	}
+        {
+          close(inSocket);
+          break;
+        }
     }
 }
 
 void
-tcpClient(const char * hostname, const char * targetPort = defaultPort)
+tcpClient(const char * hostname)
 {
   int newSocket;
   struct addrinfo hints;
@@ -222,7 +263,7 @@ tcpClient(const char * hostname, const char * targetPort = defaultPort)
 }
 
 void
-tcpServer(int listenPort)
+tcpServer(void)
 {
   int listenSocket;
   int newSocket;
@@ -235,7 +276,7 @@ tcpServer(int listenPort)
   destAddr.sin_family = AF_INET;
 
   /* Specify the dest port, the one we'll bind to */
-  destAddr.sin_port = htons(listenPort);
+  destAddr.sin_port = htons(atoi(targetPort));
 
   /* Specify the destination IP address (our IP address). Setting
    * this value to 0 tells the stack that we don’t care what IP
@@ -292,17 +333,17 @@ tcpServer(int listenPort)
       /* Check for an error in accept */
 
       if (newSocket < 0)
-	{
-	  error (2, errno, "TCP accept");
-	}
+        {
+          error (2, errno, "TCP accept");
+        }
       else
-	{
-	  /* Spawn a new thread to handle the new socket
-	   *
-	   * XXX maybe we should do something to collect dead threads
-	   */
-	  new std::thread(tcpHandler, newSocket);
-	}
+        {
+          /* Spawn a new thread to handle the new socket
+           *
+           * XXX maybe we should do something to collect dead threads
+           */
+          new std::thread(tcpHandler, newSocket);
+        }
     }
 }
 
@@ -320,7 +361,7 @@ startAsTranslator(void)
   /* Reply to our parent */
   mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &control);
   mach_port_insert_right (mach_task_self (), control, control,
-			  MACH_MSG_TYPE_MAKE_SEND);
+                          MACH_MSG_TYPE_MAKE_SEND);
   err =
     fsys_startup (bootstrap, 0, control, MACH_MSG_TYPE_COPY_SEND, &realnode);
   mach_port_deallocate (mach_task_self (), control);
@@ -344,7 +385,7 @@ startAsTranslator(void)
 
   mach_port_deallocate (mach_task_self (), proc);
 
-  tcpClient(linktarget);
+  tcpClient(targetHost);
 }
 
 int
@@ -353,8 +394,13 @@ main (int argc, char **argv)
   /* Parse our options...  */
   argp_parse (&argp, argc, argv, 0, 0, 0);
 
-  //linktarget = argv[1];
-  tcpClient(linktarget);
-  //startAsTranslator();
-
+  if (serverMode)
+    {
+      tcpServer();
+    }
+  else
+    {
+      tcpClient(targetHost);
+      //startAsTranslator();
+    }
 }
