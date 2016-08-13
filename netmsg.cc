@@ -39,9 +39,13 @@
 #include <ext/stdio_filebuf.h>
 
 extern "C" {
+#include <mach_error.h>
 #include <hurd.h>
 #include <hurd/fsys.h>
 };
+
+/* mach_error()'s first argument isn't declared const, and we usually pass it a string */
+#pragma GCC diagnostic ignored "-Wwrite-strings"
 
 mach_port_t realnode;
 
@@ -120,16 +124,30 @@ static struct argp argp = { options, parse_opt, args_doc, doc };
 void
 ipcHandler(std::iostream * const network)
 {
+  mach_msg_return_t mr;
+
   mach_port_t portset;
   mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
+  char buffer[max_size];
+
+  mr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_PORT_SET, &portset);
+
+  if (mr != MACH_MSG_SUCCESS)
+    {
+      mach_error("mach_port_allocate portset", mr);
+      return;
+    }
 
   /* Launch */
   while (1)
     {
-      mach_msg_header_t msg;
-      mach_msg_return_t mr;
+      mach_msg_header_t * msg = (mach_msg_header_t *) buffer;
 
-      mr = mach_msg (&msg, MACH_RCV_MSG,
+      /* XXX Specify MACH_RCV_LARGE to handle messages larger than the buffer */
+
+      /* Ports can be added and removed while a receive from a portset is in progress. */
+
+      mr = mach_msg (msg, MACH_RCV_MSG,
                      0, max_size, portset,
                      MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
 
@@ -145,6 +163,15 @@ ipcHandler(std::iostream * const network)
        * - Error handling: If the remote port died, or some other
        * error is returned, we want to relay it back to the sender.
        */
+
+      if (mr == MACH_MSG_SUCCESS)
+        {
+          network->write(buffer, msg->msgh_size);
+        }
+      else
+        {
+          mach_error("mach_msg receive", mr);
+        }
     }
 
 }
@@ -225,9 +252,14 @@ tcpHandler(int inSocket)
            * Destroying the iostream will do nothing to the underlying filebuf.
            */
 
-          //close(inSocket);
-          filebuf.close();
-          break;
+          if (fs.eof()) {
+            std::cerr << "EOF on network socket" << std::endl;
+            filebuf.close();
+            //close(inSocket);
+            break;
+          }
+
+          std::cerr << "Error on network socket" << std::endl;
         }
     }
 }
