@@ -33,6 +33,7 @@
 #include <error.h>
 #include <argp.h>
 #include <version.h>
+#include <assert.h>
 
 #include <unistd.h>
 #include <sys/socket.h>
@@ -42,6 +43,8 @@
 #include <iostream>
 #include <iosfwd>
 #include <thread>
+
+#include <map>
 
 #include <ext/stdio_filebuf.h>
 
@@ -128,12 +131,15 @@ parse_opt (int key, char *arg, struct argp_state *state)
 
 static struct argp argp = { options, parse_opt, args_doc, doc };
 
+// XXX belongs in a class
+mach_port_t portset;
+mach_port_t receiver_for_send_once_messages;
+
 void
 ipcHandler(std::iostream * const network)
 {
   mach_msg_return_t mr;
 
-  mach_port_t portset;
   const mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
   char buffer[max_size];
   mach_msg_header_t * const msg = (mach_msg_header_t *) buffer;
@@ -143,6 +149,14 @@ ipcHandler(std::iostream * const network)
   if (mr != MACH_MSG_SUCCESS)
     {
       mach_error("mach_port_allocate portset", mr);
+      return;
+    }
+
+  mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &receiver_for_send_once_messages);
+
+  if (mr != MACH_MSG_SUCCESS)
+    {
+      mach_error("mach_port_allocate receiver_for_send_once_messages", mr);
       return;
     }
 
@@ -216,9 +230,81 @@ ipcHandler(std::iostream * const network)
  * right for ourselves, and send the receive port on.
  */
 
+std::map<mach_port_t, mach_port_t> receive_ports;
+std::map<mach_port_t, mach_port_t> send_ports;
+std::map<mach_port_t, mach_port_t> send_once_ports;
+
 void
-translateMessage(const mach_msg_header_t * const msg)
+translateMessage(mach_msg_header_t * const msg)
 {
+  mach_msg_type_name_t this_type = MACH_MSGH_BITS_LOCAL (msg->msgh_bits);
+  mach_msg_type_name_t reply_type = MACH_MSGH_BITS_REMOTE (msg->msgh_bits);
+
+  mach_msg_bits_t complex = msg->msgh_bits & MACH_MSGH_BITS_COMPLEX;
+
+  mach_port_t this_port = msg->msgh_local_port;
+  mach_port_t reply_port = msg->msgh_remote_port;
+
+  assert (this_type == MACH_MSG_TYPE_PORT_RECEIVE);
+
+  if (receive_ports.empty())
+    {
+      // the first message on a connection maps to realnode
+      receive_ports[this_port] = realnode;
+      this_port = realnode;
+    }
+  else if (receive_ports.count(this_port) != 1)
+    {
+      error (1, 0, "Never saw local port %i before", this_port);
+    }
+  else
+    {
+      this_port = receive_ports[this_port];
+    }
+
+  switch (reply_type)
+    {
+
+    case MACH_MSG_TYPE_PORT_SEND:
+
+      if (send_ports.count(reply_port) == 1)
+        {
+          reply_port = send_ports[reply_port];
+        }
+      else
+        {
+          mach_port_t newport;
+
+          /* create new receive port and a new send right that will be moved to the recipient */
+          mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &newport);
+          mach_port_insert_right (mach_task_self (), newport, newport,
+                                  MACH_MSG_TYPE_MAKE_SEND);
+          /* move the receive right into the portset so we'll be listening on it */
+          mach_port_move_member (mach_task_self (), newport, portset);
+          // XXX check error returns
+
+          send_ports[reply_port] = newport;
+          reply_port = newport;
+        }
+
+    break;
+
+  case MACH_MSG_TYPE_PORT_SEND_ONCE:
+
+    assert (send_once_ports.count(reply_port) == 0);
+
+    // XXX need to make a new send once right here - how?
+
+    break;
+
+  default:
+    error (1, 0, "Port type %i not handled", reply_type);
+  }
+
+  msg->msgh_local_port = reply_port;
+  msg->msgh_remote_port = this_port;
+
+  msg->msgh_bits = complex | MACH_MSGH_BITS (this_type, reply_type);
 }
 
 void
