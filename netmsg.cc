@@ -250,9 +250,9 @@ ipcHandler(std::iostream * const network)
  * right for ourselves, and send the receive port on.
  */
 
-std::map<mach_port_t, mach_port_t> receive_ports;
-std::map<mach_port_t, mach_port_t> send_ports;
-std::map<mach_port_t, mach_port_t> send_once_ports;
+std::map<mach_port_t, mach_port_t> receive_ports;   /* map remote port to local port */
+std::map<mach_port_t, mach_port_t> send_ports;    /* map remote port to local port; these local ports have receive rights */
+std::map<mach_port_t, mach_port_t> send_once_ports;   /* map local port to remote port */
 
 mach_port_t my_sendonce_receive_port;
 
@@ -261,13 +261,72 @@ translatePort(const mach_port_t port, const unsigned int type)
 {
   switch (type)
     {
+    case MACH_MSG_TYPE_MOVE_RECEIVE:
+      // remote network peer now has a receive port.  We want to send a receive port on
+      // to our receipient.
+      if (receive_ports.count(this_port) == 1)
+        {
+          return receive_ports[this_port];
+        }
+      else
+        {
+          mach_port_t newport;
+
+          // create a receive port, give ourself a send right on it, and move the receive port
+          mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &newport));
+          mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
+                                             MACH_MSG_TYPE_MAKE_SEND));
+
+          receive_ports[port] = newport;
+
+          return newport;
+        }
+      break;
+
     case MACH_MSG_TYPE_COPY_SEND:
     case MACH_MSG_TYPE_MAKE_SEND:
-    case MACH_MSG_TYPE_MAKE_SEND_ONCE:
-    case MACH_MSG_TYPE_MOVE_RECEIVE:
+      fprintf(stderr, "Warning: copy/make on receive port\n");
+      // fallthrough
+
     case MACH_MSG_TYPE_MOVE_SEND:
+      if (send_ports.count(port) == 1)
+        {
+          return send_ports[port];
+        }
+      else
+        {
+          mach_port_t newport;
+
+          /* create new receive port and a new send right that will be moved to the recipient */
+          mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &newport));
+          mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
+                                             MACH_MSG_TYPE_MAKE_SEND));
+          /* move the receive right into the portset so we'll be listening on it */
+          mach_call (mach_port_move_member (mach_task_self (), newport, portset));
+
+          send_ports[port] = newport;
+          return newport;
+        }
+      break;
+
+    case MACH_MSG_TYPE_MAKE_SEND_ONCE:
+      fprintf(stderr, "Warning: make send once on receive port\n");
+      // fallthrough
+
     case MACH_MSG_TYPE_MOVE_SEND_ONCE:
-      ;
+      assert (send_once_ports.count(port) == 0);
+
+      mach_port_t sendonce_port;
+      mach_msg_type_name_t acquired_type;
+
+      /* Make a new SEND ONCE right that points to our local my_sendonce_receive_port */
+    
+      mach_call(mach_port_extract_right (mach_task_self (), my_sendonce_receive_port, MACH_MSG_TYPE_MAKE_SEND_ONCE, &sendonce_port, &acquired_type));
+      assert (acquired_type == MACH_MSG_TYPE_PORT_SEND_ONCE);
+
+      send_once_ports[sendonce_port] = port;
+
+      return sendonce_port;
     }
 }
 
@@ -303,48 +362,15 @@ translateHeader(mach_msg_header_t * const msg)
     {
 
     case MACH_MSG_TYPE_PORT_SEND:
+    case MACH_MSG_TYPE_PORT_SEND_ONCE:
 
-      if (send_ports.count(reply_port) == 1)
-        {
-          reply_port = send_ports[reply_port];
-        }
-      else
-        {
-          mach_port_t newport;
+      reply_port = translatePort(reply_port, reply_type);
 
-          /* create new receive port and a new send right that will be moved to the recipient */
-          mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &newport));
-          mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
-                                             MACH_MSG_TYPE_MAKE_SEND));
-          /* move the receive right into the portset so we'll be listening on it */
-          mach_call (mach_port_move_member (mach_task_self (), newport, portset));
-          // XXX check error returns
+      break;
 
-          send_ports[reply_port] = newport;
-          reply_port = newport;
-        }
-
-    break;
-
-  case MACH_MSG_TYPE_PORT_SEND_ONCE:
-
-    assert (send_once_ports.count(reply_port) == 0);
-
-    mach_port_t sendonce_port;
-    mach_msg_type_name_t acquired_type;
-
-    /* Make a new SEND ONCE right that points to our local my_sendonce_receive_port */
-    
-    mach_call(mach_port_extract_right (mach_task_self (), my_sendonce_receive_port, MACH_MSG_TYPE_MAKE_SEND_ONCE, &sendonce_port, &acquired_type));
-    assert (acquired_type == MACH_MSG_TYPE_PORT_SEND_ONCE);
-
-    reply_port = sendonce_port;
-
-    break;
-
-  default:
-    error (1, 0, "Port type %i not handled", reply_type);
-  }
+    default:
+      error (1, 0, "Invalid port type %i in message header", reply_type);
+    }
 
   msg->msgh_local_port = reply_port;
   msg->msgh_remote_port = this_port;
