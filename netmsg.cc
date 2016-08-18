@@ -131,6 +131,26 @@ parse_opt (int key, char *arg, struct argp_state *state)
 
 static struct argp argp = { options, parse_opt, args_doc, doc };
 
+void
+mach_call(kern_return_t err)
+{
+  if (err != KERN_SUCCESS)
+    {
+      mach_error("mach_call", err);
+    }
+}
+
+#if 0
+void
+mach_call(mach_msg_return_t err)
+{
+  if (err != MACH_MSG_SUCCESS)
+    {
+      mach_error("mach_call", err);
+    }
+}
+#endif
+
 // XXX belongs in a class
 mach_port_t portset;
 mach_port_t receiver_for_send_once_messages;
@@ -234,8 +254,25 @@ std::map<mach_port_t, mach_port_t> receive_ports;
 std::map<mach_port_t, mach_port_t> send_ports;
 std::map<mach_port_t, mach_port_t> send_once_ports;
 
+mach_port_t my_sendonce_receive_port;
+
+mach_port_t
+translatePort(const mach_port_t port, const unsigned int type)
+{
+  switch (type)
+    {
+    case MACH_MSG_TYPE_COPY_SEND:
+    case MACH_MSG_TYPE_MAKE_SEND:
+    case MACH_MSG_TYPE_MAKE_SEND_ONCE:
+    case MACH_MSG_TYPE_MOVE_RECEIVE:
+    case MACH_MSG_TYPE_MOVE_SEND:
+    case MACH_MSG_TYPE_MOVE_SEND_ONCE:
+      ;
+    }
+}
+
 void
-translateMessage(mach_msg_header_t * const msg)
+translateHeader(mach_msg_header_t * const msg)
 {
   mach_msg_type_name_t this_type = MACH_MSGH_BITS_LOCAL (msg->msgh_bits);
   mach_msg_type_name_t reply_type = MACH_MSGH_BITS_REMOTE (msg->msgh_bits);
@@ -276,11 +313,11 @@ translateMessage(mach_msg_header_t * const msg)
           mach_port_t newport;
 
           /* create new receive port and a new send right that will be moved to the recipient */
-          mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &newport);
-          mach_port_insert_right (mach_task_self (), newport, newport,
-                                  MACH_MSG_TYPE_MAKE_SEND);
+          mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &newport));
+          mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
+                                             MACH_MSG_TYPE_MAKE_SEND));
           /* move the receive right into the portset so we'll be listening on it */
-          mach_port_move_member (mach_task_self (), newport, portset);
+          mach_call (mach_port_move_member (mach_task_self (), newport, portset));
           // XXX check error returns
 
           send_ports[reply_port] = newport;
@@ -293,7 +330,15 @@ translateMessage(mach_msg_header_t * const msg)
 
     assert (send_once_ports.count(reply_port) == 0);
 
-    // XXX need to make a new send once right here - how?
+    mach_port_t sendonce_port;
+    mach_msg_type_name_t acquired_type;
+
+    /* Make a new SEND ONCE right that points to our local my_sendonce_receive_port */
+    
+    mach_call(mach_port_extract_right (mach_task_self (), my_sendonce_receive_port, MACH_MSG_TYPE_MAKE_SEND_ONCE, &sendonce_port, &acquired_type));
+    assert (acquired_type == MACH_MSG_TYPE_PORT_SEND_ONCE);
+
+    reply_port = sendonce_port;
 
     break;
 
@@ -305,6 +350,77 @@ translateMessage(mach_msg_header_t * const msg)
   msg->msgh_remote_port = this_port;
 
   msg->msgh_bits = complex | MACH_MSGH_BITS (this_type, reply_type);
+}
+
+void
+translateMessage(mach_msg_header_t * const msg)
+{
+  translateHeader(msg);
+
+  mach_msg_type_t * ptr = reinterpret_cast<mach_msg_type_t *>(msg + 1);
+
+  while (reinterpret_cast<int8_t *>(ptr) - reinterpret_cast<int8_t *>(msg) < msg->msgh_size)
+    {
+      unsigned int name;
+      unsigned int nelems;
+      unsigned int elem_size_bits;
+
+      const unsigned int header_size = ptr->msgt_longform ? sizeof(mach_msg_type_long_t) : sizeof(mach_msg_type_t);
+
+      // XXX don't handle out-of-line data yet
+      assert(ptr->msgt_inline);
+
+      if (! ptr->msgt_longform)
+        {
+          name = ptr->msgt_name;
+          nelems = ptr->msgt_number;
+          elem_size_bits = ptr->msgt_size;
+        }
+      else
+        {
+          const mach_msg_type_long_t * longptr = reinterpret_cast<mach_msg_type_long_t *>(ptr);
+
+          name = longptr->msgtl_name;
+          nelems = longptr->msgtl_number;
+          elem_size_bits = longptr->msgtl_size;
+        }
+
+      switch (name)
+        {
+        case MACH_MSG_TYPE_MOVE_RECEIVE:
+        case MACH_MSG_TYPE_MOVE_SEND:
+        case MACH_MSG_TYPE_MOVE_SEND_ONCE:
+        case MACH_MSG_TYPE_COPY_SEND:
+        case MACH_MSG_TYPE_MAKE_SEND:
+        case MACH_MSG_TYPE_MAKE_SEND_ONCE:
+
+          {
+            mach_port_t * ports = reinterpret_cast<mach_port_t *>((int8_t *) ptr + header_size);
+
+            for (int i = 0; i < nelems; i ++)
+              {
+                ports[i] = translatePort(ports[i], name);
+              }
+
+          }
+          break;
+
+        default:
+          // do nothing; just pass through the data
+          ;
+        }
+
+      unsigned int length_bytes = (nelems * elem_size_bits + 7) / 8;
+
+      // round up to long word boundary
+      length_bytes = ((length_bytes + sizeof(long) - 1) / sizeof(long)) * sizeof(long);
+
+      // add header
+      length_bytes += header_size;
+
+      // increment to next data item
+      ptr = reinterpret_cast<mach_msg_type_t *> (reinterpret_cast<int8_t *>(ptr) + length_bytes);
+    }
 }
 
 void
