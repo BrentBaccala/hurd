@@ -142,9 +142,9 @@ mach_call(kern_return_t err)
 
 // XXX most of this belongs in a class
 
-mach_port_t first_port = MACH_PORT_NULL;    /* server sets this to underlying node; client leaves it MACH_PORT_NULL */
+mach_port_t first_port = MACH_PORT_NULL;    /* server sets this to a send right on underlying node; client leaves it MACH_PORT_NULL */
 
-mach_port_t control = MACH_PORT_NULL;    /* translator (network client) sets this; server leaves it MACH_PORT_NULL */
+mach_port_t control = MACH_PORT_NULL;    /* translator (network client) sets this to a receive right; server leaves it MACH_PORT_NULL */
 mach_port_t portset = MACH_PORT_NULL;
 mach_port_t my_sendonce_receive_port = MACH_PORT_NULL;
 
@@ -172,6 +172,11 @@ ipcHandler(std::iostream * const network)
 
   /* move the receive right into the portset so we'll be listening on it */
   mach_call (mach_port_move_member (mach_task_self (), my_sendonce_receive_port, portset));
+
+  if (control != MACH_PORT_NULL)
+    {
+      mach_call (mach_port_move_member (mach_task_self (), control, portset));
+    }
 
   debug << "waiting for IPC messages" << std::endl;
 
