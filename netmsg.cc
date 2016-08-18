@@ -476,7 +476,7 @@ translateHeader(mach_msg_header_t * const msg)
    * messages whose receive port needs translation.
    */
 
-  if (msg->msgh_local_port == MACH_PORT_NULL)
+  if (this_port == MACH_PORT_NULL)
     {
       this_port = first_port;
     }
@@ -507,6 +507,11 @@ translateHeader(mach_msg_header_t * const msg)
 
       reply_port = translatePort(reply_port, reply_type);
 
+      break;
+
+    case 0:
+
+      assert (reply_port == MACH_PORT_NULL);
       break;
 
     default:
