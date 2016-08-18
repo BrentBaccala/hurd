@@ -59,8 +59,13 @@ extern "C" {
 
 #pragma GCC diagnostic warning "-Wold-style-cast"
 
-/* output stream for debugging messages */
-auto & debug = std::cerr;
+/* debugging messages */
+
+#if 1
+#define dprintf(f, x...)        fprintf (stderr, f, ##x)
+#else
+#define dprintf(f, x...)        (void) 0
+#endif
 
 const char * argp_program_version = STANDARD_HURD_VERSION (netmsg);
 
@@ -178,7 +183,7 @@ ipcHandler(std::ostream * const network)
       mach_call (mach_port_move_member (mach_task_self (), control, portset));
     }
 
-  debug << "waiting for IPC messages" << std::endl;
+  dprintf("waiting for IPC messages\n");
 
   /* Launch */
   while (1)
@@ -191,7 +196,7 @@ ipcHandler(std::ostream * const network)
                            0, max_size, portset,
                            MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
 
-      debug << "received IPC message on port " << msg->msgh_local_port << std::endl;
+      dprintf("received IPC message on port %ld\n", msg->msgh_local_port);
 
       /* A message has been received via IPC.  Transmit it across the
        * network, letting the receiver translate it.
@@ -250,7 +255,7 @@ ipcHandler(std::ostream * const network)
       network->write(buffer, msg->msgh_size);
       network->flush();
 
-      debug << "sent network message" << std::endl;
+      dprintf("sent network message\n");
 
     }
 
@@ -459,7 +464,7 @@ translatePort(const mach_port_t port, const unsigned int type)
 {
   mach_port_t result = translatePort2(port, type);
 
-  debug << "translating port " << port << "(" << type << ") ---> " << result << std::endl;
+  dprintf("translating port %ld (%d) ---> %ld\n", port, type, result);
 
   return result;
 }
@@ -636,7 +641,7 @@ tcpHandler(int inSocket)
    */
   new std::thread(ipcHandler, &os);
 
-  debug << "waiting for network messages" << std::endl;
+  dprintf("waiting for network messages\n");
 
   while (1)
     {
@@ -646,7 +651,7 @@ tcpHandler(int inSocket)
       is.read(buffer, sizeof(mach_msg_header_t));
       if (is) is.read(buffer + sizeof(mach_msg_header_t), msg->msgh_size - sizeof(mach_msg_header_t));
 
-      debug << "received network message(" << msg->msgh_id << ") for port " << msg->msgh_local_port << std::endl;
+      dprintf("received network message(%d) for port %ld\n", msg->msgh_id, msg->msgh_local_port);
 
       if (! is)
         {
@@ -654,11 +659,11 @@ tcpHandler(int inSocket)
 
           if (is.eof())
             {
-              debug << "EOF on network socket" << std::endl;
+              dprintf("EOF on network socket\n");
             }
           else
             {
-              debug << "Error on network socket" << std::endl;
+              dprintf("Error on network socket\n");
             }
           filebuf_in.close();
           //close(inSocket);
@@ -668,7 +673,7 @@ tcpHandler(int inSocket)
 
       translateMessage(msg);
 
-      debug << "sending IPC message to port " << msg->msgh_remote_port << std::endl;
+      dprintf("sending IPC message to port %ld\n", msg->msgh_remote_port);
 
       /* XXX this call could easily return MACH_SEND_INVALID_DEST if the destination died */
 
@@ -775,7 +780,7 @@ tcpServer(void)
       error (2, errno, "TCP listen");
     }
 
-  debug << "waiting for network connections" << std::endl;
+  dprintf("waiting for network connections\n");
 
   /* Do this forever... */
   while (1)
@@ -833,7 +838,7 @@ startAsTranslator(void)
   err =
     fsys_startup (bootstrap, 0, control, MACH_MSG_TYPE_COPY_SEND, &realnode);
 
-  debug << "control port is " << control << std::endl;
+  dprintf("control port is %ld\n", control);
 
   if (err)
     error (1, err, "Starting up translator");
@@ -873,7 +878,7 @@ main (int argc, char **argv)
         {
           error (1, 0, "Can't open / as first_port");
         }
-      debug << "first_port is " << first_port << std::endl;
+      dprintf("first_port is %ld\n", first_port);
       tcpServer();
     }
   else
