@@ -57,8 +57,6 @@ extern "C" {
 /* mach_error()'s first argument isn't declared const, and we usually pass it a string */
 #pragma GCC diagnostic ignored "-Wwrite-strings"
 
-mach_port_t realnode;
-
 /* We return this for O_NOLINK lookups */
 mach_port_t realnodenoauth;
 
@@ -151,13 +149,25 @@ mach_call(mach_msg_return_t err)
 }
 #endif
 
-// XXX belongs in a class
-mach_port_t portset;
-mach_port_t my_sendonce_receive_port;
+// XXX most of this belongs in a class
 
-std::map<mach_port_t, mach_port_t> receive_ports;   /* map remote port to local port */
-std::map<mach_port_t, mach_port_t> send_ports;    /* map remote port to local port; these local ports have receive rights */
-std::map<mach_port_t, mach_port_t> send_once_ports;   /* map local port to remote port */
+// XXX isn't set right by server
+mach_port_t realnode = MACH_PORT_NULL;    /* server sets this to underlying node; client leaves it MACH_PORT_NULL */
+
+mach_port_t control = MACH_PORT_NULL;    /* translator (network client) sets this; server leaves it MACH_PORT_NULL */
+mach_port_t portset = MACH_PORT_NULL;
+mach_port_t my_sendonce_receive_port = MACH_PORT_NULL;
+
+/* Maps remote RECEIVE rights to local SEND rights */
+std::map<mach_port_t, mach_port_t> receive_ports_by_remote;
+
+std::map<mach_port_t, mach_port_t> send_ports_by_remote;    /* map remote port to local port; these local ports have receive rights */
+std::map<mach_port_t, mach_port_t> send_ports_by_local;    /* map local receive port to remote send port */
+
+std::map<mach_port_t, mach_port_t> send_once_ports_by_remote;    /* map remote port to local port; these local ports have receive rights */
+std::map<mach_port_t, mach_port_t> send_once_ports_by_local;    /* map local receive port to remote send port */
+
+#define MACH_MSGH_BITS_REMOTE_TRANSLATE 0x04000000
 
 void
 ipcHandler(std::iostream * const network)
@@ -194,9 +204,9 @@ ipcHandler(std::iostream * const network)
 
       /* Ports can be added and removed while a receive from a portset is in progress. */
 
-      mr = mach_msg (msg, MACH_RCV_MSG,
-                     0, max_size, portset,
-                     MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+      mach_call (mach_msg (msg, MACH_RCV_MSG,
+                           0, max_size, portset,
+                           MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
 
       /* A message has been received via IPC.  Transmit it across the
        * network, letting the receiver translate it.
@@ -228,20 +238,29 @@ ipcHandler(std::iostream * const network)
        * 3. distinguish between them based on C++ maps
        */
 
-      if (msg->msgh_local_port == my_sendonce_receive_port
-          || (send_ports.count(msg->msgh_local_port) == 1))
+      if (msg->msgh_local_port == control)
+        {
+          msg->msgh_local_port = MACH_PORT_NULL;
+        }
+      else if (send_ports_by_local.count(msg->msgh_local_port) == 1)
         {
           /* translate */
+          msg->msgh_local_port = send_ports_by_local[msg->msgh_local_port];
         }
-
-      if (mr == MACH_MSG_SUCCESS)
+      else if (send_once_ports_by_local.count(msg->msgh_local_port) == 1)
         {
-          network->write(buffer, msg->msgh_size);
+          /* translate */
+          msg->msgh_local_port = send_once_ports_by_local[msg->msgh_local_port];
+          /* XXX it's a send once port; we can deallocate the receive right now */
         }
       else
         {
-          mach_error("mach_msg receive", mr);
+          /* it's a receive port we got via IPC.  Let the remote translate it. */
+          msg->msgh_bits |= MACH_MSGH_BITS_REMOTE_TRANSLATE;
         }
+
+      network->write(buffer, msg->msgh_size);
+
     }
 
 }
@@ -358,9 +377,10 @@ translatePort(const mach_port_t port, const unsigned int type)
     case MACH_MSG_TYPE_MOVE_RECEIVE:
       // remote network peer now has a receive port.  We want to send a receive port on
       // to our receipient.
-      if (receive_ports.count(port) == 1)
+      if (receive_ports_by_remote.count(port) != 0)
         {
-          return receive_ports[port];
+          error (1, 0, "Received RECEIVE port %i twice!?", port);
+          // return receive_ports_by_remote[port];
         }
       else
         {
@@ -371,7 +391,7 @@ translatePort(const mach_port_t port, const unsigned int type)
           mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
                                              MACH_MSG_TYPE_MAKE_SEND));
 
-          receive_ports[port] = newport;
+          receive_ports_by_remote[port] = newport;
 
           return newport;
         }
@@ -383,9 +403,15 @@ translatePort(const mach_port_t port, const unsigned int type)
       // fallthrough
 
     case MACH_MSG_TYPE_MOVE_SEND:
-      if (send_ports.count(port) == 1)
+      if (send_ports_by_remote.count(port) == 1)
         {
-          return send_ports[port];
+          const mach_port_t newport = send_ports_by_remote[port];
+
+          /* it already exists; create a new send right to relay on */
+          mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
+                                             MACH_MSG_TYPE_MAKE_SEND));
+
+          return newport;
         }
       else
         {
@@ -398,7 +424,9 @@ translatePort(const mach_port_t port, const unsigned int type)
           /* move the receive right into the portset so we'll be listening on it */
           mach_call (mach_port_move_member (mach_task_self (), newport, portset));
 
-          send_ports[port] = newport;
+          send_ports_by_remote[port] = newport;
+          send_ports_by_local[newport] = port;
+
           return newport;
         }
       break;
@@ -408,17 +436,23 @@ translatePort(const mach_port_t port, const unsigned int type)
       // fallthrough
 
     case MACH_MSG_TYPE_MOVE_SEND_ONCE:
-      assert (send_once_ports.count(port) == 0);
+      assert (send_once_ports_by_remote.count(port) == 0);
 
+      mach_port_t newport;
       mach_port_t sendonce_port;
       mach_msg_type_name_t acquired_type;
 
-      /* Make a new SEND ONCE right that points to our local my_sendonce_receive_port */
-    
-      mach_call(mach_port_extract_right (mach_task_self (), my_sendonce_receive_port, MACH_MSG_TYPE_MAKE_SEND_ONCE, &sendonce_port, &acquired_type));
+      /* create new receive port and a new send once right that will be moved to the recipient */
+      mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &newport));
+      mach_call(mach_port_extract_right (mach_task_self (), newport, MACH_MSG_TYPE_MAKE_SEND_ONCE, &sendonce_port, &acquired_type));
       assert (acquired_type == MACH_MSG_TYPE_PORT_SEND_ONCE);
 
-      send_once_ports[sendonce_port] = port;
+      /* move the receive right into the portset so we'll be listening on it */
+      mach_call (mach_port_move_member (mach_task_self (), newport, portset));
+
+      /* don't need to remember sendonce_port; it'll be used once and then forgoten */
+      send_once_ports_by_remote[port] = newport;
+      send_once_ports_by_local[newport] = port;
 
       return sendonce_port;
     }
@@ -437,19 +471,31 @@ translateHeader(mach_msg_header_t * const msg)
 
   assert (this_type == MACH_MSG_TYPE_PORT_RECEIVE);
 
-  if (receive_ports.empty())
+  /* We used a spare bit, just during the network transaction, to flag
+   * messages whose receive port needs translation.
+   */
+
+  if (msg->msgh_local_port == MACH_PORT_NULL)
     {
-      // the first message on a connection maps to realnode
-      receive_ports[this_port] = realnode;
-      this_port = realnode;
+      msg->msgh_local_port = realnode;
     }
-  else if (receive_ports.count(this_port) != 1)
+  else if (msg->msgh_bits & MACH_MSGH_BITS_REMOTE_TRANSLATE)
     {
-      error (1, 0, "Never saw local port %i before", this_port);
-    }
-  else
-    {
-      this_port = receive_ports[this_port];
+      /* This is the case where we earlier got a receive right across
+       * the network, and are now receiving a message to it.
+       *
+       * Translate it into a local send right.
+       */
+      if (receive_ports_by_remote.count(this_port) != 1)
+        {
+          error (1, 0, "Never saw port %i before", this_port);
+        }
+      else
+        {
+          this_port = receive_ports_by_remote[this_port];
+        }
+
+      msg->msgh_bits &= ~MACH_MSGH_BITS_REMOTE_TRANSLATE;
     }
 
   switch (reply_type)
@@ -748,7 +794,6 @@ void
 startAsTranslator(void)
 {
   mach_port_t bootstrap;
-  mach_port_t control;
   kern_return_t err;
 
   task_get_bootstrap_port (mach_task_self (), &bootstrap);
