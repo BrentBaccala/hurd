@@ -235,7 +235,10 @@ ipcHandler(std::ostream * const network)
       else if (send_once_ports_by_local.count(msg->msgh_local_port) == 1)
         {
           /* translate */
-          msg->msgh_local_port = send_once_ports_by_local[msg->msgh_local_port];
+          mach_port_t remote_port = send_once_ports_by_local[msg->msgh_local_port];
+          send_once_ports_by_local.erase(msg->msgh_local_port);
+          send_once_ports_by_remote.erase(remote_port);
+          msg->msgh_local_port = remote_port;
           /* XXX it's a send once port; we can deallocate the receive right now */
         }
       else
