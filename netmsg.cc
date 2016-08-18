@@ -153,7 +153,11 @@ mach_call(mach_msg_return_t err)
 
 // XXX belongs in a class
 mach_port_t portset;
-mach_port_t receiver_for_send_once_messages;
+mach_port_t my_sendonce_receive_port;
+
+std::map<mach_port_t, mach_port_t> receive_ports;   /* map remote port to local port */
+std::map<mach_port_t, mach_port_t> send_ports;    /* map remote port to local port; these local ports have receive rights */
+std::map<mach_port_t, mach_port_t> send_once_ports;   /* map local port to remote port */
 
 void
 ipcHandler(std::iostream * const network)
@@ -172,13 +176,16 @@ ipcHandler(std::iostream * const network)
       return;
     }
 
-  mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &receiver_for_send_once_messages);
+  mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &my_sendonce_receive_port);
 
   if (mr != MACH_MSG_SUCCESS)
     {
-      mach_error("mach_port_allocate receiver_for_send_once_messages", mr);
+      mach_error("mach_port_allocate my_sendonce_receive_port", mr);
       return;
     }
+
+  /* move the receive right into the portset so we'll be listening on it */
+  mach_call (mach_port_move_member (mach_task_self (), my_sendonce_receive_port, portset));
 
   /* Launch */
   while (1)
@@ -203,6 +210,29 @@ ipcHandler(std::iostream * const network)
        * - Error handling: If the remote port died, or some other
        * error is returned, we want to relay it back to the sender.
        */
+
+      /* We need to distinguish between messages received on ports
+       * that we created, vs messages received on ports we got
+       * via IPC transfer.
+       *
+       * Several ways to handle this:
+       *
+       * 1. use libports and put the ports into two different classes,
+       *    but keep them in the same portset (so we can receive from
+       *    both of them with one mach_msg call).
+       *
+       * 2. use two different threads to receive from two different
+       *    portsets, but that requires locking on the network
+       *    stream, because they'll both be trying to transmit on it
+       *
+       * 3. distinguish between them based on C++ maps
+       */
+
+      if (msg->msgh_local_port == my_sendonce_receive_port
+          || (send_ports.count(msg->msgh_local_port) == 1))
+        {
+          /* translate */
+        }
 
       if (mr == MACH_MSG_SUCCESS)
         {
@@ -250,11 +280,75 @@ ipcHandler(std::iostream * const network)
  * right for ourselves, and send the receive port on.
  */
 
-std::map<mach_port_t, mach_port_t> receive_ports;   /* map remote port to local port */
-std::map<mach_port_t, mach_port_t> send_ports;    /* map remote port to local port; these local ports have receive rights */
-std::map<mach_port_t, mach_port_t> send_once_ports;   /* map local port to remote port */
+/*      translator                                 server
+ *
+ *   send CONTROL port back to ext2fs
+ *
+ *   receive msg on CONTROL port
+ *     with a send-once REPLY port
+ *     translate CONTROL to 0
+ *                             ========>
+ *                                         translate 0 to realnode
+ *                                         create send-once right PORT2 (maps to REPLY)
+ *                                         forward message to realnode
+ *
+ *                                         receive message on PORT2 (from realnode, but unlabeled)
+ *                                         PORT2 is translated to REPLY
+ *                                         no reply port
+ *                            <=========
+ *    destination is REPLY
+ *
+ *
+ *
+ *
+ *    msg with RECEIVE right
+ *    keep RECEIVE right local
+ *    don't translate
+ *                             ========>
+ *                                        create send/receive pair
+ *                                        forward local receive right
+ *
+ *    receive message on RECEIVE
+ *                             ========>
+ *                                       translate RECEIVE to local receive right
+ *
+ *
+ *
+ *
+ *    msg with SEND right
+ *    keep SEND right local
+ *    don't translate
+ *                             ========>
+ *                                        create send/receive pair
+ *                                        forward local send right
+ *
+ *                                        receive msg on local send right
+ *                                        translate local send to original remote
+ *                            <=========
+ */
 
-mach_port_t my_sendonce_receive_port;
+/* Three kinds of IPC messages - how do we handle the receive port it came in on?
+ *
+ * received on ports we got from other processes - don't translate
+ *     we got a receive right earlier via IPC, that we passed on to the remote untranslated
+ *     now we pass on the local port, and the remote translates
+ * received on ports we created ourselves - translate (send_ports or send_once_ports)
+ *     we got a send right earlier via the network, that we translated
+ *     now we translate and pass on the remote's name for the send right
+ * received on initial control port - translate to 0
+ *
+ *
+ * Three kinds of network messages
+ *
+ * those with remote port names, and we translate them to local names
+ *    because earlier a receive right went network -> IPC
+ * those with local port names
+ *    because earlier a send right went IPC -> network
+ * those addressed to 0
+ *    they go to our initial port
+ *
+ * I'll steal an unused bit from msgh_bits (0x04000000) to indicate a remote port name that needs to be translated.
+ */
 
 mach_port_t
 translatePort(const mach_port_t port, const unsigned int type)
@@ -264,9 +358,9 @@ translatePort(const mach_port_t port, const unsigned int type)
     case MACH_MSG_TYPE_MOVE_RECEIVE:
       // remote network peer now has a receive port.  We want to send a receive port on
       // to our receipient.
-      if (receive_ports.count(this_port) == 1)
+      if (receive_ports.count(port) == 1)
         {
-          return receive_ports[this_port];
+          return receive_ports[port];
         }
       else
         {
