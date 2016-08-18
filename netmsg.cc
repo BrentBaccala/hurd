@@ -451,6 +451,8 @@ translatePort(const mach_port_t port, const unsigned int type)
     }
 }
 
+/* We received a message across the network.  Translate its header. */
+
 void
 translateHeader(mach_msg_header_t * const msg)
 {
@@ -462,7 +464,10 @@ translateHeader(mach_msg_header_t * const msg)
   mach_port_t this_port = msg->msgh_local_port;
   mach_port_t reply_port = msg->msgh_remote_port;
 
-  assert (this_type == MACH_MSG_TYPE_PORT_RECEIVE);
+  if ((this_type != MACH_MSG_TYPE_PORT_SEND) && (this_type != MACH_MSG_TYPE_PORT_SEND_ONCE))
+    {
+      error (1, 0, "this_type (%d) != MACH_MSG_TYPE_PORT_SEND{_ONCE}", this_type);
+    }
 
   /* We used a spare bit, just during the network transaction, to flag
    * messages whose receive port needs translation.
@@ -470,7 +475,7 @@ translateHeader(mach_msg_header_t * const msg)
 
   if (msg->msgh_local_port == MACH_PORT_NULL)
     {
-      msg->msgh_local_port = first_port;
+      this_port = first_port;
     }
   else if (msg->msgh_bits & MACH_MSGH_BITS_REMOTE_TRANSLATE)
     {
