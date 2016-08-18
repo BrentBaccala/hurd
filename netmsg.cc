@@ -247,6 +247,8 @@ ipcHandler(std::iostream * const network)
       network->write(buffer, msg->msgh_size);
       network->flush();
 
+      debug << "sent network message" << std::endl;
+
     }
 
 }
@@ -617,7 +619,7 @@ tcpHandler(int inSocket)
       /* Receive a single Mach message on the network socket */
 
       fs.read(buffer, sizeof(mach_msg_header_t));
-      if (fs) fs.read(buffer + sizeof(mach_msg_header_t), msg->msgh_size);
+      if (fs) fs.read(buffer + sizeof(mach_msg_header_t), msg->msgh_size - sizeof(mach_msg_header_t));
 
       debug << "received network message" << std::endl;
 
