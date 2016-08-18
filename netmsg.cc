@@ -381,7 +381,8 @@ translatePort(const mach_port_t port, const unsigned int type)
       // to our receipient.
       if (receive_ports_by_remote.count(port) != 0)
         {
-          error (1, 0, "Received RECEIVE port %i twice!?", port);
+          error (1, 0, "Received RECEIVE port %ld twice!?", port);
+          return MACH_PORT_NULL;   // never reached; error() terminates program
           // return receive_ports_by_remote[port];
         }
       else
@@ -457,6 +458,10 @@ translatePort(const mach_port_t port, const unsigned int type)
       send_once_ports_by_local[newport] = port;
 
       return sendonce_port;
+
+    default:
+      error (1, 0, "Unknown port type %d in translatePort", type);
+      return MACH_PORT_NULL;   // never reached; error() terminates program
     }
 }
 
@@ -490,7 +495,7 @@ translateHeader(mach_msg_header_t * const msg)
        */
       if (receive_ports_by_remote.count(this_port) != 1)
         {
-          error (1, 0, "Never saw port %i before", this_port);
+          error (1, 0, "Never saw port %ld before", this_port);
         }
       else
         {
@@ -527,7 +532,7 @@ translateMessage(mach_msg_header_t * const msg)
 
   mach_msg_type_t * ptr = reinterpret_cast<mach_msg_type_t *>(msg + 1);
 
-  while (reinterpret_cast<int8_t *>(ptr) - reinterpret_cast<int8_t *>(msg) < msg->msgh_size)
+  while (reinterpret_cast<int8_t *>(ptr) - reinterpret_cast<int8_t *>(msg) < static_cast<int>(msg->msgh_size))
     {
       unsigned int name;
       unsigned int nelems;
@@ -565,7 +570,7 @@ translateMessage(mach_msg_header_t * const msg)
           {
             mach_port_t * ports = reinterpret_cast<mach_port_t *>(reinterpret_cast<int8_t *>(ptr) + header_size);
 
-            for (int i = 0; i < nelems; i ++)
+            for (unsigned int i = 0; i < nelems; i ++)
               {
                 ports[i] = translatePort(ports[i], name);
               }
@@ -594,7 +599,6 @@ translateMessage(mach_msg_header_t * const msg)
 void
 tcpHandler(int inSocket)
 {
-  int errorCode;
   const mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
   char buffer[max_size];
   mach_msg_header_t * const msg = reinterpret_cast<mach_msg_header_t *> (buffer);
@@ -668,7 +672,6 @@ tcpClient(const char * hostname)
   int newSocket;
   struct addrinfo hints;
   struct addrinfo *result;
-  struct sockaddr_in destAddr;
   int errorCode;
 
   bzero(&hints, sizeof(hints));
