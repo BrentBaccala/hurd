@@ -191,7 +191,7 @@ ipcHandler(std::ostream * const network)
                            0, max_size, portset,
                            MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
 
-      debug << "received IPC message" << std::endl;
+      debug << "received IPC message on port " << msg->msgh_local_port << std::endl;
 
       /* A message has been received via IPC.  Transmit it across the
        * network, letting the receiver translate it.
@@ -361,7 +361,7 @@ ipcHandler(std::ostream * const network)
  */
 
 mach_port_t
-translatePort(const mach_port_t port, const unsigned int type)
+translatePort2(const mach_port_t port, const unsigned int type)
 {
   switch (type)
     {
@@ -452,6 +452,16 @@ translatePort(const mach_port_t port, const unsigned int type)
       error (1, 0, "Unknown port type %d in translatePort", type);
       return MACH_PORT_NULL;   // never reached; error() terminates program
     }
+}
+
+mach_port_t
+translatePort(const mach_port_t port, const unsigned int type)
+{
+  mach_port_t result = translatePort2(port, type);
+
+  debug << "translating port " << port << "(" << type << ") ---> " << result << std::endl;
+
+  return result;
 }
 
 /* We received a message across the network.  Translate its header. */
@@ -636,7 +646,7 @@ tcpHandler(int inSocket)
       is.read(buffer, sizeof(mach_msg_header_t));
       if (is) is.read(buffer + sizeof(mach_msg_header_t), msg->msgh_size - sizeof(mach_msg_header_t));
 
-      debug << "received network message" << std::endl;
+      debug << "received network message(" << msg->msgh_id << ") for port " << msg->msgh_local_port << std::endl;
 
       if (! is)
         {
@@ -658,9 +668,14 @@ tcpHandler(int inSocket)
 
       translateMessage(msg);
 
+      debug << "sending IPC message to port " << msg->msgh_remote_port << std::endl;
+
+      /* XXX this call could easily return MACH_SEND_INVALID_DEST if the destination died */
+
       mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
                           0, msg->msgh_remote_port,
                           MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+
     }
 }
 
@@ -818,6 +833,8 @@ startAsTranslator(void)
   err =
     fsys_startup (bootstrap, 0, control, MACH_MSG_TYPE_COPY_SEND, &realnode);
 
+  debug << "control port is " << control << std::endl;
+
   if (err)
     error (1, err, "Starting up translator");
 
@@ -856,6 +873,7 @@ main (int argc, char **argv)
         {
           error (1, 0, "Can't open / as first_port");
         }
+      debug << "first_port is " << first_port << std::endl;
       tcpServer();
     }
   else
