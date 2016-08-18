@@ -245,6 +245,7 @@ ipcHandler(std::iostream * const network)
         }
 
       network->write(buffer, msg->msgh_size);
+      network->flush();
 
     }
 
