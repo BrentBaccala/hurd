@@ -160,7 +160,7 @@ std::map<mach_port_t, mach_port_t> send_once_ports_by_local;    /* map local rec
 #define MACH_MSGH_BITS_REMOTE_TRANSLATE 0x04000000
 
 void
-ipcHandler(std::iostream * const network)
+ipcHandler(std::ostream * const network)
 {
   const mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
   char buffer[max_size];
@@ -603,8 +603,10 @@ tcpHandler(int inSocket)
    * testing fs to see if it's false.
    */
 
-  __gnu_cxx::stdio_filebuf<char> filebuf(inSocket, std::ios::in | std::ios::out | std::ios::binary);
-  std::iostream fs(&filebuf);
+  __gnu_cxx::stdio_filebuf<char> filebuf_in(inSocket, std::ios::in | std::ios::binary);
+  __gnu_cxx::stdio_filebuf<char> filebuf_out(inSocket, std::ios::out | std::ios::binary);
+  std::istream is(&filebuf_in);
+  std::ostream os(&filebuf_out);
 
   /* Spawn a new thread to handle inbound Mach IPC messages.
    *
@@ -614,7 +616,7 @@ tcpHandler(int inSocket)
    *
    * XXX maybe we should do something to collect dead threads
    */
-  new std::thread(ipcHandler, &fs);
+  new std::thread(ipcHandler, &os);
 
   debug << "waiting for network messages" << std::endl;
 
@@ -623,16 +625,16 @@ tcpHandler(int inSocket)
 
       /* Receive a single Mach message on the network socket */
 
-      fs.read(buffer, sizeof(mach_msg_header_t));
-      if (fs) fs.read(buffer + sizeof(mach_msg_header_t), msg->msgh_size - sizeof(mach_msg_header_t));
+      is.read(buffer, sizeof(mach_msg_header_t));
+      if (is) is.read(buffer + sizeof(mach_msg_header_t), msg->msgh_size - sizeof(mach_msg_header_t));
 
       debug << "received network message" << std::endl;
 
-      if (! fs)
+      if (! is)
         {
           /* Destroying the iostream will do nothing to the underlying filebuf. */
 
-          if (fs.eof())
+          if (is.eof())
             {
               debug << "EOF on network socket" << std::endl;
             }
@@ -640,7 +642,7 @@ tcpHandler(int inSocket)
             {
               debug << "Error on network socket" << std::endl;
             }
-          filebuf.close();
+          filebuf_in.close();
           //close(inSocket);
           /* XXX signal ipcHandler that the network socket died */
           return;
