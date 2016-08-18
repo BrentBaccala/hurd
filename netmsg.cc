@@ -57,6 +57,8 @@ extern "C" {
 /* mach_error()'s first argument isn't declared const, and we usually pass it a string */
 #pragma GCC diagnostic ignored "-Wwrite-strings"
 
+#pragma GCC diagnostic warning "-Wold-style-cast"
+
 /* We return this for O_NOLINK lookups */
 mach_port_t realnodenoauth;
 
@@ -176,7 +178,7 @@ ipcHandler(std::iostream * const network)
 
   const mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
   char buffer[max_size];
-  mach_msg_header_t * const msg = (mach_msg_header_t *) buffer;
+  mach_msg_header_t * const msg = reinterpret_cast<mach_msg_header_t *> (buffer);
 
   mr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_PORT_SET, &portset);
 
@@ -561,7 +563,7 @@ translateMessage(mach_msg_header_t * const msg)
         case MACH_MSG_TYPE_MAKE_SEND_ONCE:
 
           {
-            mach_port_t * ports = reinterpret_cast<mach_port_t *>((int8_t *) ptr + header_size);
+            mach_port_t * ports = reinterpret_cast<mach_port_t *>(reinterpret_cast<int8_t *>(ptr) + header_size);
 
             for (int i = 0; i < nelems; i ++)
               {
@@ -595,7 +597,7 @@ tcpHandler(int inSocket)
   int errorCode;
   const mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
   char buffer[max_size];
-  mach_msg_header_t * const msg = (mach_msg_header_t *) buffer;
+  mach_msg_header_t * const msg = reinterpret_cast<mach_msg_header_t *> (buffer);
 
   /* Use a non-standard GNU extension to wrap the socket in a C++
    * iostream that will provide buffering.
@@ -740,7 +742,7 @@ tcpServer(void)
    * Bind the socket to the port and address at which we wish to
    * receive data
    */
-  errorCode = bind(listenSocket, (const struct sockaddr *) &destAddr, sizeof(destAddr));
+  errorCode = bind(listenSocket, reinterpret_cast<struct sockaddr *> (&destAddr), sizeof(destAddr));
 
   /* Check for an error in bind */
   if (errorCode < 0)
@@ -771,7 +773,7 @@ tcpServer(void)
        * bytes are not written to sourceAddr.
        */
 
-      newSocket = accept(listenSocket, (struct sockaddr *) &sourceAddr, &addrLen);
+      newSocket = accept(listenSocket, reinterpret_cast<struct sockaddr *> (&sourceAddr), &addrLen);
 
       /* Check for an error in accept */
 
