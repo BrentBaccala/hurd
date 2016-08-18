@@ -140,17 +140,6 @@ mach_call(kern_return_t err)
     }
 }
 
-#if 0
-void
-mach_call(mach_msg_return_t err)
-{
-  if (err != MACH_MSG_SUCCESS)
-    {
-      mach_error("mach_call", err);
-    }
-}
-#endif
-
 // XXX most of this belongs in a class
 
 // XXX isn't set right by server
@@ -174,27 +163,13 @@ std::map<mach_port_t, mach_port_t> send_once_ports_by_local;    /* map local rec
 void
 ipcHandler(std::iostream * const network)
 {
-  mach_msg_return_t mr;
-
   const mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
   char buffer[max_size];
   mach_msg_header_t * const msg = reinterpret_cast<mach_msg_header_t *> (buffer);
 
-  mr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_PORT_SET, &portset);
+  mach_call (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_PORT_SET, &portset));
 
-  if (mr != MACH_MSG_SUCCESS)
-    {
-      mach_error("mach_port_allocate portset", mr);
-      return;
-    }
-
-  mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &my_sendonce_receive_port);
-
-  if (mr != MACH_MSG_SUCCESS)
-    {
-      mach_error("mach_port_allocate my_sendonce_receive_port", mr);
-      return;
-    }
+  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &my_sendonce_receive_port));
 
   /* move the receive right into the portset so we'll be listening on it */
   mach_call (mach_port_move_member (mach_task_self (), my_sendonce_receive_port, portset));
@@ -447,7 +422,7 @@ translatePort(const mach_port_t port, const unsigned int type)
 
       /* create new receive port and a new send once right that will be moved to the recipient */
       mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &newport));
-      mach_call(mach_port_extract_right (mach_task_self (), newport, MACH_MSG_TYPE_MAKE_SEND_ONCE, &sendonce_port, &acquired_type));
+      mach_call (mach_port_extract_right (mach_task_self (), newport, MACH_MSG_TYPE_MAKE_SEND_ONCE, &sendonce_port, &acquired_type));
       assert (acquired_type == MACH_MSG_TYPE_PORT_SEND_ONCE);
 
       /* move the receive right into the portset so we'll be listening on it */
@@ -653,16 +628,9 @@ tcpHandler(int inSocket)
 
       translateMessage(msg);
 
-      mach_msg_return_t mr;
-
-      mr = mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
-                    0, msg->msgh_remote_port,
-                    MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-
-      if (mr != MACH_MSG_SUCCESS)
-        {
-          mach_error("mach_msg send", mr);
-        }
+      mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
+                          0, msg->msgh_remote_port,
+                          MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
     }
 }
 
@@ -806,18 +774,18 @@ startAsTranslator(void)
     error (1, 0, "Must be started as a translator");
 
   /* Reply to our parent */
-  mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &control);
-  mach_port_insert_right (mach_task_self (), control, control,
-                          MACH_MSG_TYPE_MAKE_SEND);
+  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &control));
+  mach_call (mach_port_insert_right (mach_task_self (), control, control,
+                                     MACH_MSG_TYPE_MAKE_SEND));
   err =
     fsys_startup (bootstrap, 0, control, MACH_MSG_TYPE_COPY_SEND, &realnode);
-  mach_port_deallocate (mach_task_self (), control);
-  mach_port_deallocate (mach_task_self (), bootstrap);
+  mach_call (mach_port_deallocate (mach_task_self (), control));
+  mach_call (mach_port_deallocate (mach_task_self (), bootstrap));
   if (err)
     error (1, err, "Starting up translator");
 
   io_restrict_auth (realnode, &realnodenoauth, 0, 0, 0, 0);
-  mach_port_deallocate (mach_task_self (), realnode);
+  mach_call (mach_port_deallocate (mach_task_self (), realnode));
 
   /* Mark us as important.  */
   mach_port_t proc = getproc ();
@@ -830,7 +798,7 @@ startAsTranslator(void)
   if (err && err != EPERM && err != EMIG_BAD_ID)
     error (2, err, "Cannot mark us as important");
 
-  mach_port_deallocate (mach_task_self (), proc);
+  mach_call (mach_port_deallocate (mach_task_self (), proc));
 
   tcpClient(targetHost);
 }
