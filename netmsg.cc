@@ -59,6 +59,9 @@ extern "C" {
 
 #pragma GCC diagnostic warning "-Wold-style-cast"
 
+/* output stream for debugging messages */
+auto & debug = std::cerr;
+
 const char * argp_program_version = STANDARD_HURD_VERSION (netmsg);
 
 const char * const defaultPort = "2345";
@@ -170,6 +173,8 @@ ipcHandler(std::iostream * const network)
   /* move the receive right into the portset so we'll be listening on it */
   mach_call (mach_port_move_member (mach_task_self (), my_sendonce_receive_port, portset));
 
+  debug << "waiting for IPC messages" << std::endl;
+
   /* Launch */
   while (1)
     {
@@ -180,6 +185,8 @@ ipcHandler(std::iostream * const network)
       mach_call (mach_msg (msg, MACH_RCV_MSG,
                            0, max_size, portset,
                            MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+
+      debug << "received IPC message" << std::endl;
 
       /* A message has been received via IPC.  Transmit it across the
        * network, letting the receiver translate it.
@@ -596,6 +603,8 @@ tcpHandler(int inSocket)
    */
   new std::thread(ipcHandler, &fs);
 
+  debug << "waiting for network messages" << std::endl;
+
   while (1)
     {
 
@@ -604,17 +613,19 @@ tcpHandler(int inSocket)
       fs.read(buffer, sizeof(mach_msg_header_t));
       if (fs) fs.read(buffer + sizeof(mach_msg_header_t), msg->msgh_size);
 
+      debug << "received network message" << std::endl;
+
       if (! fs)
         {
           /* Destroying the iostream will do nothing to the underlying filebuf. */
 
           if (fs.eof())
             {
-              std::cerr << "EOF on network socket" << std::endl;
+              debug << "EOF on network socket" << std::endl;
             }
           else
             {
-              std::cerr << "Error on network socket" << std::endl;
+              debug << "Error on network socket" << std::endl;
             }
           filebuf.close();
           //close(inSocket);
@@ -726,6 +737,8 @@ tcpServer(void)
       error (2, errno, "TCP listen");
     }
 
+  debug << "waiting for network connections" << std::endl;
+
   /* Do this forever... */
   while (1)
     {
@@ -824,7 +837,7 @@ main (int argc, char **argv)
     }
   else
     {
-      tcpClient(targetHost);
-      //startAsTranslator();
+      //tcpClient(targetHost);
+      startAsTranslator();
     }
 }
