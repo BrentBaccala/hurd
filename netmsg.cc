@@ -59,9 +59,6 @@ extern "C" {
 
 #pragma GCC diagnostic warning "-Wold-style-cast"
 
-/* We return this for O_NOLINK lookups */
-mach_port_t realnodenoauth;
-
 const char * argp_program_version = STANDARD_HURD_VERSION (netmsg);
 
 const char * const defaultPort = "2345";
@@ -142,8 +139,7 @@ mach_call(kern_return_t err)
 
 // XXX most of this belongs in a class
 
-// XXX isn't set right by server
-mach_port_t realnode = MACH_PORT_NULL;    /* server sets this to underlying node; client leaves it MACH_PORT_NULL */
+mach_port_t first_port = MACH_PORT_NULL;    /* server sets this to underlying node; client leaves it MACH_PORT_NULL */
 
 mach_port_t control = MACH_PORT_NULL;    /* translator (network client) sets this; server leaves it MACH_PORT_NULL */
 mach_port_t portset = MACH_PORT_NULL;
@@ -284,11 +280,11 @@ ipcHandler(std::iostream * const network)
  *     with a send-once REPLY port
  *     translate CONTROL to 0
  *                             ========>
- *                                         translate 0 to realnode
+ *                                         translate 0 to first_port
  *                                         create send-once right PORT2 (maps to REPLY)
- *                                         forward message to realnode
+ *                                         forward message to first_port
  *
- *                                         receive message on PORT2 (from realnode, but unlabeled)
+ *                                         receive message on PORT2 (from first_port, but unlabeled)
  *                                         PORT2 is translated to REPLY
  *                                         no reply port
  *                            <=========
@@ -459,7 +455,7 @@ translateHeader(mach_msg_header_t * const msg)
 
   if (msg->msgh_local_port == MACH_PORT_NULL)
     {
-      msg->msgh_local_port = realnode;
+      msg->msgh_local_port = first_port;
     }
   else if (msg->msgh_bits & MACH_MSGH_BITS_REMOTE_TRANSLATE)
     {
@@ -767,24 +763,29 @@ void
 startAsTranslator(void)
 {
   mach_port_t bootstrap;
+  mach_port_t realnode;
   kern_return_t err;
 
   task_get_bootstrap_port (mach_task_self (), &bootstrap);
   if (bootstrap == MACH_PORT_NULL)
     error (1, 0, "Must be started as a translator");
 
-  /* Reply to our parent */
+  /* Reply to our parent.
+   *
+   * The only thing we want to keep out of this exchange is a receive
+   * right on the control port we'll pass back to our parent.
+   */
+
   mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &control));
   mach_call (mach_port_insert_right (mach_task_self (), control, control,
                                      MACH_MSG_TYPE_MAKE_SEND));
   err =
     fsys_startup (bootstrap, 0, control, MACH_MSG_TYPE_COPY_SEND, &realnode);
-  mach_call (mach_port_deallocate (mach_task_self (), control));
-  mach_call (mach_port_deallocate (mach_task_self (), bootstrap));
+
   if (err)
     error (1, err, "Starting up translator");
 
-  io_restrict_auth (realnode, &realnodenoauth, 0, 0, 0, 0);
+  mach_call (mach_port_deallocate (mach_task_self (), bootstrap));
   mach_call (mach_port_deallocate (mach_task_self (), realnode));
 
   /* Mark us as important.  */
@@ -811,6 +812,14 @@ main (int argc, char **argv)
 
   if (serverMode)
     {
+      /* Open root as filesystem for readonly access.  This is the
+       * first port we'll present to our clients
+       */
+      first_port = file_name_lookup ("/", O_RDONLY, 0);
+      if (first_port == MACH_PORT_NULL)
+        {
+          error (1, 0, "Can't open / as first_port");
+        }
       tcpServer();
     }
   else
