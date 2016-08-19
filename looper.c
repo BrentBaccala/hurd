@@ -25,7 +25,6 @@
 #include <errno.h>
 #include <error.h>
 #include <version.h>
-#include "fsys_S.h"
 #include <mach_error.h>
 
 mach_port_t realnode;
