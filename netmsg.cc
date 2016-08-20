@@ -61,7 +61,7 @@ extern "C" {
 
 /* debugging messages */
 
-#if 1
+#if 0
 #define dprintf(f, x...)        fprintf (stderr, f, ##x)
 #else
 #define dprintf(f, x...)        (void) 0
@@ -655,7 +655,7 @@ tcpHandler(int inSocket)
 
       if (! is)
         {
-          /* Destroying the iostream will do nothing to the underlying filebuf. */
+          /* Destroying the istream will do nothing to the underlying filebuf. */
 
           if (is.eof())
             {
@@ -665,6 +665,7 @@ tcpHandler(int inSocket)
             {
               dprintf("Error on network socket\n");
             }
+          // XXX will this do a close() or a shutdown(SHUT_RD)?  We want shutdown(SHUT_RD).
           filebuf_in.close();
           //close(inSocket);
           /* XXX signal ipcHandler that the network socket died */
@@ -806,6 +807,18 @@ tcpServer(void)
         }
       else
         {
+          /* Open root as filesystem for readonly access.  This is the
+           * first port we'll present to our clients
+           */
+          // XXX our failure to confine this to a class prevents the server from handling multiple clients simultaneously
+          first_port = file_name_lookup ("/", O_RDONLY, 0);
+          if (first_port == MACH_PORT_NULL)
+            {
+              error (1, 0, "Can't open / as first_port");
+            }
+
+          dprintf("first_port is %ld\n", first_port);
+
           /* Spawn a new thread to handle the new socket
            *
            * XXX maybe we should do something to collect dead threads
@@ -838,10 +851,10 @@ startAsTranslator(void)
   err =
     fsys_startup (bootstrap, 0, control, MACH_MSG_TYPE_COPY_SEND, &realnode);
 
-  dprintf("control port is %ld\n", control);
-
   if (err)
     error (1, err, "Starting up translator");
+
+  dprintf("control port is %ld\n", control);
 
   mach_call (mach_port_deallocate (mach_task_self (), bootstrap));
   mach_call (mach_port_deallocate (mach_task_self (), realnode));
@@ -870,15 +883,6 @@ main (int argc, char **argv)
 
   if (serverMode)
     {
-      /* Open root as filesystem for readonly access.  This is the
-       * first port we'll present to our clients
-       */
-      first_port = file_name_lookup ("/", O_RDONLY, 0);
-      if (first_port == MACH_PORT_NULL)
-        {
-          error (1, 0, "Can't open / as first_port");
-        }
-      dprintf("first_port is %ld\n", first_port);
       tcpServer();
     }
   else
