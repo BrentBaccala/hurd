@@ -1,25 +1,59 @@
 /* -*- mode: C++; indent-tabs-mode: nil -*-
 
-   Mach/Hurd Network Server / Translator
+   netmsg - Mach/Hurd Network Server / Translator
+
+   This is a Hurd-based proxy for passing Mach messages across a
+   TCP/IP connection.
 
    Copyright (C) 2016 Brent Baccala <cosine@freesoft.org>
 
-   This program is free software; you can redistribute it and/or
-   modify it under the terms of the GNU General Public License as
-   published by the Free Software Foundation; either version 2, or (at
-   your option) any later version.
+   GNU General Public License version 2 or later (your option)
 
-   This program is distributed in the hope that it will be useful, but
-   WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-   General Public License for more details.
+   The protocol is very simple.  There is no initialization, no
+   control packets, *** NO SECURITY ***, you just open the connection
+   and start passing Mach messages across it.  Default port number is
+   2345.
 
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   Mach messages are transmitted almost unchanged.  The receiver
+   "sees" the sender's port number space.  On the other side of the
+   full duplex connection, the roles are reversed, but the principle
+   is the same - each side sees the other side's port space when it
+   receives messages.
+
+   There is only one modification made by the sender, and that's to
+   the destination port of the message itself.  The destination port
+   number in a network message falls into one of two cases.  It's
+   either the address of a RECEIVE right in the recipient's port
+   space, or its the address of a SEND right in the sender's port
+   space.  In the later case, the sender translates the port number
+   from its own space into the recipient's port space.  It's the only
+   part of a network message that uses the recipient's port space.
+
+   'netmsg' can be receiving a Mach message over IPC for one of two
+   reasons.  Either a local process passed us a RECEIVE right, or the
+   remote peer passed us a SEND (or SEND ONCE) right.  Either
+   situation will causes messages to be received via IPC, but the two
+   cases must be handled separately.  RECEIVE rights are interpreted
+   by the recipient (like everything else in a Mach message), but
+   SEND rights have to be translated from the sender's
+
+   If the message came on a RECEIVE right that we got earlier via IPC,
+   then the remote peer knows about this port, because it saw its port
+   number in a RECEIVE right when the earlier message was relayed
+   across the network.  In this case, the sender do nothing with the
+   port number and sends it on across the TCP stream.
+
+   On the other hand, if the message is targeted at a SEND right that
+   was received earlier over TCP, we created a local receive right,
+   produced a proxy send right, and that's what the message came in
+   on.  Our network peer has never seen any of these port numbers, so
+   we need to translate the local RECEIVE right into remote SEND right,
+   and we know its remote port number because that's what came in
+   earlier over the network.
 
    XXX known issues XXX
 
+   - no out-of-line messages
    - no byte order swapping
    - if sends (either network or IPC) block, the server blocks
    - can't detect if a port is sent across the net and returned back
