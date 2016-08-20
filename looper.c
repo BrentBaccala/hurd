@@ -26,6 +26,7 @@
 #include <error.h>
 #include <version.h>
 #include <mach_error.h>
+#include <assert.h>
 
 mach_port_t realnode;
 
@@ -130,12 +131,23 @@ main (int argc, char **argv)
                            max_size, control,
                            MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
 
-      if (msg->msgh_remote_port != MACH_PORT_NULL)
-	{
-	  mach_port_t receive_port;
-	  mach_port_t sendonce_port;
-	  mach_msg_type_name_t acquired_type;
+      mach_msg_bits_t complex = msg->msgh_bits & MACH_MSGH_BITS_COMPLEX;
+      mach_msg_type_name_t local_type = MACH_MSGH_BITS_LOCAL (msg->msgh_bits);
+      mach_msg_type_name_t remote_type = MACH_MSGH_BITS_REMOTE (msg->msgh_bits);
 
+      mach_port_t receive_port;
+      mach_port_t sendonce_port;
+      mach_msg_type_name_t acquired_type;
+
+      switch (remote_type)
+	{
+	case MACH_MSG_TYPE_PORT_SEND_ONCE:
+
+#if 0
+	  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &receive_port));
+	  msg->msgh_local_port = receive_port;
+	  remote_type = MACH_MSG_TYPE_MAKE_SEND_ONCE;
+#else
 	  /* The unusual logic below exercises a bug in rpctrace.
 	   *
 	   * Normal RPC operation is to supply a receive port to
@@ -153,29 +165,36 @@ main (int argc, char **argv)
 	   */
 
 	  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &receive_port));
-	  //mach_call (mach_port_insert_right (mach_task_self (), receive_port, receive_port,
-	  //					     MACH_MSG_TYPE_MAKE_SEND));
 	  mach_call (mach_port_extract_right (mach_task_self (), receive_port,
 					      MACH_MSG_TYPE_MAKE_SEND_ONCE, &sendonce_port, &acquired_type));
-	  //msg->msgh_local_port = receive_port;
 	  msg->msgh_local_port = sendonce_port;
+#endif
+
+	  break;
+
+	case MACH_MSG_TYPE_PORT_SEND:
+
+	  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &receive_port));
+	  mach_call (mach_port_insert_right (mach_task_self (), receive_port, receive_port,
+					     MACH_MSG_TYPE_MAKE_SEND));
+
+	  msg->msgh_local_port = receive_port;
+
+	  break;
+
+	case 0:
+
+	  assert(msg->msgh_remote_port == MACH_PORT_NULL);
+	  break;
+
+	default:
+	  error(1, 0, "strange reply port type");
 	}
-      else
-	{
-	  msg->msgh_local_port = MACH_PORT_NULL;
-	}
+
+      local_type = MACH_MSG_TYPE_PORT_SEND;
       msg->msgh_remote_port = first_port;
 
-      mach_msg_bits_t complex = msg->msgh_bits & MACH_MSGH_BITS_COMPLEX;
-
-      //mach_msg_type_name_t this_type = MACH_MSGH_BITS_LOCAL (msg->msgh_bits);
-      mach_msg_type_name_t this_type = MACH_MSG_TYPE_PORT_SEND;
-
-      // mach_msg_type_name_t reply_type = MACH_MSGH_BITS_REMOTE (msg->msgh_bits);
-      //mach_msg_type_name_t reply_type = MACH_MSG_TYPE_PORT_SEND;
-      mach_msg_type_name_t reply_type = MACH_MSG_TYPE_PORT_SEND_ONCE;
-
-      msg->msgh_bits = complex | MACH_MSGH_BITS (this_type, reply_type);
+      msg->msgh_bits = complex | MACH_MSGH_BITS (local_type, remote_type);
 
       mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
                           0, MACH_PORT_NULL,
