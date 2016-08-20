@@ -126,8 +126,8 @@ main (int argc, char **argv)
       char buffer[max_size];
       mach_msg_header_t * const msg = (mach_msg_header_t *) (buffer);
 
-      mach_call (mach_msg (msg, MACH_RCV_MSG,
-                           0, max_size, control,
+      mach_call (mach_msg (msg, MACH_RCV_MSG, 0,
+                           max_size, control,
                            MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
 
       if (msg->msgh_remote_port != MACH_PORT_NULL)
@@ -135,6 +135,22 @@ main (int argc, char **argv)
 	  mach_port_t receive_port;
 	  mach_port_t sendonce_port;
 	  mach_msg_type_name_t acquired_type;
+
+	  /* The unusual logic below exercises a bug in rpctrace.
+	   *
+	   * Normal RPC operation is to supply a receive port to
+	   * mach_msg() with MACH_MSG_TYPE_MAKE_SEND_ONCE.  In that case,
+	   * rpctrace sees the send once port for the first time
+	   * when the RPC message is sent.
+	   *
+	   * This code extracts a send once right from the receive
+	   * port, then moves it during the upcoming RPC call.  This
+	   * causes rpctrace to see the port an extra time, right at
+	   * the beginning, when it comes back in the reply to
+	   * mach_port_extract_right(), and it gets wrapped.  rpctrace
+	   * then sees it again during the actual RPC call, and double
+	   * wraps it, which is a bug in rpctrace.
+	   */
 
 	  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &receive_port));
 	  //mach_call (mach_port_insert_right (mach_task_self (), receive_port, receive_port,
@@ -152,7 +168,9 @@ main (int argc, char **argv)
 
       mach_msg_bits_t complex = msg->msgh_bits & MACH_MSGH_BITS_COMPLEX;
 
-      mach_msg_type_name_t this_type = MACH_MSGH_BITS_LOCAL (msg->msgh_bits);
+      //mach_msg_type_name_t this_type = MACH_MSGH_BITS_LOCAL (msg->msgh_bits);
+      mach_msg_type_name_t this_type = MACH_MSG_TYPE_PORT_SEND;
+
       // mach_msg_type_name_t reply_type = MACH_MSGH_BITS_REMOTE (msg->msgh_bits);
       //mach_msg_type_name_t reply_type = MACH_MSG_TYPE_PORT_SEND;
       mach_msg_type_name_t reply_type = MACH_MSG_TYPE_PORT_SEND_ONCE;
@@ -160,7 +178,7 @@ main (int argc, char **argv)
       msg->msgh_bits = complex | MACH_MSGH_BITS (this_type, reply_type);
 
       mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
-                          0, first_port,
+                          0, MACH_PORT_NULL,
                           MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
     }
 
