@@ -24,9 +24,9 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <error.h>
-#include <version.h>
 #include <mach_error.h>
 #include <assert.h>
+#include "version.h"
 
 mach_port_t realnode;
 

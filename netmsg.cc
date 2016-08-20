@@ -66,7 +66,6 @@
 #include <errno.h>
 #include <error.h>
 #include <argp.h>
-#include <version.h>
 #include <assert.h>
 
 #include <unistd.h>
@@ -87,6 +86,8 @@ extern "C" {
 #include <hurd.h>
 #include <hurd/fsys.h>
 };
+
+#include "version.h"
 
 /* mach_error()'s first argument isn't declared const, and we usually pass it a string */
 #pragma GCC diagnostic ignored "-Wwrite-strings"
