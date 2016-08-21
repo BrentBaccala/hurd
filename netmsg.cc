@@ -96,11 +96,12 @@ extern "C" {
 #include <hurd.h>
 #include <hurd/fsys.h>
 #include "fsys_S.h"
+
+  extern int fsys_server (mach_msg_header_t *, mach_msg_header_t *);
 };
 
 #include "version.h"
 
-extern int fsys_server (mach_msg_header_t *, mach_msg_header_t *);
 
 /* mach_error()'s first argument isn't declared const, and we usually pass it a string */
 #pragma GCC diagnostic ignored "-Wwrite-strings"
@@ -771,6 +772,15 @@ tcpClient(const char * hostname)
 }
 
 void
+run_fsysServer_on_port(mach_port_t control)
+{
+  while (1)
+    {
+      mach_call (mach_msg_server (fsys_server, 0, control));
+    }
+}
+
+void
 tcpServer(void)
 {
   int listenSocket;
@@ -848,22 +858,26 @@ tcpServer(void)
         }
       else
         {
-          /* Open root as filesystem for readonly access.  This is the
-           * first port we'll present to our clients
-           */
-          // XXX our failure to confine this to a class prevents the server from handling multiple clients simultaneously
-          first_port = file_name_lookup ("/", O_RDONLY, 0);
-          if (first_port == MACH_PORT_NULL)
-            {
-              error (1, 0, "Can't open / as first_port");
-            }
+          /* Start a fsys server on a newly created first_port */
+
+          mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &first_port));
+          mach_call (mach_port_insert_right (mach_task_self (), first_port, first_port,
+                                             MACH_MSG_TYPE_MAKE_SEND));
+
+          new std::thread(run_fsysServer_on_port, first_port);
 
           dprintf("first_port is %ld\n", first_port);
 
           /* Spawn a new thread to handle the new socket
            *
+           * There's no race condition here on first_port.  We've
+           * allocated the port successfully, so we can send messages
+           * on it (and they'll be queued) even if the fsys server
+           * isn't receiving messages yet.
+           *
            * XXX maybe we should do something to collect dead threads
            */
+
           new std::thread(tcpHandler, newSocket);
         }
     }
