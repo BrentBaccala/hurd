@@ -57,6 +57,7 @@
    - no byte order swapping
    - if sends (either network or IPC) block, the server blocks
    - can't detect if a port is sent across the net and returned back
+   - no-senders notifications don't work
 */
 
 #include <stdio.h>
@@ -110,7 +111,7 @@ extern "C" {
 
 /* debugging messages */
 
-#if 1
+#if 0
 #define dprintf(f, x...)        fprintf (stderr, f, ##x)
 #else
 #define dprintf(f, x...)        (void) 0
@@ -567,6 +568,25 @@ translateHeader(mach_msg_header_t * const msg)
         }
 
       msg->msgh_bits &= ~MACH_MSGH_BITS_REMOTE_TRANSLATE;
+    }
+
+  /* Send right will be consumed unless we turn the MAKE_SEND into
+   * a COPY_SEND.  For first_port, this is exactly what we want.
+   *
+   * For a remote send right, we can't tell if its send right count
+   * has gone to zero, so we just keep it alive.
+   *
+   * XXX this is a bug
+   *
+   * XXX the remote should track no-senders notifications, because
+   * we might have programs that count on getting them
+   *
+   * What about a local receive right?
+   */
+
+  if (this_type == MACH_MSG_TYPE_PORT_SEND)
+    {
+      this_type = MACH_MSG_TYPE_COPY_SEND;
     }
 
   switch (reply_type)
