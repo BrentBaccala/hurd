@@ -81,13 +81,26 @@
 
 #include <ext/stdio_filebuf.h>
 
+/* XXX For parse_opt(), we want constants from the error_t enum, and
+ * not preprocessor defines for ARGP_ERR_UNKNOWN (E2BIG) and EINVAL.
+ */
+
+#undef E2BIG
+#undef EINVAL
+#undef EOPNOTSUPP
+#undef EIEIO
+#undef ENOMEM
+
 extern "C" {
 #include <mach_error.h>
 #include <hurd.h>
 #include <hurd/fsys.h>
+#include "fsys_S.h"
 };
 
 #include "version.h"
+
+extern int fsys_server (mach_msg_header_t *, mach_msg_header_t *);
 
 /* mach_error()'s first argument isn't declared const, and we usually pass it a string */
 #pragma GCC diagnostic ignored "-Wwrite-strings"
@@ -124,13 +137,6 @@ static const char doc[] = "Network message server."
 "\vIn server mode, the program waits for incoming TCP connections."
 "\n"
 "\nWhen run as a translator, the program connects to a netmsg server at HOSTNAME.";
-
-/* XXX For parse_opt(), we want constants from the error_t enum, and
- * not preprocessor defines for ARGP_ERR_UNKNOWN (E2BIG) and EINVAL.
- */
-
-#undef E2BIG
-#undef EINVAL
 
 /* Parse a single option/argument.  */
 static error_t
@@ -908,6 +914,111 @@ startAsTranslator(void)
   mach_call (mach_port_deallocate (mach_task_self (), proc));
 
   tcpClient(targetHost);
+}
+
+/*********** fsys (filesystem) server  ***********
+
+ These routines implement the RPC server side of an fsys server.
+
+ This is the fsys server that runs on the server and is presented
+ across the network to the translator/client as its initial port.
+
+ We need "C" linkage since these routines will be called by a
+ MIG-generated RPC server coded in C.
+
+ */
+
+#define error_t kern_return_t
+
+extern "C" {
+
+error_t
+S_fsys_getroot (mach_port_t fsys_t,
+		mach_port_t dotdotnode,
+		uid_t *uids, size_t nuids,
+		uid_t *gids, size_t ngids,
+		int flags,
+		retry_type *do_retry,
+		char *retry_name,
+		mach_port_t *ret,
+		mach_msg_type_name_t *rettype)
+{
+  return EOPNOTSUPP;
+}
+
+error_t
+S_fsys_startup (mach_port_t bootstrap, int flags, mach_port_t control,
+		mach_port_t *real, mach_msg_type_name_t *realtype)
+{
+  return EOPNOTSUPP;
+}
+
+error_t
+S_fsys_goaway (mach_port_t control, int flags)
+{
+  exit (0);
+}
+
+error_t
+S_fsys_syncfs (mach_port_t control,
+	       int wait,
+	       int recurse)
+{
+  return 0;
+}
+
+error_t
+S_fsys_set_options (mach_port_t control,
+		    char *data, mach_msg_type_number_t len,
+		    int do_children)
+{
+  return EOPNOTSUPP;
+}
+
+error_t
+S_fsys_get_options (mach_port_t control,
+		    char **data, mach_msg_type_number_t *len)
+{
+  return EOPNOTSUPP;
+}
+
+error_t
+S_fsys_getfile (mach_port_t control,
+		uid_t *uids, size_t nuids,
+		uid_t *gids, size_t ngids,
+		char *handle, size_t handllen,
+		mach_port_t *pt,
+		mach_msg_type_name_t *pttype)
+{
+  return EOPNOTSUPP;
+}
+
+error_t
+S_fsys_getpriv (mach_port_t control,
+		mach_port_t *host_priv, mach_msg_type_name_t *host_priv_type,
+		mach_port_t *dev_master, mach_msg_type_name_t *dev_master_type,
+		task_t *fs_task, mach_msg_type_name_t *fs_task_type)
+{
+  return EOPNOTSUPP;
+}
+
+error_t
+S_fsys_init (mach_port_t control,
+	   mach_port_t reply,
+	   mach_msg_type_name_t replytype,
+	   mach_port_t proc,
+	   auth_t auth)
+{
+  return EOPNOTSUPP;
+}
+
+error_t
+S_fsys_forward (mach_port_t server, mach_port_t requestor,
+		char *argz, size_t argz_len)
+{
+  return EOPNOTSUPP;
+}
+
 }
 
 int
