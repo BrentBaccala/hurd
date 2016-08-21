@@ -110,7 +110,7 @@ extern "C" {
 
 /* debugging messages */
 
-#if 0
+#if 1
 #define dprintf(f, x...)        fprintf (stderr, f, ##x)
 #else
 #define dprintf(f, x...)        (void) 0
@@ -138,6 +138,11 @@ static const char doc[] = "Network message server."
 "\vIn server mode, the program waits for incoming TCP connections."
 "\n"
 "\nWhen run as a translator, the program connects to a netmsg server at HOSTNAME.";
+
+std::map<unsigned int, const char *> mach_port_type_to_str =
+  {{MACH_MSG_TYPE_PORT_SEND, "SEND"},
+   {MACH_MSG_TYPE_PORT_SEND_ONCE, "SEND ONCE"},
+   {MACH_MSG_TYPE_PORT_RECEIVE, "RECEIVE"}};
 
 /* Parse a single option/argument.  */
 static error_t
@@ -217,6 +222,8 @@ ipcHandler(std::ostream * const network)
 
   mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &my_sendonce_receive_port));
 
+  dprintf("my_sendonce_receive_port = %ld\n", my_sendonce_receive_port);
+
   /* move the receive right into the portset so we'll be listening on it */
   mach_call (mach_port_move_member (mach_task_self (), my_sendonce_receive_port, portset));
 
@@ -283,9 +290,13 @@ ipcHandler(std::ostream * const network)
         {
           /* translate */
           mach_port_t remote_port = send_once_ports_by_local[msg->msgh_local_port];
+
+          dprintf("Translating dest port %ld to %ld\n", msg->msgh_local_port, remote_port);
+
           send_once_ports_by_local.erase(msg->msgh_local_port);
           send_once_ports_by_remote.erase(remote_port);
           msg->msgh_local_port = remote_port;
+
           /* XXX it's a send once port; we can deallocate the receive right now */
         }
       else
@@ -493,6 +504,8 @@ translatePort2(const mach_port_t port, const unsigned int type)
       send_once_ports_by_remote[port] = newport;
       send_once_ports_by_local[newport] = port;
 
+      dprintf("translating port %ld (SEND ONCE) ---> %ld (recv %ld)\n", port, sendonce_port, newport);
+
       return sendonce_port;
 
     default:
@@ -506,7 +519,7 @@ translatePort(const mach_port_t port, const unsigned int type)
 {
   mach_port_t result = translatePort2(port, type);
 
-  dprintf("translating port %ld (%d) ---> %ld\n", port, type, result);
+  dprintf("translating port %ld (%s) ---> %ld\n", port, mach_port_type_to_str[type], result);
 
   return result;
 }
