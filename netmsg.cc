@@ -111,7 +111,7 @@ extern "C" {
 
 /* debugging messages */
 
-#if 0
+#if 1
 #define dprintf(f, x...)        fprintf (stderr, f, ##x)
 #else
 #define dprintf(f, x...)        (void) 0
@@ -990,7 +990,23 @@ S_fsys_getroot (mach_port_t fsys_t,
 		mach_port_t *ret,
 		mach_msg_type_name_t *rettype)
 {
-  return EOPNOTSUPP;
+  file_t node = file_name_lookup ("/", flags, 0);
+
+  if (node == MACH_PORT_NULL)
+    return errno;
+
+  *ret = node;
+  *rettype = MACH_MSG_TYPE_MOVE_SEND;
+
+  /* XXX maybe FS_RETRY_REAUTH - what about authentication ? */
+  /* XXX I'll bet we're authenticated as the netmsg server itself - probably root! */
+
+  *do_retry = FS_RETRY_NORMAL;
+  retry_name[0] = '\0';
+
+  dprintf("fsys_getroot returning port %ld\n", node);
+
+  return ESUCCESS;
 }
 
 error_t
