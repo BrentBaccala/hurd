@@ -111,7 +111,7 @@ extern "C" {
 
 /* debugging messages */
 
-#if 1
+#if 0
 #define dprintf(f, x...)        fprintf (stderr, f, ##x)
 #else
 #define dprintf(f, x...)        (void) 0
@@ -213,6 +213,67 @@ std::map<mach_port_t, mach_port_t> send_once_ports_by_local;    /* map local rec
 #define MACH_MSGH_BITS_REMOTE_TRANSLATE 0x04000000
 
 void
+transmitOOLdata(mach_msg_header_t * const msg, std::ostream & os)
+{
+  mach_msg_type_t * ptr = reinterpret_cast<mach_msg_type_t *>(msg + 1);
+
+  while (reinterpret_cast<int8_t *>(ptr) - reinterpret_cast<int8_t *>(msg) < static_cast<int>(msg->msgh_size))
+    {
+      unsigned int name;
+      unsigned int nelems;
+      unsigned int elem_size_bits;
+
+      const unsigned int header_size = ptr->msgt_longform ? sizeof(mach_msg_type_long_t) : sizeof(mach_msg_type_t);
+
+      if (! ptr->msgt_longform)
+        {
+          name = ptr->msgt_name;
+          nelems = ptr->msgt_number;
+          elem_size_bits = ptr->msgt_size;
+        }
+      else
+        {
+          const mach_msg_type_long_t * longptr = reinterpret_cast<mach_msg_type_long_t *>(ptr);
+
+          name = longptr->msgtl_name;
+          nelems = longptr->msgtl_number;
+          elem_size_bits = longptr->msgtl_size;
+        }
+
+      unsigned int data_length = (nelems * elem_size_bits + 7) / 8;
+
+      // round up to long word boundary
+      data_length = ((data_length + sizeof(long) - 1) / sizeof(long)) * sizeof(long);
+
+      // XXX
+      //
+      // "Security-conscious receivers should exercise caution when
+      // dealing with out-of-line memory from un-trustworthy sources,
+      // because the memory may be backed by an unreliable memory
+      // manager."  - Mach Kernel Interface
+
+      // XXX shouldn't deallocate until we know the message has been delivered
+
+      if ((! ptr->msgt_inline) && (data_length > 0))
+        {
+          vm_address_t data_ptr_ptr = reinterpret_cast<vm_address_t>(ptr) + header_size;
+          os.write(* reinterpret_cast<char **>(data_ptr_ptr), data_length);
+          vm_deallocate(mach_task_self(), * reinterpret_cast<vm_address_t *>(data_ptr_ptr), data_length);
+        }
+
+      // increment to next data item
+      if (ptr->msgt_inline)
+        {
+          ptr = reinterpret_cast<mach_msg_type_t *> (reinterpret_cast<int8_t *>(ptr) + data_length + header_size);
+        }
+      else
+        {
+          ptr = reinterpret_cast<mach_msg_type_t *> (reinterpret_cast<int8_t *>(ptr) + sizeof(void *) + header_size);
+        }
+    }
+}
+
+void
 ipcHandler(std::ostream * const network)
 {
   const mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
@@ -307,6 +368,7 @@ ipcHandler(std::ostream * const network)
         }
 
       network->write(buffer, msg->msgh_size);
+      transmitOOLdata(msg, *network);
       network->flush();
 
       dprintf("sent network message\n");
@@ -614,8 +676,12 @@ translateHeader(mach_msg_header_t * const msg)
   msg->msgh_bits = complex | MACH_MSGH_BITS (this_type, reply_type);
 }
 
+/* translateMessage() will also read any out-of-line data from the
+ * input stream, which is why it needs its second argument.
+ */
+
 void
-translateMessage(mach_msg_header_t * const msg)
+translateMessage(mach_msg_header_t * const msg, std::istream & is)
 {
   translateHeader(msg);
 
@@ -628,9 +694,6 @@ translateMessage(mach_msg_header_t * const msg)
       unsigned int elem_size_bits;
 
       const unsigned int header_size = ptr->msgt_longform ? sizeof(mach_msg_type_long_t) : sizeof(mach_msg_type_t);
-
-      // XXX don't handle out-of-line data yet
-      assert(ptr->msgt_inline);
 
       if (! ptr->msgt_longform)
         {
@@ -647,6 +710,25 @@ translateMessage(mach_msg_header_t * const msg)
           elem_size_bits = longptr->msgtl_size;
         }
 
+      unsigned int data_length = (nelems * elem_size_bits + 7) / 8;
+
+      // round up to long word boundary
+      data_length = ((data_length + sizeof(long) - 1) / sizeof(long)) * sizeof(long);
+
+      vm_address_t data_ptr;
+
+      if (ptr->msgt_inline)
+        {
+          data_ptr = reinterpret_cast<vm_address_t>(ptr) + header_size;
+        }
+      else if (data_length > 0)
+        {
+          mach_call (vm_allocate(mach_task_self(), &data_ptr, data_length, 1));
+          is.read(reinterpret_cast<char *>(data_ptr), data_length);
+          vm_address_t data_ptr_ptr = reinterpret_cast<vm_address_t>(ptr) + header_size;
+          * reinterpret_cast<vm_address_t *>(data_ptr_ptr) = data_ptr;
+        }
+
       switch (name)
         {
         case MACH_MSG_TYPE_MOVE_RECEIVE:
@@ -657,7 +739,8 @@ translateMessage(mach_msg_header_t * const msg)
         case MACH_MSG_TYPE_MAKE_SEND_ONCE:
 
           {
-            mach_port_t * ports = reinterpret_cast<mach_port_t *>(reinterpret_cast<int8_t *>(ptr) + header_size);
+            //mach_port_t * ports = reinterpret_cast<mach_port_t *>(reinterpret_cast<int8_t *>(ptr) + header_size);
+            mach_port_t * ports = reinterpret_cast<mach_port_t *>(data_ptr);
 
             for (unsigned int i = 0; i < nelems; i ++)
               {
@@ -672,16 +755,15 @@ translateMessage(mach_msg_header_t * const msg)
           ;
         }
 
-      unsigned int length_bytes = (nelems * elem_size_bits + 7) / 8;
-
-      // round up to long word boundary
-      length_bytes = ((length_bytes + sizeof(long) - 1) / sizeof(long)) * sizeof(long);
-
-      // add header
-      length_bytes += header_size;
-
       // increment to next data item
-      ptr = reinterpret_cast<mach_msg_type_t *> (reinterpret_cast<int8_t *>(ptr) + length_bytes);
+      if (ptr->msgt_inline)
+        {
+          ptr = reinterpret_cast<mach_msg_type_t *> (reinterpret_cast<int8_t *>(ptr) + data_length + header_size);
+        }
+      else
+        {
+          ptr = reinterpret_cast<mach_msg_type_t *> (reinterpret_cast<int8_t *>(ptr) + sizeof(void *) + header_size);
+        }
     }
 }
 
@@ -747,7 +829,7 @@ tcpHandler(int inSocket)
           return;
         }
 
-      translateMessage(msg);
+      translateMessage(msg, is);
 
       dprintf("sending IPC message to port %ld\n", msg->msgh_remote_port);
 
