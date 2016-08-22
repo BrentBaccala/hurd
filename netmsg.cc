@@ -2,17 +2,27 @@
 
    netmsg - Mach/Hurd Network Server / Translator
 
-   This is a Hurd-based proxy for passing Mach messages across a
+   This is a GNU/Hurd network proxy for passing Mach messages across a
    TCP/IP connection.
 
    Copyright (C) 2016 Brent Baccala <cosine@freesoft.org>
 
    GNU General Public License version 2 or later (your option)
 
+   Basic usage:
+
+   SERVER:  netmsg -s
+   CLIENT:  settrans -a node netmsg SERVER-HOSTNAME
+
    The protocol is very simple.  There is no initialization, no
    control packets, *** NO SECURITY ***, you just open the connection
-   and start passing Mach messages across it.  Default port number is
-   2345.
+   and start passing Mach messages across it.  Default TCP port number
+   is 2345.
+
+   Initially, the server presents a fsys_server on port 0, a special
+   port number, and the only port available when a connection starts.
+   The first message is invariably fsys_getroot, sent from the
+   client/translator to server port 0.
 
    Mach messages are transmitted almost unchanged.  The receiver
    "sees" the sender's port number space.  On the other side of the
@@ -34,7 +44,7 @@
    remote peer passed us a SEND (or SEND ONCE) right.  Either
    situation will causes messages to be received via IPC, but the two
    cases must be handled separately.  RECEIVE rights are interpreted
-   by the recipient (like everything else in a Mach message), but
+   by the recipient (like everything else in a netmsg message), but
    SEND rights have to be translated from the sender's
 
    If the message came on a RECEIVE right that we got earlier via IPC,
@@ -51,13 +61,22 @@
    and we know its remote port number because that's what came in
    earlier over the network.
 
+   Out-of-line memory areas are transmitted immediately after the Mach
+   message, padded to a multiple of sizeof(long), in the order they
+   appeared in the Mach message.
+
    XXX known issues XXX
 
-   - no out-of-line messages
    - no byte order swapping
    - if sends (either network or IPC) block, the server blocks
    - can't detect if a port is sent across the net and returned back
    - no-senders notifications don't work
+   - no Hurd authentication (it runs with the server's permissions)
+   - the memory_object_* routines don't work
+   - can't handle multiple translators attaching to one server
+
+   - emacs over netmsg hangs; last RPC is io_reauthenticate
+   - exec'ing a file over netmsg hangs; last RPC is memory_object_init
 */
 
 #include <stdio.h>
@@ -102,7 +121,6 @@ extern "C" {
 };
 
 #include "version.h"
-
 
 /* mach_error()'s first argument isn't declared const, and we usually pass it a string */
 #pragma GCC diagnostic ignored "-Wwrite-strings"
@@ -193,6 +211,16 @@ mach_call(kern_return_t err)
     }
 }
 
+/* We use this unused bit in the Mach message header to indicate that
+ * the receiver should translate the message's destination port.
+ */
+
+#define MACH_MSGH_BITS_REMOTE_TRANSLATE 0x04000000
+
+#if (MACH_MSGH_BITS_UNUSED & MACH_MSGH_BITS_REMOTE_TRANSLATE) != MACH_MSGH_BITS_REMOTE_TRANSLATE
+#error MACH_MSGH_BITS_REMOTE_TRANSLATE seems to be in use!
+#endif
+
 // XXX most of this belongs in a class
 
 mach_port_t first_port = MACH_PORT_NULL;    /* server sets this to a send right on underlying node; client leaves it MACH_PORT_NULL */
@@ -209,8 +237,6 @@ std::map<mach_port_t, mach_port_t> send_ports_by_local;    /* map local receive 
 
 std::map<mach_port_t, mach_port_t> send_once_ports_by_remote;    /* map remote port to local port; these local ports have receive rights */
 std::map<mach_port_t, mach_port_t> send_once_ports_by_local;    /* map local receive port to remote send port */
-
-#define MACH_MSGH_BITS_REMOTE_TRANSLATE 0x04000000
 
 void
 transmitOOLdata(mach_msg_header_t * const msg, std::ostream & os)
@@ -973,7 +999,15 @@ tcpServer(void)
         }
       else
         {
-          /* Start a fsys server on a newly created first_port */
+          /* Start a fsys server on a newly created first_port.
+           *
+           * The order here is important to avoid a race condition.
+           *
+           * We allocate the port and make a SEND right before the
+           * thread clone, so we can send messages to the port (and
+           * they'll be queued) even if the fsys server isn't
+           * receiving messages yet.
+           */
 
           mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &first_port));
           mach_call (mach_port_insert_right (mach_task_self (), first_port, first_port,
@@ -984,11 +1018,6 @@ tcpServer(void)
           dprintf("first_port is %ld\n", first_port);
 
           /* Spawn a new thread to handle the new socket
-           *
-           * There's no race condition here on first_port.  We've
-           * allocated the port successfully, so we can send messages
-           * on it (and they'll be queued) even if the fsys server
-           * isn't receiving messages yet.
            *
            * XXX maybe we should do something to collect dead threads
            */
