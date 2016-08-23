@@ -221,25 +221,73 @@ mach_call(kern_return_t err)
 #error MACH_MSGH_BITS_REMOTE_TRANSLATE seems to be in use!
 #endif
 
-// XXX most of this belongs in a class
+/* translator (network client) sets 'control' to a receive right that
+ * it passes back on its bootstrap port in an fsys_startup call;
+ * server leaves it MACH_PORT_NULL
+ */
 
-mach_port_t first_port = MACH_PORT_NULL;    /* server sets this to a send right on underlying node; client leaves it MACH_PORT_NULL */
+mach_port_t control = MACH_PORT_NULL;
 
-mach_port_t control = MACH_PORT_NULL;    /* translator (network client) sets this to a receive right; server leaves it MACH_PORT_NULL */
-mach_port_t portset = MACH_PORT_NULL;
-mach_port_t my_sendonce_receive_port = MACH_PORT_NULL;
+/* class netmsg - a single netmsg session
+ *
+ * translator/client will only have a single instance of this class
+ *
+ * servers will have an instance for every client that connects to them
+ */
 
-/* Maps remote RECEIVE rights to local SEND rights */
-std::map<mach_port_t, mach_port_t> receive_ports_by_remote;
+class netmsg
+{
 
-std::map<mach_port_t, mach_port_t> send_ports_by_remote;    /* map remote port to local port; these local ports have receive rights */
-std::map<mach_port_t, mach_port_t> send_ports_by_local;    /* map local receive port to remote send port */
+  mach_port_t first_port = MACH_PORT_NULL;    /* server sets this to a send right on underlying node; client leaves it MACH_PORT_NULL */
+  mach_port_t portset = MACH_PORT_NULL;
+  mach_port_t my_sendonce_receive_port = MACH_PORT_NULL;
 
-std::map<mach_port_t, mach_port_t> send_once_ports_by_remote;    /* map remote port to local port; these local ports have receive rights */
-std::map<mach_port_t, mach_port_t> send_once_ports_by_local;    /* map local receive port to remote send port */
+  /* Maps remote RECEIVE rights to local SEND rights */
+  std::map<mach_port_t, mach_port_t> receive_ports_by_remote;
+
+  std::map<mach_port_t, mach_port_t> send_ports_by_remote;    /* map remote port to local port; these local ports have receive rights */
+  std::map<mach_port_t, mach_port_t> send_ports_by_local;    /* map local receive port to remote send port */
+
+  std::map<mach_port_t, mach_port_t> send_once_ports_by_remote;    /* map remote port to local port; these local ports have receive rights */
+  std::map<mach_port_t, mach_port_t> send_once_ports_by_local;    /* map local receive port to remote send port */
+
+  /* Use a non-standard GNU extension to wrap the network socket in a
+   * C++ iostream that will provide buffering.
+   *
+   * XXX alternative to GNU - use boost?
+   *
+   * Error handling can be done with exception (upon request), or by
+   * testing fs to see if it's false.
+   */
+
+  __gnu_cxx::stdio_filebuf<char> filebuf_in;
+  __gnu_cxx::stdio_filebuf<char> filebuf_out;
+
+  std::istream is;
+  std::ostream os;
+
+  std::thread * ipcThread;
+  std::thread * tcpThread;
+  std::thread * fsysThread;
+
+  void transmitOOLdata(mach_msg_header_t * const msg);
+  void ipcHandler(void);
+
+  mach_port_t translatePort2(const mach_port_t port, const unsigned int type);
+  mach_port_t translatePort(const mach_port_t port, const unsigned int type);
+  void translateHeader(mach_msg_header_t * const msg);
+  void translateMessage(mach_msg_header_t * const msg);
+  void tcpHandler(void);
+
+public:
+
+  netmsg(int networkSocket);
+  ~netmsg();
+};
+
 
 void
-transmitOOLdata(mach_msg_header_t * const msg, std::ostream & os)
+netmsg::transmitOOLdata(mach_msg_header_t * const msg)
 {
   mach_msg_type_t * ptr = reinterpret_cast<mach_msg_type_t *>(msg + 1);
 
@@ -300,7 +348,7 @@ transmitOOLdata(mach_msg_header_t * const msg, std::ostream & os)
 }
 
 void
-ipcHandler(std::ostream * const network)
+netmsg::ipcHandler(void)
 {
   const mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
   char buffer[max_size];
@@ -393,9 +441,9 @@ ipcHandler(std::ostream * const network)
           msg->msgh_bits |= MACH_MSGH_BITS_REMOTE_TRANSLATE;
         }
 
-      network->write(buffer, msg->msgh_size);
-      transmitOOLdata(msg, *network);
-      network->flush();
+      os.write(buffer, msg->msgh_size);
+      transmitOOLdata(msg);
+      os.flush();
 
       dprintf("sent network message\n");
 
@@ -508,7 +556,7 @@ ipcHandler(std::ostream * const network)
  */
 
 mach_port_t
-translatePort2(const mach_port_t port, const unsigned int type)
+netmsg::translatePort2(const mach_port_t port, const unsigned int type)
 {
   switch (type)
     {
@@ -604,7 +652,7 @@ translatePort2(const mach_port_t port, const unsigned int type)
 }
 
 mach_port_t
-translatePort(const mach_port_t port, const unsigned int type)
+netmsg::translatePort(const mach_port_t port, const unsigned int type)
 {
   mach_port_t result = translatePort2(port, type);
 
@@ -616,7 +664,7 @@ translatePort(const mach_port_t port, const unsigned int type)
 /* We received a message across the network.  Translate its header. */
 
 void
-translateHeader(mach_msg_header_t * const msg)
+netmsg::translateHeader(mach_msg_header_t * const msg)
 {
   mach_msg_type_name_t this_type = MACH_MSGH_BITS_LOCAL (msg->msgh_bits);
   mach_msg_type_name_t reply_type = MACH_MSGH_BITS_REMOTE (msg->msgh_bits);
@@ -703,11 +751,11 @@ translateHeader(mach_msg_header_t * const msg)
 }
 
 /* translateMessage() will also read any out-of-line data from the
- * input stream, which is why it needs its second argument.
+ * input stream
  */
 
 void
-translateMessage(mach_msg_header_t * const msg, std::istream & is)
+netmsg::translateMessage(mach_msg_header_t * const msg)
 {
   translateHeader(msg);
 
@@ -794,35 +842,11 @@ translateMessage(mach_msg_header_t * const msg, std::istream & is)
 }
 
 void
-tcpHandler(int inSocket)
+netmsg::tcpHandler(void)
 {
   const mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
   char buffer[max_size];
   mach_msg_header_t * const msg = reinterpret_cast<mach_msg_header_t *> (buffer);
-
-  /* Use a non-standard GNU extension to wrap the socket in a C++
-   * iostream that will provide buffering.
-   *
-   * XXX alternative to GNU - use boost?
-   *
-   * Error handling can be done with exception (upon request), or by
-   * testing fs to see if it's false.
-   */
-
-  __gnu_cxx::stdio_filebuf<char> filebuf_in(inSocket, std::ios::in | std::ios::binary);
-  __gnu_cxx::stdio_filebuf<char> filebuf_out(inSocket, std::ios::out | std::ios::binary);
-  std::istream is(&filebuf_in);
-  std::ostream os(&filebuf_out);
-
-  /* Spawn a new thread to handle inbound Mach IPC messages.
-   *
-   * std::thread passes by value, so I use a pointer instead of a reference (yuck).
-   *
-   * See http://stackoverflow.com/questions/21048906
-   *
-   * XXX maybe we should do something to collect dead threads
-   */
-  new std::thread(ipcHandler, &os);
 
   dprintf("waiting for network messages\n");
 
@@ -852,10 +876,14 @@ tcpHandler(int inSocket)
           filebuf_in.close();
           //close(inSocket);
           /* XXX signal ipcHandler that the network socket died */
-          return;
+          //delete ipcThread;
+          //std::terminate();
+          exit(0);
+          //ipcThread->terminate();
+          //return;
         }
 
-      translateMessage(msg, is);
+      translateMessage(msg);
 
       dprintf("sending IPC message to port %ld\n", msg->msgh_remote_port);
 
@@ -865,6 +893,61 @@ tcpHandler(int inSocket)
                           0, msg->msgh_remote_port,
                           MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
 
+    }
+}
+
+void
+run_fsysServer_on_port(mach_port_t control)
+{
+  while (1)
+    {
+      mach_call (mach_msg_server (fsys_server, 0, control));
+    }
+}
+
+netmsg::netmsg(int networkSocket) :
+  filebuf_in(networkSocket, std::ios::in | std::ios::binary),
+  filebuf_out(networkSocket, std::ios::out | std::ios::binary),
+  is(&filebuf_in),
+  os(&filebuf_out)
+{
+  if (serverMode)
+    {
+      /* Spawn an fsys server on a newly created first_port.
+       *
+       * The order here is important to avoid a race condition.
+       *
+       * We allocate the port and make a SEND right before the
+       * thread clone, so we can send messages to the port (and
+       * they'll be queued) even if the fsys server isn't
+       * receiving messages yet.
+       */
+
+      mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &first_port));
+      mach_call (mach_port_insert_right (mach_task_self (), first_port, first_port,
+                                         MACH_MSG_TYPE_MAKE_SEND));
+
+      fsysThread = new std::thread(run_fsysServer_on_port, first_port);
+
+      dprintf("first_port is %ld\n", first_port);
+
+    }
+
+  /* Spawn threads to handle the new socket */
+
+  tcpThread = new std::thread(&netmsg::tcpHandler, this);
+  ipcThread = new std::thread(&netmsg::ipcHandler, this);
+}
+
+/* netmsg class destructor - collect our threads */
+
+netmsg::~netmsg()
+{
+  tcpThread->join();
+  ipcThread->join();
+  if (serverMode)
+    {
+      fsysThread->join();
     }
 }
 
@@ -909,16 +992,8 @@ tcpClient(const char * hostname)
       error (2, errno, "TCP connect");
     }
 
-  tcpHandler(newSocket);
-}
-
-void
-run_fsysServer_on_port(mach_port_t control)
-{
-  while (1)
-    {
-      mach_call (mach_msg_server (fsys_server, 0, control));
-    }
+  // this class's destructor will block until all its threads are collected
+  netmsg nm(newSocket);
 }
 
 void
@@ -999,30 +1074,7 @@ tcpServer(void)
         }
       else
         {
-          /* Start a fsys server on a newly created first_port.
-           *
-           * The order here is important to avoid a race condition.
-           *
-           * We allocate the port and make a SEND right before the
-           * thread clone, so we can send messages to the port (and
-           * they'll be queued) even if the fsys server isn't
-           * receiving messages yet.
-           */
-
-          mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &first_port));
-          mach_call (mach_port_insert_right (mach_task_self (), first_port, first_port,
-                                             MACH_MSG_TYPE_MAKE_SEND));
-
-          new std::thread(run_fsysServer_on_port, first_port);
-
-          dprintf("first_port is %ld\n", first_port);
-
-          /* Spawn a new thread to handle the new socket
-           *
-           * XXX maybe we should do something to collect dead threads
-           */
-
-          new std::thread(tcpHandler, newSocket);
+          new netmsg(newSocket);
         }
     }
 }
