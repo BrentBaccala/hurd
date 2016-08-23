@@ -19,10 +19,10 @@
    and start passing Mach messages across it.  Default TCP port number
    is 2345.
 
-   Initially, the server presents a fsys_server on port 0, a special
-   port number, and the only port available when a connection starts.
-   The first message is invariably fsys_getroot, sent from the
-   client/translator to server port 0.
+   Initially, the server presents a fsys_server on MACH_PORT_CONTROL,
+   a special port number, and the only port available when a
+   connection starts.  The first message is invariably fsys_getroot,
+   sent from the client/translator to server port MACH_PORT_CONTROL.
 
    Mach messages are transmitted almost unchanged.  The receiver
    "sees" the sender's port number space.  On the other side of the
@@ -220,6 +220,12 @@ mach_call(kern_return_t err)
 #error MACH_MSGH_BITS_REMOTE_TRANSLATE seems to be in use!
 #endif
 
+/* Reserved port used to identify the server's initial control port */
+
+/* XXX reserved by us; not necessarily by Mach! */
+
+const mach_port_t MACH_PORT_CONTROL = (~ 1);
+
 /* translator (network client) sets 'control' to a receive right that
  * it passes back on its bootstrap port in an fsys_startup call;
  * server leaves it MACH_PORT_NULL
@@ -414,7 +420,7 @@ netmsg::ipcHandler(void)
 
       if (msg->msgh_local_port == control)
         {
-          msg->msgh_local_port = MACH_PORT_NULL;
+          msg->msgh_local_port = MACH_PORT_CONTROL;
         }
       else if (send_ports_by_local.count(msg->msgh_local_port) == 1)
         {
@@ -557,6 +563,11 @@ netmsg::ipcHandler(void)
 mach_port_t
 netmsg::translatePort2(const mach_port_t port, const unsigned int type)
 {
+  if (port == MACH_PORT_NULL)
+    {
+      return MACH_PORT_NULL;
+    }
+
   switch (type)
     {
     case MACH_MSG_TYPE_MOVE_RECEIVE:
@@ -682,7 +693,7 @@ netmsg::translateHeader(mach_msg_header_t * const msg)
    * messages whose receive port needs translation.
    */
 
-  if (this_port == MACH_PORT_NULL)
+  if (this_port == MACH_PORT_CONTROL)
     {
       this_port = first_port;
     }
