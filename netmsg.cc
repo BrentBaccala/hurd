@@ -73,7 +73,6 @@
    - no-senders notifications don't work
    - no Hurd authentication (it runs with the server's permissions)
    - the memory_object_* routines don't work
-   - can't handle multiple translators attaching to one server
 
    - emacs over netmsg hangs; last RPC is io_reauthenticate
    - exec'ing a file over netmsg hangs; last RPC is memory_object_init
