@@ -126,14 +126,6 @@ extern "C" {
 
 #pragma GCC diagnostic warning "-Wold-style-cast"
 
-/* debugging messages */
-
-#if 0
-#define dprintf(f, x...)        fprintf (stderr, f, ##x)
-#else
-#define dprintf(f, x...)        (void) 0
-#endif
-
 const char * argp_program_version = STANDARD_HURD_VERSION (netmsg);
 
 const char * const defaultPort = "2345";
@@ -142,10 +134,19 @@ const char * targetHost;   /* required argument */
 
 bool serverMode = false;
 
+bool debugMode = false;
+
+template<typename... Args>
+void dprintf(Args... rest)
+{
+  if (debugMode) fprintf(stderr, rest...);
+}
+
 static const struct argp_option options[] =
   {
     { "port", 'p', "N", 0, "TCP port number" },
     { "server", 's', 0, 0, "server mode" },
+    { "debug", 'd', 0, 0, "debug messages" },
     { 0 }
   };
 
@@ -174,6 +175,10 @@ parse_opt (int key, char *arg, struct argp_state *state)
 
     case 's':
       serverMode = true;
+      break;
+
+    case 'd':
+      debugMode = true;
       break;
 
     case ARGP_KEY_ARG:
@@ -386,7 +391,7 @@ netmsg::ipcHandler(void)
                            0, max_size, portset,
                            MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
 
-      dprintf("received IPC message on port %ld\n", msg->msgh_local_port);
+      dprintf("received IPC message (%d) on port %ld\n", msg->msgh_id, msg->msgh_local_port);
 
       /* A message has been received via IPC.  Transmit it across the
        * network, letting the receiver translate it.
@@ -868,8 +873,6 @@ netmsg::tcpHandler(void)
       is.read(buffer, sizeof(mach_msg_header_t));
       if (is) is.read(buffer + sizeof(mach_msg_header_t), msg->msgh_size - sizeof(mach_msg_header_t));
 
-      dprintf("received network message(%d) for port %ld\n", msg->msgh_id, msg->msgh_local_port);
-
       if (! is)
         {
           /* Destroying the istream will do nothing to the underlying filebuf. */
@@ -892,6 +895,10 @@ netmsg::tcpHandler(void)
           //ipcThread->terminate();
           //return;
         }
+
+      dprintf("received network message(%d) for port %ld%s\n",
+              msg->msgh_id, msg->msgh_local_port,
+              msg->msgh_bits & MACH_MSGH_BITS_REMOTE_TRANSLATE ? "" : " (local)");
 
       translateMessage(msg);
 
