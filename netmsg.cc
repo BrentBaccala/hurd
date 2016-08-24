@@ -230,16 +230,23 @@ mach_call(kern_return_t err)
  * translation), or a vm_address_t (for passing to vm_deallocate).  No
  * type checking is done on any of these conversions, so use with
  * care...
+ *
+ * It is also possible to index into a data item using [].  However,
+ * this doesn't follow the usual C convention, since there are
+ * elements within the data items, as well as multiple data items.
+ * operator[] retreives the i'th element, operator++ advances to the
+ * next data item.
  */
 
 class mach_msg_data_ptr
 {
   int8_t * const ptr;
+  unsigned int name;
 
 public:
 
-  mach_msg_data_ptr(int8_t * const ptr) : ptr(ptr) { }
-  mach_msg_data_ptr(vm_address_t const ptr) : ptr(reinterpret_cast<int8_t *>(ptr)) { }
+  mach_msg_data_ptr(int8_t * const ptr, unsigned int name) : ptr(ptr), name(name) { }
+  mach_msg_data_ptr(vm_address_t const ptr, unsigned int name) : ptr(reinterpret_cast<int8_t *>(ptr)), name(name) { }
 
   operator char * ()
   {
@@ -248,12 +255,54 @@ public:
 
   operator mach_port_t * ()
   {
+    // XXX could check type
+    // XXX shouldn't really need this, if operator* returned a lvalue reference
     return reinterpret_cast<mach_port_t *>(ptr);
   }
 
   operator vm_address_t ()
   {
     return reinterpret_cast<vm_address_t>(ptr);
+  }
+
+  unsigned int operator* ()
+  {
+    switch (name)
+      {
+      case MACH_MSG_TYPE_BIT:
+        assert(0);
+
+      case MACH_MSG_TYPE_CHAR:
+      case MACH_MSG_TYPE_INTEGER_8:
+        return *ptr;
+
+      case MACH_MSG_TYPE_INTEGER_16:
+        return *reinterpret_cast<int16_t *>(ptr);
+
+      case MACH_MSG_TYPE_INTEGER_32:
+      case MACH_MSG_TYPE_MOVE_RECEIVE:
+      case MACH_MSG_TYPE_MOVE_SEND:
+      case MACH_MSG_TYPE_MOVE_SEND_ONCE:
+      case MACH_MSG_TYPE_COPY_SEND:
+      case MACH_MSG_TYPE_MAKE_SEND:
+      case MACH_MSG_TYPE_MAKE_SEND_ONCE:
+        return *reinterpret_cast<int32_t *>(ptr);
+
+      case MACH_MSG_TYPE_INTEGER_64:
+        return *reinterpret_cast<int64_t *>(ptr);
+
+      case MACH_MSG_TYPE_REAL:
+        assert(0);
+
+      case MACH_MSG_TYPE_STRING:
+        // XXX should be char *, but that would require a polymorphic
+        // return type, which seems way too much trouble for something
+        // that's just here for debugging
+        return reinterpret_cast<int32_t>(ptr);
+
+      default:
+        assert(0);
+      }
   }
 };
 
@@ -330,11 +379,41 @@ public:
   {
     if (is_inline())
       {
-        return mach_msg_data_ptr(ptr + header_size());
+        return mach_msg_data_ptr(ptr + header_size(), name());
       }
     else
       {
-        return mach_msg_data_ptr(* OOLptr());
+        return mach_msg_data_ptr(* OOLptr(), name());
+      }
+  }
+
+  unsigned int operator[] (int i)
+  {
+    assert(elemsize_bits() % 8 == 0);
+
+    // XXX no, I don't think string shouldn't have to be special here
+
+    if (is_inline())
+      {
+        if (name() == MACH_MSG_TYPE_STRING)
+          {
+            return mach_msg_data_ptr(ptr + header_size() + i*elemsize_bits()/8, name());
+          }
+        else
+          {
+            return * mach_msg_data_ptr(ptr + header_size() + i*elemsize_bits()/8, name());
+          }
+      }
+    else
+      {
+        if (name() == MACH_MSG_TYPE_STRING)
+          {
+            return mach_msg_data_ptr(* OOLptr() + i*elemsize_bits()/8, name());
+          }
+        else
+          {
+            return * mach_msg_data_ptr(* OOLptr() + i*elemsize_bits()/8, name());
+          }
       }
   }
 
@@ -897,6 +976,81 @@ netmsg::translateMessage(mach_msg_header_t * const msg)
     }
 }
 
+// XXX should be const...
+// dprintMessage(const mach_msg_header_t * const msg)
+
+void
+dprintMessage(mach_msg_header_t * const msg)
+{
+  dprintf("msg id %d to port %d (reply %d)\n", msg->msgh_id, msg->msgh_local_port, msg->msgh_remote_port);
+
+  for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
+    {
+      if (ptr.name() == MACH_MSG_TYPE_STRING)
+        {
+          dprintf("\"%s\" ", ptr.data());
+          continue;
+        }
+      if (ptr.nelems() > 32)
+        {
+          dprintf("%d", ptr.nelems());
+        }
+      if (ptr.nelems() > 1)
+        {
+          dprintf("{");
+        }
+      for (unsigned int i = 0; i < ptr.nelems() && i < 32; i ++)
+        {
+          if (i > 0)
+            {
+              dprintf(" ");
+            }
+          switch (ptr.name())
+            {
+
+            case MACH_MSG_TYPE_BIT:
+              assert(0);
+
+            case MACH_MSG_TYPE_CHAR:
+              // XXX why is this AND needed?
+              dprintf("%02x", ptr[i] & 0xff);
+              break;
+
+            case MACH_MSG_TYPE_INTEGER_8:
+            case MACH_MSG_TYPE_INTEGER_16:
+            case MACH_MSG_TYPE_INTEGER_32:
+            case MACH_MSG_TYPE_INTEGER_64:
+
+            case MACH_MSG_TYPE_MOVE_RECEIVE:
+            case MACH_MSG_TYPE_MOVE_SEND:
+            case MACH_MSG_TYPE_MOVE_SEND_ONCE:
+            case MACH_MSG_TYPE_COPY_SEND:
+            case MACH_MSG_TYPE_MAKE_SEND:
+            case MACH_MSG_TYPE_MAKE_SEND_ONCE:
+
+              dprintf("%d", ptr[i]);
+              break;
+
+            case MACH_MSG_TYPE_STRING:
+            case MACH_MSG_TYPE_REAL:
+              assert(0);
+            }
+        }
+      if (ptr.nelems() > 32)
+        {
+          dprintf("...");
+        }
+      if (ptr.nelems() > 1)
+        {
+          dprintf("}");
+        }
+
+      dprintf(" ");
+    }
+
+  dprintf("\n");
+}
+
 void
 netmsg::tcpHandler(void)
 {
@@ -942,6 +1096,9 @@ netmsg::tcpHandler(void)
               msg->msgh_bits & MACH_MSGH_BITS_REMOTE_TRANSLATE ? "" : " (local)");
 
       translateMessage(msg);
+
+      // wait until now to print it, since translateMessage receives OOL data
+      dprintMessage(msg);
 
       dprintf("sending IPC message to port %ld\n", msg->msgh_remote_port);
 
