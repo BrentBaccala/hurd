@@ -495,6 +495,8 @@ class netmsg
   std::thread * fsysThread;
 
   void transmitOOLdata(mach_msg_header_t * const msg);
+  void receiveOOLdata(mach_msg_header_t * const msg);
+
   void ipcHandler(void);
 
   mach_port_t translatePort2(const mach_port_t port, const unsigned int type);
@@ -519,6 +521,19 @@ netmsg::transmitOOLdata(mach_msg_header_t * const msg)
         {
           os.write(ptr.data(), ptr.data_size());
           vm_deallocate(mach_task_self(), ptr.data(), ptr.data_size());
+        }
+    }
+}
+
+void
+netmsg::receiveOOLdata(mach_msg_header_t * const msg)
+{
+  for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
+    {
+      if (! ptr.is_inline() && (ptr.data_size() > 0))
+        {
+          mach_call (vm_allocate(mach_task_self(), ptr.OOLptr(), ptr.data_size(), 1));
+          is.read(ptr.data(), ptr.data_size());
         }
     }
 }
@@ -931,10 +946,6 @@ netmsg::translateHeader(mach_msg_header_t * const msg)
   msg->msgh_bits = complex | MACH_MSGH_BITS (this_type, reply_type);
 }
 
-/* translateMessage() will also read any out-of-line data from the
- * input stream
- */
-
 void
 netmsg::translateMessage(mach_msg_header_t * const msg)
 {
@@ -942,12 +953,6 @@ netmsg::translateMessage(mach_msg_header_t * const msg)
 
   for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
     {
-      if (! ptr.is_inline() && (ptr.data_size() > 0))
-        {
-          mach_call (vm_allocate(mach_task_self(), ptr.OOLptr(), ptr.data_size(), 1));
-          is.read(ptr.data(), ptr.data_size());
-        }
-
       switch (ptr.name())
         {
         case MACH_MSG_TYPE_MOVE_RECEIVE:
@@ -1100,11 +1105,11 @@ netmsg::tcpHandler(void)
               msg->msgh_id, msg->msgh_local_port,
               msg->msgh_bits & MACH_MSGH_BITS_REMOTE_TRANSLATE ? "" : " (local)");
 
-      translateMessage(msg);
+      receiveOOLdata(msg);
 
-      // wait until now to print it, since translateMessage receives OOL data
-      // XXX swapped port numbers already, so it isn't quite right
       dprintMessage(msg);
+
+      translateMessage(msg);
 
       dprintf("sending IPC message to port %ld\n", msg->msgh_remote_port);
 
