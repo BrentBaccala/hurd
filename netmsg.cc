@@ -986,11 +986,16 @@ dprintMessage(mach_msg_header_t * const msg)
 
   for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
     {
+      /* MACH_MSG_TYPE_STRING is special.  elemsize will be 1 byte and
+       * nelems() will be the size of the buffer, which might be bigger
+       * than the NUL-terminated string that starts it.
+       */
       if (ptr.name() == MACH_MSG_TYPE_STRING)
         {
           dprintf("\"%s\" ", ptr.data());
           continue;
         }
+
       if (ptr.nelems() > 32)
         {
           dprintf("%d", ptr.nelems());
@@ -1098,6 +1103,7 @@ netmsg::tcpHandler(void)
       translateMessage(msg);
 
       // wait until now to print it, since translateMessage receives OOL data
+      // XXX swapped port numbers already, so it isn't quite right
       dprintMessage(msg);
 
       dprintf("sending IPC message to port %ld\n", msg->msgh_remote_port);
