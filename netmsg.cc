@@ -215,6 +215,141 @@ mach_call(kern_return_t err)
     }
 }
 
+/* class mach_msg_iterator
+ *
+ * Iterates through the data items in a Mach message.  Standard vs
+ * long form headers are handled here.  Obvious member functions
+ * return name(), nelems(), is_inline().  The data pointer is returned
+ * by data(), and for out-of-line data, a pointer to the data pointer
+ * is returned by OOLptr().  The iterator itself tests false once it's
+ * exhausted the message data.
+ *
+ * The pointer returned by data() is a mach_msg_data_ptr, a
+ * polymorphic type that will convert to a char * (for reading and
+ * writing to the network stream), a mach_port_t * (for port
+ * translation), or a vm_address_t (for passing to vm_deallocate).  No
+ * type checking is done on any of these conversions, so use with
+ * care...
+ */
+
+class mach_msg_data_ptr
+{
+  int8_t * const ptr;
+
+public:
+
+  mach_msg_data_ptr(int8_t * const ptr) : ptr(ptr) { }
+  mach_msg_data_ptr(vm_address_t const ptr) : ptr(reinterpret_cast<int8_t *>(ptr)) { }
+
+  operator char * ()
+  {
+    return reinterpret_cast<char *>(ptr);
+  }
+
+  operator mach_port_t * ()
+  {
+    return reinterpret_cast<mach_port_t *>(ptr);
+  }
+
+  operator vm_address_t ()
+  {
+    return reinterpret_cast<vm_address_t>(ptr);
+  }
+};
+
+class mach_msg_iterator
+{
+  const mach_msg_header_t * const hdr;
+  int8_t * ptr;
+
+  mach_msg_type_t * msgptr(void)
+  {
+    return reinterpret_cast<mach_msg_type_t *>(ptr);
+  }
+
+  mach_msg_type_long_t * longptr(void)
+  {
+    return reinterpret_cast<mach_msg_type_long_t *>(ptr);
+  }
+
+public:
+
+  mach_msg_iterator(mach_msg_header_t * const hdr)
+    : hdr(hdr), ptr(reinterpret_cast<int8_t *>(hdr + 1))
+  {
+  }
+
+  operator bool()
+  {
+    return ((ptr - reinterpret_cast<const int8_t *>(hdr)) < static_cast<int>(hdr->msgh_size));
+  }
+
+  bool is_inline(void)
+  {
+    return msgptr()->msgt_inline;
+  }
+
+  unsigned int header_size(void)
+  {
+    return msgptr()->msgt_longform ? sizeof(mach_msg_type_long_t) : sizeof(mach_msg_type_t);
+  }
+
+  unsigned int name(void)
+  {
+    return msgptr()->msgt_longform ? longptr()->msgtl_name : msgptr()->msgt_name;;
+  }
+
+  unsigned int nelems(void)
+  {
+    return msgptr()->msgt_longform ? longptr()->msgtl_number : msgptr()->msgt_number;
+  }
+
+  unsigned int elemsize_bits(void)
+  {
+    return msgptr()->msgt_longform ? longptr()->msgtl_size : msgptr()->msgt_size;
+  }
+
+  /* Data size - convert from bits to bytes, and round up to long word boundary. */
+
+  unsigned int data_size(void)
+  {
+    unsigned int data_length = (nelems() * elemsize_bits() + 7) / 8;
+
+    data_length = ((data_length + sizeof(long) - 1) / sizeof(long)) * sizeof(long);
+
+    return data_length;
+  }
+
+  vm_address_t * OOLptr()
+  {
+    assert(! is_inline());
+    return reinterpret_cast<vm_address_t *>(ptr + header_size());
+  }
+
+  mach_msg_data_ptr data()
+  {
+    if (is_inline())
+      {
+        return mach_msg_data_ptr(ptr + header_size());
+      }
+    else
+      {
+        return mach_msg_data_ptr(* OOLptr());
+      }
+  }
+
+  const mach_msg_iterator & operator++()
+  {
+    ptr += header_size() + (is_inline() ? data_size() : sizeof(void *));
+    return *this;
+  }
+
+  void dprintf(void)
+  {
+    ::dprintf("%p\n", ptr);
+  }
+};
+
 /* We use this unused bit in the Mach message header to indicate that
  * the receiver should translate the message's destination port.
  */
@@ -299,60 +434,12 @@ public:
 void
 netmsg::transmitOOLdata(mach_msg_header_t * const msg)
 {
-  mach_msg_type_t * ptr = reinterpret_cast<mach_msg_type_t *>(msg + 1);
-
-  while (reinterpret_cast<int8_t *>(ptr) - reinterpret_cast<int8_t *>(msg) < static_cast<int>(msg->msgh_size))
+  for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
     {
-      unsigned int name;
-      unsigned int nelems;
-      unsigned int elem_size_bits;
-
-      const unsigned int header_size = ptr->msgt_longform ? sizeof(mach_msg_type_long_t) : sizeof(mach_msg_type_t);
-
-      if (! ptr->msgt_longform)
+      if ((! ptr.is_inline()) && (ptr.data_size() > 0))
         {
-          name = ptr->msgt_name;
-          nelems = ptr->msgt_number;
-          elem_size_bits = ptr->msgt_size;
-        }
-      else
-        {
-          const mach_msg_type_long_t * longptr = reinterpret_cast<mach_msg_type_long_t *>(ptr);
-
-          name = longptr->msgtl_name;
-          nelems = longptr->msgtl_number;
-          elem_size_bits = longptr->msgtl_size;
-        }
-
-      unsigned int data_length = (nelems * elem_size_bits + 7) / 8;
-
-      // round up to long word boundary
-      data_length = ((data_length + sizeof(long) - 1) / sizeof(long)) * sizeof(long);
-
-      // XXX
-      //
-      // "Security-conscious receivers should exercise caution when
-      // dealing with out-of-line memory from un-trustworthy sources,
-      // because the memory may be backed by an unreliable memory
-      // manager."  - Mach Kernel Interface
-
-      // XXX shouldn't deallocate until we know the message has been delivered
-
-      if ((! ptr->msgt_inline) && (data_length > 0))
-        {
-          vm_address_t data_ptr_ptr = reinterpret_cast<vm_address_t>(ptr) + header_size;
-          os.write(* reinterpret_cast<char **>(data_ptr_ptr), data_length);
-          vm_deallocate(mach_task_self(), * reinterpret_cast<vm_address_t *>(data_ptr_ptr), data_length);
-        }
-
-      // increment to next data item
-      if (ptr->msgt_inline)
-        {
-          ptr = reinterpret_cast<mach_msg_type_t *> (reinterpret_cast<int8_t *>(ptr) + data_length + header_size);
-        }
-      else
-        {
-          ptr = reinterpret_cast<mach_msg_type_t *> (reinterpret_cast<int8_t *>(ptr) + sizeof(void *) + header_size);
+          os.write(ptr.data(), ptr.data_size());
+          vm_deallocate(mach_task_self(), ptr.data(), ptr.data_size());
         }
     }
 }
@@ -774,51 +861,15 @@ netmsg::translateMessage(mach_msg_header_t * const msg)
 {
   translateHeader(msg);
 
-  mach_msg_type_t * ptr = reinterpret_cast<mach_msg_type_t *>(msg + 1);
-
-  while (reinterpret_cast<int8_t *>(ptr) - reinterpret_cast<int8_t *>(msg) < static_cast<int>(msg->msgh_size))
+  for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
     {
-      unsigned int name;
-      unsigned int nelems;
-      unsigned int elem_size_bits;
-
-      const unsigned int header_size = ptr->msgt_longform ? sizeof(mach_msg_type_long_t) : sizeof(mach_msg_type_t);
-
-      if (! ptr->msgt_longform)
+      if (! ptr.is_inline() && (ptr.data_size() > 0))
         {
-          name = ptr->msgt_name;
-          nelems = ptr->msgt_number;
-          elem_size_bits = ptr->msgt_size;
-        }
-      else
-        {
-          const mach_msg_type_long_t * longptr = reinterpret_cast<mach_msg_type_long_t *>(ptr);
-
-          name = longptr->msgtl_name;
-          nelems = longptr->msgtl_number;
-          elem_size_bits = longptr->msgtl_size;
+          mach_call (vm_allocate(mach_task_self(), ptr.OOLptr(), ptr.data_size(), 1));
+          is.read(ptr.data(), ptr.data_size());
         }
 
-      unsigned int data_length = (nelems * elem_size_bits + 7) / 8;
-
-      // round up to long word boundary
-      data_length = ((data_length + sizeof(long) - 1) / sizeof(long)) * sizeof(long);
-
-      vm_address_t data_ptr;
-
-      if (ptr->msgt_inline)
-        {
-          data_ptr = reinterpret_cast<vm_address_t>(ptr) + header_size;
-        }
-      else if (data_length > 0)
-        {
-          mach_call (vm_allocate(mach_task_self(), &data_ptr, data_length, 1));
-          is.read(reinterpret_cast<char *>(data_ptr), data_length);
-          vm_address_t data_ptr_ptr = reinterpret_cast<vm_address_t>(ptr) + header_size;
-          * reinterpret_cast<vm_address_t *>(data_ptr_ptr) = data_ptr;
-        }
-
-      switch (name)
+      switch (ptr.name())
         {
         case MACH_MSG_TYPE_MOVE_RECEIVE:
         case MACH_MSG_TYPE_MOVE_SEND:
@@ -828,12 +879,11 @@ netmsg::translateMessage(mach_msg_header_t * const msg)
         case MACH_MSG_TYPE_MAKE_SEND_ONCE:
 
           {
-            //mach_port_t * ports = reinterpret_cast<mach_port_t *>(reinterpret_cast<int8_t *>(ptr) + header_size);
-            mach_port_t * ports = reinterpret_cast<mach_port_t *>(data_ptr);
+            mach_port_t * ports = ptr.data();
 
-            for (unsigned int i = 0; i < nelems; i ++)
+            for (unsigned int i = 0; i < ptr.nelems(); i ++)
               {
-                ports[i] = translatePort(ports[i], name);
+                ports[i] = translatePort(ports[i], ptr.name());
               }
 
           }
@@ -844,15 +894,6 @@ netmsg::translateMessage(mach_msg_header_t * const msg)
           ;
         }
 
-      // increment to next data item
-      if (ptr->msgt_inline)
-        {
-          ptr = reinterpret_cast<mach_msg_type_t *> (reinterpret_cast<int8_t *>(ptr) + data_length + header_size);
-        }
-      else
-        {
-          ptr = reinterpret_cast<mach_msg_type_t *> (reinterpret_cast<int8_t *>(ptr) + sizeof(void *) + header_size);
-        }
     }
 }
 
