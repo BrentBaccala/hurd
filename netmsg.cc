@@ -1025,6 +1025,13 @@ dprintMessage(mach_msg_header_t * const msg)
           continue;
         }
 
+      if (ptr.name() == MACH_MSG_TYPE_BIT)
+        {
+          assert(ptr.nelems() <= 8 * sizeof(long));
+          dprintf("%x", * reinterpret_cast<long *>(static_cast<vm_address_t>(ptr.data())));
+          continue;
+        }
+
       if (ptr.nelems() > 32)
         {
           dprintf("%d", ptr.nelems());
