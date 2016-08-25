@@ -117,6 +117,8 @@ extern "C" {
 #include "fsys_S.h"
 
   extern int fsys_server (mach_msg_header_t *, mach_msg_header_t *);
+
+#include "msgids.h"
 };
 
 #include "version.h"
@@ -204,7 +206,13 @@ parse_opt (int key, char *arg, struct argp_state *state)
   return ESUCCESS;
 }
 
-static struct argp argp = { options, parse_opt, args_doc, doc };
+const struct argp_child children[] =
+  {
+    { .argp=&msgid_argp, },
+    { 0 }
+  };
+
+static struct argp argp = { options, parse_opt, args_doc, doc, children };
 
 void
 mach_call(kern_return_t err)
@@ -212,6 +220,22 @@ mach_call(kern_return_t err)
   if (err != KERN_SUCCESS)
     {
       mach_error("mach_call", err);
+    }
+}
+
+static const char *
+msgid_name (mach_msg_id_t msgid)
+{
+  static char buffer[16];  // XXX static buffer can be overwritten if called twice
+  const struct msgid_info *info = msgid_info (msgid);
+  if (info)
+    {
+      return info->name;
+    }
+  else
+    {
+      sprintf(buffer, "%d", msgid);
+      return buffer;
     }
 }
 
@@ -572,7 +596,7 @@ netmsg::ipcHandler(void)
                            0, max_size, portset,
                            MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
 
-      dprintf("received IPC message (%d) on port %ld\n", msg->msgh_id, msg->msgh_local_port);
+      dprintf("received IPC message (%s) on port %ld\n", msgid_name(msg->msgh_id), msg->msgh_local_port);
 
       /* A message has been received via IPC.  Transmit it across the
        * network, letting the receiver translate it.
@@ -1101,8 +1125,8 @@ netmsg::tcpHandler(void)
           //return;
         }
 
-      dprintf("received network message(%d) for port %ld%s\n",
-              msg->msgh_id, msg->msgh_local_port,
+      dprintf("received network message (%s) for port %ld%s\n",
+              msgid_name(msg->msgh_id), msg->msgh_local_port,
               msg->msgh_bits & MACH_MSGH_BITS_REMOTE_TRANSLATE ? "" : " (local)");
 
       receiveOOLdata(msg);
