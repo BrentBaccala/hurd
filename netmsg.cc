@@ -527,6 +527,7 @@ class netmsg
   void transmitOOLdata(mach_msg_header_t * const msg);
   void receiveOOLdata(mach_msg_header_t * const msg);
 
+  void translateForTransmission(mach_msg_header_t * const msg);
   void ipcHandler(void);
 
   mach_port_t translatePort2(const mach_port_t port, const unsigned int type);
@@ -695,6 +696,36 @@ netmsg::receiveOOLdata(mach_msg_header_t * const msg)
 }
 
 void
+netmsg::translateForTransmission(mach_msg_header_t * const msg)
+{
+  for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
+    {
+      switch (ptr.name())
+        {
+        case MACH_MSG_TYPE_MOVE_SEND:
+          {
+            mach_port_t * ports = ptr.data();
+
+            for (unsigned int i = 0; i < ptr.nelems(); i ++)
+              {
+                if (send_ports_by_local.count(ports[i]) == 1)
+                  {
+                    ports[i] = (~ send_ports_by_local[ports[i]]);
+                    // XXX destroy the send right we received with this message
+                  }
+              }
+          }
+          break;
+
+        default:
+          // do nothing; just pass through the data
+          ;
+        }
+
+    }
+}
+
+void
 netmsg::ipcHandler(void)
 {
   const mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
@@ -729,6 +760,8 @@ netmsg::ipcHandler(void)
                            MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
 
       ddprintf("received IPC message (%s) on port %ld\n", msgid_name(msg->msgh_id), msg->msgh_local_port);
+
+      /* Print debugging messages in our local port space, before translation */
 
       dprintf("<--");
       dprintMessage(msg);
@@ -790,6 +823,8 @@ netmsg::ipcHandler(void)
           /* it's a receive port we got via IPC.  Let the remote translate it. */
           msg->msgh_bits |= MACH_MSGH_BITS_REMOTE_TRANSLATE;
         }
+
+      translateForTransmission(msg);
 
       os.write(buffer, msg->msgh_size);
       transmitOOLdata(msg);
@@ -908,9 +943,20 @@ netmsg::ipcHandler(void)
 mach_port_t
 netmsg::translatePort2(const mach_port_t port, const unsigned int type)
 {
-  if (port == MACH_PORT_NULL)
+  if ((port == MACH_PORT_NULL) || (port == MACH_PORT_DEAD))
     {
-      return MACH_PORT_NULL;
+      return port;
+    }
+
+  /* If the port is flagged local, then the sender already translated it, so leave it alone */
+
+  if (port & 0x80000000)
+    {
+      mach_port_t newport = (~ port);
+      // we do need to create an extra send right, because we'll lose one when we transmit this message
+      mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
+                                         MACH_MSG_TYPE_COPY_SEND));
+      return newport;
     }
 
   switch (type)
@@ -1197,12 +1243,13 @@ netmsg::tcpHandler(void)
       receiveOOLdata(msg);
 
       /* Bit of an odd ordering here, designed to make sure the debug
-       * messages print sensibly.  We translate everything, then print
-       * the message, then swap the header.
+       * messages print sensibly.  We translate all the port numbers
+       * into our own port number space, then print the message, then
+       * swap the header.
        */
 
-      dprintf("-->");
-      dprintMessage(msg);
+      // dprintf("-->");
+      // dprintMessage(msg);
 
       translateMessage(msg);
       translateHeader(msg);
