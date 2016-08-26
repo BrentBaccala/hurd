@@ -136,19 +136,25 @@ const char * targetHost;   /* required argument */
 
 bool serverMode = false;
 
-bool debugMode = false;
+unsigned int debugMode = 0;
 
 template<typename... Args>
 void dprintf(Args... rest)
 {
-  if (debugMode) fprintf(stderr, rest...);
+  if (debugMode >= 1) fprintf(stderr, rest...);
+}
+
+template<typename... Args>
+void ddprintf(Args... rest)
+{
+  if (debugMode >= 2) fprintf(stderr, rest...);
 }
 
 static const struct argp_option options[] =
   {
     { "port", 'p', "N", 0, "TCP port number" },
     { "server", 's', 0, 0, "server mode" },
-    { "debug", 'd', 0, 0, "debug messages" },
+    { "debug", 'd', 0, 0, "debug messages (can be specified twice for more verbosity)" },
     { 0 }
   };
 
@@ -180,7 +186,7 @@ parse_opt (int key, char *arg, struct argp_state *state)
       break;
 
     case 'd':
-      debugMode = true;
+      debugMode ++;
       break;
 
     case ARGP_KEY_ARG:
@@ -526,6 +532,7 @@ class netmsg
   mach_port_t translatePort2(const mach_port_t port, const unsigned int type);
   mach_port_t translatePort(const mach_port_t port, const unsigned int type);
   void translateHeader(mach_msg_header_t * const msg);
+  void swapHeader(mach_msg_header_t * const msg);
   void translateMessage(mach_msg_header_t * const msg);
   void tcpHandler(void);
 
@@ -535,6 +542,100 @@ public:
   ~netmsg();
 };
 
+
+// XXX should be const...
+// dprintMessage(const mach_msg_header_t * const msg)
+
+void
+dprintMessage(mach_msg_header_t * const msg)
+{
+  if (msg->msgh_remote_port)
+    {
+      dprintf("%d(%d) %s", msg->msgh_local_port, msg->msgh_remote_port, msgid_name(msg->msgh_id));
+    }
+  else
+    {
+      dprintf("%d %s", msg->msgh_local_port, msgid_name(msg->msgh_id));
+    }
+
+  for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
+    {
+      dprintf(" ");
+
+      /* MACH_MSG_TYPE_STRING is special.  elemsize will be 1 byte and
+       * nelems() will be the size of the buffer, which might be bigger
+       * than the NUL-terminated string that starts it.
+       */
+      if (ptr.name() == MACH_MSG_TYPE_STRING)
+        {
+          dprintf("\"%s\" ", ptr.data());
+          continue;
+        }
+
+      if (ptr.name() == MACH_MSG_TYPE_BIT)
+        {
+          assert(ptr.nelems() <= 8 * sizeof(long));
+          dprintf("%x", * reinterpret_cast<long *>(static_cast<vm_address_t>(ptr.data())));
+          continue;
+        }
+
+      if (ptr.nelems() > 32)
+        {
+          dprintf("%d", ptr.nelems());
+        }
+      if (ptr.nelems() > 1)
+        {
+          dprintf("{");
+        }
+      for (unsigned int i = 0; i < ptr.nelems() && i < 32; i ++)
+        {
+          if (i > 0)
+            {
+              dprintf(" ");
+            }
+          switch (ptr.name())
+            {
+
+            case MACH_MSG_TYPE_BIT:
+              assert(0);
+
+            case MACH_MSG_TYPE_CHAR:
+              // XXX why is this AND needed?
+              dprintf("%02x", ptr[i] & 0xff);
+              break;
+
+            case MACH_MSG_TYPE_INTEGER_8:
+            case MACH_MSG_TYPE_INTEGER_16:
+            case MACH_MSG_TYPE_INTEGER_32:
+            case MACH_MSG_TYPE_INTEGER_64:
+
+            case MACH_MSG_TYPE_MOVE_RECEIVE:
+            case MACH_MSG_TYPE_MOVE_SEND:
+            case MACH_MSG_TYPE_MOVE_SEND_ONCE:
+            case MACH_MSG_TYPE_COPY_SEND:
+            case MACH_MSG_TYPE_MAKE_SEND:
+            case MACH_MSG_TYPE_MAKE_SEND_ONCE:
+
+              dprintf("%d", ptr[i]);
+              break;
+
+            case MACH_MSG_TYPE_STRING:
+            case MACH_MSG_TYPE_REAL:
+              assert(0);
+            }
+        }
+      if (ptr.nelems() > 32)
+        {
+          dprintf("...");
+        }
+      if (ptr.nelems() > 1)
+        {
+          dprintf("}");
+        }
+    }
+
+  dprintf("\n");
+}
 
 void
 netmsg::transmitOOLdata(mach_msg_header_t * const msg)
@@ -573,7 +674,7 @@ netmsg::ipcHandler(void)
 
   mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &my_sendonce_receive_port));
 
-  dprintf("my_sendonce_receive_port = %ld\n", my_sendonce_receive_port);
+  ddprintf("my_sendonce_receive_port = %ld\n", my_sendonce_receive_port);
 
   /* move the receive right into the portset so we'll be listening on it */
   mach_call (mach_port_move_member (mach_task_self (), my_sendonce_receive_port, portset));
@@ -583,7 +684,7 @@ netmsg::ipcHandler(void)
       mach_call (mach_port_move_member (mach_task_self (), control, portset));
     }
 
-  dprintf("waiting for IPC messages\n");
+  ddprintf("waiting for IPC messages\n");
 
   /* Launch */
   while (1)
@@ -596,7 +697,10 @@ netmsg::ipcHandler(void)
                            0, max_size, portset,
                            MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
 
-      dprintf("received IPC message (%s) on port %ld\n", msgid_name(msg->msgh_id), msg->msgh_local_port);
+      ddprintf("received IPC message (%s) on port %ld\n", msgid_name(msg->msgh_id), msg->msgh_local_port);
+
+      dprintf("<--");
+      dprintMessage(msg);
 
       /* A message has been received via IPC.  Transmit it across the
        * network, letting the receiver translate it.
@@ -642,7 +746,7 @@ netmsg::ipcHandler(void)
           /* translate */
           mach_port_t remote_port = send_once_ports_by_local[msg->msgh_local_port];
 
-          dprintf("Translating dest port %ld to %ld\n", msg->msgh_local_port, remote_port);
+          ddprintf("Translating dest port %ld to %ld\n", msg->msgh_local_port, remote_port);
 
           send_once_ports_by_local.erase(msg->msgh_local_port);
           send_once_ports_by_remote.erase(remote_port);
@@ -660,7 +764,7 @@ netmsg::ipcHandler(void)
       transmitOOLdata(msg);
       os.flush();
 
-      dprintf("sent network message\n");
+      ddprintf("sent network message\n");
 
     }
 
@@ -861,7 +965,7 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
       send_once_ports_by_remote[port] = newport;
       send_once_ports_by_local[newport] = port;
 
-      dprintf("translating port %ld (SEND ONCE) ---> %ld (recv %ld)\n", port, sendonce_port, newport);
+      ddprintf("translating port %ld (SEND ONCE) ---> %ld (recv %ld)\n", port, sendonce_port, newport);
 
       return sendonce_port;
 
@@ -876,15 +980,13 @@ netmsg::translatePort(const mach_port_t port, const unsigned int type)
 {
   mach_port_t result = translatePort2(port, type);
 
-  dprintf("translating port %ld (%s) ---> %ld\n", port, mach_port_type_to_str[type], result);
+  ddprintf("translating port %ld (%s) ---> %ld\n", port, mach_port_type_to_str[type], result);
 
   return result;
 }
 
-/* We received a message across the network.  Translate its header. */
-
 void
-netmsg::translateHeader(mach_msg_header_t * const msg)
+netmsg::swapHeader(mach_msg_header_t * const msg)
 {
   mach_msg_type_name_t this_type = MACH_MSGH_BITS_LOCAL (msg->msgh_bits);
   mach_msg_type_name_t reply_type = MACH_MSGH_BITS_REMOTE (msg->msgh_bits);
@@ -893,38 +995,6 @@ netmsg::translateHeader(mach_msg_header_t * const msg)
 
   mach_port_t this_port = msg->msgh_local_port;
   mach_port_t reply_port = msg->msgh_remote_port;
-
-  if ((this_type != MACH_MSG_TYPE_PORT_SEND) && (this_type != MACH_MSG_TYPE_PORT_SEND_ONCE))
-    {
-      error (1, 0, "this_type (%d) != MACH_MSG_TYPE_PORT_SEND{_ONCE}", this_type);
-    }
-
-  /* We used a spare bit, just during the network transaction, to flag
-   * messages whose receive port needs translation.
-   */
-
-  if (this_port == MACH_PORT_CONTROL)
-    {
-      this_port = first_port;
-    }
-  else if (msg->msgh_bits & MACH_MSGH_BITS_REMOTE_TRANSLATE)
-    {
-      /* This is the case where we earlier got a receive right across
-       * the network, and are now receiving a message to it.
-       *
-       * Translate it into a local send right.
-       */
-      if (receive_ports_by_remote.count(this_port) != 1)
-        {
-          error (1, 0, "Never saw port %ld before", this_port);
-        }
-      else
-        {
-          this_port = receive_ports_by_remote[this_port];
-        }
-
-      msg->msgh_bits &= ~MACH_MSGH_BITS_REMOTE_TRANSLATE;
-    }
 
   /* Send right will be consumed unless we turn the MAKE_SEND into
    * a COPY_SEND.  For first_port, this is exactly what we want.
@@ -945,36 +1015,80 @@ netmsg::translateHeader(mach_msg_header_t * const msg)
       this_type = MACH_MSG_TYPE_COPY_SEND;
     }
 
-  switch (reply_type)
-    {
-
-    case MACH_MSG_TYPE_PORT_SEND:
-    case MACH_MSG_TYPE_PORT_SEND_ONCE:
-
-      reply_port = translatePort(reply_port, reply_type);
-
-      break;
-
-    case 0:
-
-      assert (reply_port == MACH_PORT_NULL);
-      break;
-
-    default:
-      error (1, 0, "Invalid port type %i in message header", reply_type);
-    }
-
   msg->msgh_local_port = reply_port;
   msg->msgh_remote_port = this_port;
 
   msg->msgh_bits = complex | MACH_MSGH_BITS (this_type, reply_type);
 }
 
+/* We received a message across the network.  Translate its header. */
+
+void
+netmsg::translateHeader(mach_msg_header_t * const msg)
+{
+  mach_msg_type_name_t local_type = MACH_MSGH_BITS_LOCAL (msg->msgh_bits);
+  mach_msg_type_name_t remote_type = MACH_MSGH_BITS_REMOTE (msg->msgh_bits);
+
+  /* These are REFERENCES, so we can change them */
+
+  mach_port_t & local_port = msg->msgh_local_port;
+  mach_port_t & remote_port = msg->msgh_remote_port;
+
+  if ((local_type != MACH_MSG_TYPE_PORT_SEND) && (local_type != MACH_MSG_TYPE_PORT_SEND_ONCE))
+    {
+      error (1, 0, "local_type (%d) != MACH_MSG_TYPE_PORT_SEND{_ONCE}", local_type);
+    }
+
+  /* We used a spare bit, just during the network transaction, to flag
+   * messages whose receive port needs translation.
+   */
+
+  if (local_port == MACH_PORT_CONTROL)
+    {
+      local_port = first_port;
+    }
+  else if (msg->msgh_bits & MACH_MSGH_BITS_REMOTE_TRANSLATE)
+    {
+      /* This is the case where we earlier got a receive right across
+       * the network, and are now receiving a message to it.
+       *
+       * Translate it into a local send right.
+       */
+      if (receive_ports_by_remote.count(local_port) != 1)
+        {
+          error (1, 0, "Never saw port %ld before", local_port);
+        }
+      else
+        {
+          local_port = receive_ports_by_remote[local_port];
+        }
+
+      msg->msgh_bits &= ~MACH_MSGH_BITS_REMOTE_TRANSLATE;
+    }
+
+  switch (remote_type)
+    {
+
+    case MACH_MSG_TYPE_PORT_SEND:
+    case MACH_MSG_TYPE_PORT_SEND_ONCE:
+
+      remote_port = translatePort(remote_port, remote_type);
+
+      break;
+
+    case 0:
+
+      assert (remote_port == MACH_PORT_NULL);
+      break;
+
+    default:
+      error (1, 0, "Invalid port type %i in message header", remote_type);
+    }
+}
+
 void
 netmsg::translateMessage(mach_msg_header_t * const msg)
 {
-  translateHeader(msg);
-
   for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
     {
       switch (ptr.name())
@@ -1005,93 +1119,6 @@ netmsg::translateMessage(mach_msg_header_t * const msg)
     }
 }
 
-// XXX should be const...
-// dprintMessage(const mach_msg_header_t * const msg)
-
-void
-dprintMessage(mach_msg_header_t * const msg)
-{
-  dprintf("msg id %d to port %d (reply %d)\n", msg->msgh_id, msg->msgh_local_port, msg->msgh_remote_port);
-
-  for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
-    {
-      /* MACH_MSG_TYPE_STRING is special.  elemsize will be 1 byte and
-       * nelems() will be the size of the buffer, which might be bigger
-       * than the NUL-terminated string that starts it.
-       */
-      if (ptr.name() == MACH_MSG_TYPE_STRING)
-        {
-          dprintf("\"%s\" ", ptr.data());
-          continue;
-        }
-
-      if (ptr.name() == MACH_MSG_TYPE_BIT)
-        {
-          assert(ptr.nelems() <= 8 * sizeof(long));
-          dprintf("%x", * reinterpret_cast<long *>(static_cast<vm_address_t>(ptr.data())));
-          continue;
-        }
-
-      if (ptr.nelems() > 32)
-        {
-          dprintf("%d", ptr.nelems());
-        }
-      if (ptr.nelems() > 1)
-        {
-          dprintf("{");
-        }
-      for (unsigned int i = 0; i < ptr.nelems() && i < 32; i ++)
-        {
-          if (i > 0)
-            {
-              dprintf(" ");
-            }
-          switch (ptr.name())
-            {
-
-            case MACH_MSG_TYPE_BIT:
-              assert(0);
-
-            case MACH_MSG_TYPE_CHAR:
-              // XXX why is this AND needed?
-              dprintf("%02x", ptr[i] & 0xff);
-              break;
-
-            case MACH_MSG_TYPE_INTEGER_8:
-            case MACH_MSG_TYPE_INTEGER_16:
-            case MACH_MSG_TYPE_INTEGER_32:
-            case MACH_MSG_TYPE_INTEGER_64:
-
-            case MACH_MSG_TYPE_MOVE_RECEIVE:
-            case MACH_MSG_TYPE_MOVE_SEND:
-            case MACH_MSG_TYPE_MOVE_SEND_ONCE:
-            case MACH_MSG_TYPE_COPY_SEND:
-            case MACH_MSG_TYPE_MAKE_SEND:
-            case MACH_MSG_TYPE_MAKE_SEND_ONCE:
-
-              dprintf("%d", ptr[i]);
-              break;
-
-            case MACH_MSG_TYPE_STRING:
-            case MACH_MSG_TYPE_REAL:
-              assert(0);
-            }
-        }
-      if (ptr.nelems() > 32)
-        {
-          dprintf("...");
-        }
-      if (ptr.nelems() > 1)
-        {
-          dprintf("}");
-        }
-
-      dprintf(" ");
-    }
-
-  dprintf("\n");
-}
-
 void
 netmsg::tcpHandler(void)
 {
@@ -1099,7 +1126,7 @@ netmsg::tcpHandler(void)
   char buffer[max_size];
   mach_msg_header_t * const msg = reinterpret_cast<mach_msg_header_t *> (buffer);
 
-  dprintf("waiting for network messages\n");
+  ddprintf("waiting for network messages\n");
 
   while (1)
     {
@@ -1115,11 +1142,11 @@ netmsg::tcpHandler(void)
 
           if (is.eof())
             {
-              dprintf("EOF on network socket\n");
+              ddprintf("EOF on network socket\n");
             }
           else
             {
-              dprintf("Error on network socket\n");
+              ddprintf("Error on network socket\n");
             }
           // XXX will this do a close() or a shutdown(SHUT_RD)?  We want shutdown(SHUT_RD).
           filebuf_in.close();
@@ -1132,17 +1159,29 @@ netmsg::tcpHandler(void)
           //return;
         }
 
-      dprintf("received network message (%s) for port %ld%s\n",
-              msgid_name(msg->msgh_id), msg->msgh_local_port,
-              msg->msgh_bits & MACH_MSGH_BITS_REMOTE_TRANSLATE ? "" : " (local)");
+      ddprintf("received network message (%s) for port %ld%s\n",
+               msgid_name(msg->msgh_id), msg->msgh_local_port,
+               msg->msgh_bits & MACH_MSGH_BITS_REMOTE_TRANSLATE ? "" : " (local)");
 
       receiveOOLdata(msg);
 
+      /* Bit of an odd ordering here, designed to make sure the debug
+       * messages print sensibly.  We translate everything, then print
+       * the message, then swap the header.
+       */
+
+      dprintf("-->");
       dprintMessage(msg);
 
       translateMessage(msg);
+      translateHeader(msg);
 
-      dprintf("sending IPC message to port %ld\n", msg->msgh_remote_port);
+      dprintf("-->");
+      dprintMessage(msg);
+
+      swapHeader(msg);
+
+      ddprintf("sending IPC message to port %ld\n", msg->msgh_remote_port);
 
       /* XXX this call could easily return MACH_SEND_INVALID_DEST if the destination died */
 
@@ -1186,7 +1225,7 @@ netmsg::netmsg(int networkSocket) :
 
       fsysThread = new std::thread(run_fsysServer_on_port, first_port);
 
-      dprintf("first_port is %ld\n", first_port);
+      ddprintf("first_port is %ld\n", first_port);
 
     }
 
@@ -1305,7 +1344,7 @@ tcpServer(void)
       error (2, errno, "TCP listen");
     }
 
-  dprintf("waiting for network connections\n");
+  ddprintf("waiting for network connections\n");
 
   /* Do this forever... */
   while (1)
@@ -1362,7 +1401,7 @@ startAsTranslator(void)
   if (err)
     error (1, err, "Starting up translator");
 
-  dprintf("control port is %ld\n", control);
+  ddprintf("control port is %ld\n", control);
 
   mach_call (mach_port_deallocate (mach_task_self (), bootstrap));
   mach_call (mach_port_deallocate (mach_task_self (), realnode));
@@ -1424,7 +1463,7 @@ S_fsys_getroot (mach_port_t fsys_t,
   *do_retry = FS_RETRY_NORMAL;
   retry_name[0] = '\0';
 
-  dprintf("fsys_getroot returning port %ld\n", node);
+  ddprintf("fsys_getroot returning port %ld\n", node);
 
   return ESUCCESS;
 }
