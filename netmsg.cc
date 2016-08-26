@@ -583,7 +583,38 @@ dprintMessage(mach_msg_header_t * const msg)
         {
           dprintf("%d", ptr.nelems());
         }
-      if (ptr.nelems() > 1)
+
+      switch (ptr.name())
+        {
+        case MACH_MSG_TYPE_MOVE_RECEIVE:
+          dprintf("r");
+          break;
+
+        case MACH_MSG_TYPE_MOVE_SEND:
+          dprintf("s");
+          break;
+
+        case MACH_MSG_TYPE_MOVE_SEND_ONCE:
+          dprintf("so");
+          break;
+
+        case MACH_MSG_TYPE_COPY_SEND:
+          dprintf("cs");
+          break;
+
+        case MACH_MSG_TYPE_MAKE_SEND:
+          dprintf("ms");
+          break;
+
+        case MACH_MSG_TYPE_MAKE_SEND_ONCE:
+          dprintf("mso");
+          break;
+
+        default:
+          ;
+        }
+
+      if (MACH_MSG_TYPE_PORT_ANY(ptr.name()) || (ptr.nelems() > 1))
         {
           dprintf("{");
         }
@@ -628,7 +659,7 @@ dprintMessage(mach_msg_header_t * const msg)
         {
           dprintf("...");
         }
-      if (ptr.nelems() > 1)
+      if (MACH_MSG_TYPE_PORT_ANY(ptr.name()) || (ptr.nelems() > 1))
         {
           dprintf("}");
         }
