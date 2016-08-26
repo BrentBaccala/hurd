@@ -52,6 +52,8 @@
    problems with certain programs (libpager) that are limited in the
    number of clients they can handle.
 
+   No attempt to made to detect loops involving more than two parties.
+
    The other case when the receiver's port space might be used is the
    destination port of the message itself.  The destination port
    number in a network message falls into one of two cases.  It's
@@ -86,14 +88,12 @@
 
    - no byte order swapping
    - if sends (either network or IPC) block, the server blocks
-   - can't detect if a port is sent across the net and returned back
+   - can't detect three party loops
    - no-senders notifications don't work
    - no Hurd authentication (it runs with the server's permissions)
-   - the memory_object_* routines don't work
    - no checks made if Mach produces ports with the highest bit set
 
    - emacs over netmsg hangs; last RPC is io_reauthenticate
-   - exec'ing a file over netmsg hangs; last RPC is memory_object_init
 */
 
 #include <stdio.h>
@@ -284,6 +284,14 @@ msgid_name (mach_msg_id_t msgid)
  * elements within the data items, as well as multiple data items.
  * operator[] retreives the i'th element, operator++ advances to the
  * next data item.
+ *
+ * The need for mach_msg_data_ptr to have a 'name' argument to the
+ * constructor is an annoying result of C++'s lack of decent inner
+ * class support.  We'd really just like to inherit this information
+ * from the mach_msg_iterator that created us, but that's impossible
+ * in C++, so it has to get passed in explicitly.  All we currently
+ * use 'name' for is debugging, since printing out the data items is
+ * the only time we need to know their types.
  */
 
 class mach_msg_data_ptr
@@ -1343,6 +1351,16 @@ netmsg::~netmsg()
     }
 }
 
+/***********  networking code and main()  ***********
+
+ These routines handle program initialization, in either server or
+ translator/client mode, setup the various TCP/IP structures and loop
+ until the network connection(s) are established.  For each
+ connection, class netmsg is instantiated and passed a file descriptor
+ to the socket for the established TCP/IP connection.
+
+ */
+
 void
 tcpClient(const char * hostname)
 {
@@ -1518,6 +1536,22 @@ startAsTranslator(void)
   tcpClient(targetHost);
 }
 
+int
+main (int argc, char **argv)
+{
+  /* Parse our options...  */
+  argp_parse (&argp, argc, argv, 0, 0, 0);
+
+  if (serverMode)
+    {
+      tcpServer();
+    }
+  else
+    {
+      startAsTranslator();
+    }
+}
+
 /*********** fsys (filesystem) server  ***********
 
  These routines implement the RPC server side of an fsys server.
@@ -1637,21 +1671,4 @@ S_fsys_forward (mach_port_t server, mach_port_t requestor,
   return EOPNOTSUPP;
 }
 
-}
-
-int
-main (int argc, char **argv)
-{
-  /* Parse our options...  */
-  argp_parse (&argp, argc, argv, 0, 0, 0);
-
-  if (serverMode)
-    {
-      tcpServer();
-    }
-  else
-    {
-      //tcpClient(targetHost);
-      startAsTranslator();
-    }
 }
