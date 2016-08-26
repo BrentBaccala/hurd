@@ -20,50 +20,67 @@
    is 2345.
 
    Initially, the server presents a fsys_server on MACH_PORT_CONTROL,
-   a special port number, and the only port available when a
-   connection starts.  The first message is invariably fsys_getroot,
-   sent from the client/translator to server port MACH_PORT_CONTROL.
+   a special port number (currently -2), and the only port available
+   when a connection starts.  The first message is invariably
+   fsys_getroot, sent from the client/translator to server port
+   MACH_PORT_CONTROL.
 
-   Mach messages are transmitted almost unchanged.  The receiver
-   "sees" the sender's port number space.  On the other side of the
-   full duplex connection, the roles are reversed, but the principle
-   is the same - each side sees the other side's port space when it
-   receives messages.
+   Mach messages are transmitted almost unchanged.  Out-of-line memory
+   areas are transmitted immediately after the Mach message, padded to
+   a multiple of sizeof(long), in the order they appeared in the Mach
+   message.
 
-   There is only one modification made by the sender, and that's to
-   the destination port of the message itself.  The destination port
+   Mach port numbers, however, receive special handling.  The port
+   number's high-order bit is used to flag whether it's in the
+   sender's port number space (0) or the receiver's (1).  Initially,
+   all ports are in the sender's space, since each side knows nothing
+   about the other side's ports, but as the connection progresses, the
+   sender will sometimes transmit a port number in the receiver's
+   space, and will indicate this by inverting all the bits of the port
+   number.
+
+   This limits our port number space to 31 bits, instead of the usual
+   32, and implicitly relies on Mach to prefer low-numbered ports.
+
+   There are two cases when the sender will use the receiver's port
+   number.  One case concerns looping send rights.  If Alice transfers
+   a send right to Bob, and Bob then transfers the same send right
+   back to Alice, Bob uses Alice's port number space.  This allows
+   Alice to detect the loop and transfer a local send right to the
+   recipient.  Otherwise, messages would be looping around the network
+   connection.  Not only is this inefficient, but it currently creates
+   problems with certain programs (libpager) that are limited in the
+   number of clients they can handle.
+
+   The other case when the receiver's port space might be used is the
+   destination port of the message itself.  The destination port
    number in a network message falls into one of two cases.  It's
    either the address of a RECEIVE right in the recipient's port
-   space, or its the address of a SEND right in the sender's port
-   space.  In the later case, the sender translates the port number
-   from its own space into the recipient's port space.  It's the only
-   part of a network message that uses the recipient's port space.
+   space, or it's the address of a SEND right in the sender's port
+   space.  In the later case, the sender uses the receiver's port
+   number.
 
    'netmsg' can be receiving a Mach message over IPC for one of two
    reasons.  Either a local process passed us a RECEIVE right, or the
    remote peer passed us a SEND (or SEND ONCE) right.  Either
    situation will causes messages to be received via IPC, but the two
-   cases must be handled separately.  RECEIVE rights are interpreted
-   by the recipient (like everything else in a netmsg message), but
-   SEND rights have to be translated from the sender's
+   cases must be handled separately.
 
    If the message came on a RECEIVE right that we got earlier via IPC,
    then the remote peer knows about this port, because it saw its port
    number in a RECEIVE right when the earlier message was relayed
-   across the network.  In this case, the sender do nothing with the
+   across the network.  In this case, the sender does nothing with the
    port number and sends it on across the TCP stream.
 
    On the other hand, if the message is targeted at a SEND right that
    was received earlier over TCP, we created a local receive right,
    produced a proxy send right, and that's what the message came in
    on.  Our network peer has never seen any of these port numbers, so
-   we need to translate the local RECEIVE right into remote SEND right,
-   and we know its remote port number because that's what came in
-   earlier over the network.
+   we need to translate the port number of the local RECEIVE right
+   into the port number of the remote SEND right, and we know its
+   remote port number because that's what came in earlier over the
+   network.
 
-   Out-of-line memory areas are transmitted immediately after the Mach
-   message, padded to a multiple of sizeof(long), in the order they
-   appeared in the Mach message.
 
    XXX known issues XXX
 
@@ -73,6 +90,7 @@
    - no-senders notifications don't work
    - no Hurd authentication (it runs with the server's permissions)
    - the memory_object_* routines don't work
+   - no checks made if Mach produces ports with the highest bit set
 
    - emacs over netmsg hangs; last RPC is io_reauthenticate
    - exec'ing a file over netmsg hangs; last RPC is memory_object_init
