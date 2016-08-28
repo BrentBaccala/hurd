@@ -86,8 +86,6 @@ main(int argc, char *argv[])
   mach_port_t objname;
 
   mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &objname));
-  mach_call (mach_port_insert_right (mach_task_self (), objname, objname,
-                                     MACH_MSG_TYPE_MAKE_SEND));
 
   for (int argi=1; argi < argc; argi ++)
     {
@@ -112,6 +110,10 @@ main(int argc, char *argv[])
            * filename, and send it to the memory manager in a
            * memory_object_init message.  We're hoping to receive back
            * a memory_object_ready message.
+           *
+           * The memory_object_init() client stub makes new send
+           * rights on the control and objname ports, so all we need
+           * to do is pass in the receive rights.
            */
 
           if (rdobj != MACH_PORT_NULL)
@@ -119,8 +121,6 @@ main(int argc, char *argv[])
               mach_port_t control;
 
               mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &control));
-              mach_call (mach_port_insert_right (mach_task_self (), control, control,
-                                                 MACH_MSG_TYPE_MAKE_SEND));
 
               /* move the receive right into the portset so we'll be listening on it */
               mach_call (mach_port_move_member (mach_task_self (), control, portset));
@@ -135,8 +135,6 @@ main(int argc, char *argv[])
               mach_port_t control;
 
               mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &control));
-              mach_call (mach_port_insert_right (mach_task_self (), control, control,
-                                                 MACH_MSG_TYPE_MAKE_SEND));
 
               /* move the receive right into the portset so we'll be listening on it */
               mach_call (mach_port_move_member (mach_task_self (), control, portset));
