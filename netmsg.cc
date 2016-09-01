@@ -1254,16 +1254,25 @@ netmsg::tcpHandler(void)
           // XXX will this do a close() or a shutdown(SHUT_RD)?  We want shutdown(SHUT_RD).
           filebuf_in.close();
           //close(inSocket);
-          /* XXX signal ipcHandler that the network socket died */
           //delete ipcThread;
           //std::terminate();
           //ipcThread->terminate();
           //return;
 
-          // Exit is fine here for a client.  For a server, it seems
-          // like it would be a problem, but a closed network
-          // connection never seems to return from is.read() above.
-          exit(0);
+          // Exit is fine here for a client.  For a server, we need to
+          // do some more work to signal our ipcThread.
+
+          /* XXX signal ipcHandler that the network socket died */
+
+          if (serverMode)
+            {
+              ddprintf("TCP server thread exiting\n");
+              return;
+            }
+          else
+            {
+              exit(0);
+            }
         }
 
       ddprintf("received network message (%s) for port %ld%s\n",
