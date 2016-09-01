@@ -1257,9 +1257,13 @@ netmsg::tcpHandler(void)
           /* XXX signal ipcHandler that the network socket died */
           //delete ipcThread;
           //std::terminate();
-          exit(0);
           //ipcThread->terminate();
           //return;
+
+          // Exit is fine here for a client.  For a server, it seems
+          // like it would be a problem, but a closed network
+          // connection never seems to return from is.read() above.
+          exit(0);
         }
 
       ddprintf("received network message (%s) for port %ld%s\n",
@@ -1608,7 +1612,7 @@ S_fsys_startup (mach_port_t bootstrap, int flags, mach_port_t control,
 error_t
 S_fsys_goaway (mach_port_t control, int flags)
 {
-  exit (0);
+  return ESUCCESS;
 }
 
 error_t
@@ -1616,7 +1620,7 @@ S_fsys_syncfs (mach_port_t control,
 	       int wait,
 	       int recurse)
 {
-  return 0;
+  return ESUCCESS;
 }
 
 error_t
