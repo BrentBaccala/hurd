@@ -336,6 +336,7 @@ public:
         return *reinterpret_cast<int16_t *>(ptr);
 
       case MACH_MSG_TYPE_INTEGER_32:
+      case MACH_MSG_TYPE_PORT_NAME:
       case MACH_MSG_TYPE_MOVE_RECEIVE:
       case MACH_MSG_TYPE_MOVE_SEND:
       case MACH_MSG_TYPE_MOVE_SEND_ONCE:
@@ -613,6 +614,10 @@ dprintMessage(mach_msg_header_t * const msg)
 
       switch (ptr.name())
         {
+        case MACH_MSG_TYPE_PORT_NAME:
+          dprintf("pn");
+          break;
+
         case MACH_MSG_TYPE_MOVE_RECEIVE:
           dprintf("r");
           break;
@@ -641,7 +646,7 @@ dprintMessage(mach_msg_header_t * const msg)
           ;
         }
 
-      if (MACH_MSG_TYPE_PORT_ANY(ptr.name()) || (ptr.nelems() > 1))
+      if (MACH_MSG_TYPE_PORT_ANY(ptr.name()) || (ptr.name() == MACH_MSG_TYPE_PORT_NAME) || (ptr.nelems() > 1))
         {
           dprintf("{");
         }
@@ -667,6 +672,8 @@ dprintMessage(mach_msg_header_t * const msg)
             case MACH_MSG_TYPE_INTEGER_32:
             case MACH_MSG_TYPE_INTEGER_64:
 
+            case MACH_MSG_TYPE_PORT_NAME:
+
             case MACH_MSG_TYPE_MOVE_RECEIVE:
             case MACH_MSG_TYPE_MOVE_SEND:
             case MACH_MSG_TYPE_MOVE_SEND_ONCE:
@@ -686,7 +693,7 @@ dprintMessage(mach_msg_header_t * const msg)
         {
           dprintf("...");
         }
-      if (MACH_MSG_TYPE_PORT_ANY(ptr.name()) || (ptr.nelems() > 1))
+      if (MACH_MSG_TYPE_PORT_ANY(ptr.name()) || (ptr.name() == MACH_MSG_TYPE_PORT_NAME) || (ptr.nelems() > 1))
         {
           dprintf("}");
         }
@@ -1302,9 +1309,10 @@ netmsg::tcpHandler(void)
 
       /* XXX this call could easily return MACH_SEND_INVALID_DEST if the destination died */
 
-      mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
+      int timeout = (msg->msgh_id == 2089) ? 1 : 0;
+      mach_call (mach_msg(msg, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msg->msgh_size,
                           0, msg->msgh_remote_port,
-                          MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+                          timeout, MACH_PORT_NULL));
 
     }
 }
