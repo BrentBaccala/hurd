@@ -132,6 +132,7 @@
 #undef ENOMEM
 
 extern "C" {
+#include <mach/notify.h>
 #include <mach_error.h>
 #include <hurd.h>
 #include <hurd/fsys.h>
@@ -258,6 +259,9 @@ mach_call(kern_return_t err)
       mach_error("mach_call", err);
     }
 }
+
+// XXX should look this up dynamically, though it's not likely to change
+#define MSGID_NO_SENDERS 70
 
 static const char *
 msgid_name (mach_msg_id_t msgid)
@@ -576,7 +580,7 @@ class netmsg
 
   mach_port_t translatePort2(const mach_port_t port, const unsigned int type);
   mach_port_t translatePort(const mach_port_t port, const unsigned int type);
-  void translateHeader(mach_msg_header_t * const msg);
+  bool translateHeader(mach_msg_header_t * const msg);
   void translateMessage(mach_msg_header_t * const msg);
   void tcpHandler(void);
 
@@ -1044,6 +1048,10 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
       // fallthrough
 
     case MACH_MSG_TYPE_MOVE_SEND:
+      /* We're receiving a send right over the network.  We need to
+       * relay on a send right, which will be to a local receive
+       * right.
+       */
       if (send_ports_by_remote.count(port) == 1)
         {
           const mach_port_t newport = send_ports_by_remote[port];
@@ -1062,6 +1070,15 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
           mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &newport));
           mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
                                              MACH_MSG_TYPE_MAKE_SEND));
+
+          /* request notification when all send rights have been destroyed */
+          mach_port_t old;
+          mach_call (mach_port_request_notification (mach_task_self (), newport,
+                                                     MACH_NOTIFY_NO_SENDERS, 0,
+                                                     newport,
+                                                     MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+          assert(old == MACH_PORT_NULL);
+
           /* move the receive right into the portset so we'll be listening on it */
           mach_call (mach_port_move_member (mach_task_self (), newport, portset));
 
@@ -1151,9 +1168,13 @@ swapHeader(mach_msg_header_t * const msg)
   msg->msgh_bits = complex | MACH_MSGH_BITS (this_type, reply_type);
 }
 
-/* We received a message across the network.  Translate its header. */
+/* We received a message across the network.  Translate its header.
+ * Returns true if we should relay this message across IPC (the usual
+ * case), false if we should not (a no-senders notification that was
+ * handled in this routine).
+ */
 
-void
+bool
 netmsg::translateHeader(mach_msg_header_t * const msg)
 {
   mach_msg_type_name_t local_type = MACH_MSGH_BITS_LOCAL (msg->msgh_bits);
@@ -1195,6 +1216,20 @@ netmsg::translateHeader(mach_msg_header_t * const msg)
 
       msg->msgh_bits &= ~MACH_MSGH_BITS_REMOTE_TRANSLATE;
     }
+  else if (msg->msgh_id == MSGID_NO_SENDERS)
+    {
+      /* We earlier got a send right via IPC and relayed it across the
+       * network.  Now we've got a notification from the other side
+       * that there are no more senders (there).  Destroy our local
+       * send right.  If it's the last send right, this call will
+       * trigger another no senders notification if one was requested,
+       * but there might be other local send rights.  All we know for
+       * sure is that there are no more remote send rights.
+       */
+      mach_call (mach_port_mod_refs (mach_task_self(), local_port,
+                                     MACH_PORT_RIGHT_SEND, -1));
+      return false;
+    }
 
   switch (remote_type)
     {
@@ -1214,6 +1249,8 @@ netmsg::translateHeader(mach_msg_header_t * const msg)
     default:
       error (1, 0, "Invalid port type %i in message header", remote_type);
     }
+
+  return true;
 }
 
 void
@@ -1299,22 +1336,25 @@ public:
 
           // XXX these translation functions now need some kind of locking
           parent->translateMessage(msg);
-          parent->translateHeader(msg);
+          bool transmit = parent->translateHeader(msg);
 
           dprintf("-->");
           dprintMessage(msg);
 
-          swapHeader(msg);
+          if (transmit)
+            {
+              swapHeader(msg);
 
-          ddprintf("sending IPC message to port %ld\n", msg->msgh_remote_port);
+              ddprintf("sending IPC message to port %ld\n", msg->msgh_remote_port);
 
-          /* XXX this call could easily return MACH_SEND_INVALID_DEST if the destination died */
+              /* XXX this call could easily return MACH_SEND_INVALID_DEST if the destination died */
 
-          // this is here for debugging purposes; gdb can easily see messages with timeout 1 ms
-          int timeout = (msg->msgh_id == 2089) ? 1 : 0;
-          mach_call (mach_msg(msg, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msg->msgh_size,
-                              0, msg->msgh_remote_port,
-                              timeout, MACH_PORT_NULL));
+              // this is here for debugging purposes; gdb can easily see messages with timeout 1 ms
+              int timeout = (msg->msgh_id == 2089) ? 1 : 0;
+              mach_call (mach_msg(msg, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msg->msgh_size,
+                                  0, msg->msgh_remote_port,
+                                  timeout, MACH_PORT_NULL));
+            }
 
         }
         // indicate that we're ready to process another buffer by
