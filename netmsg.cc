@@ -112,8 +112,11 @@
 
 #include <iostream>
 #include <iosfwd>
-#include <thread>
 
+#include <thread>
+#include <mutex>
+
+#include <vector>
 #include <map>
 
 #include <ext/stdio_filebuf.h>
@@ -167,6 +170,15 @@ void ddprintf(Args... rest)
 {
   if (debugMode >= 2) fprintf(stderr, rest...);
 }
+
+/* Java-like synchronized classes
+ *
+ * An object of type synchronized<Class> will be just like an object of type Class, except that it
+ * comes with a mutex and can be locked.
+ */
+
+template <class T>
+class synchronized : public T, public std::mutex { };
 
 static const struct argp_option options[] =
   {
@@ -516,8 +528,11 @@ mach_port_t control = MACH_PORT_NULL;
  * servers will have an instance for every client that connects to them
  */
 
+class networkMessage;
+
 class netmsg
 {
+  friend networkMessage;
 
   mach_port_t first_port = MACH_PORT_NULL;    /* server sets this to a send right on underlying node; client leaves it MACH_PORT_NULL */
   mach_port_t portset = MACH_PORT_NULL;
@@ -551,6 +566,8 @@ class netmsg
   std::thread * tcpThread;
   std::thread * fsysThread;
 
+  synchronized<std::vector<networkMessage *>> run_queue;
+
   void transmitOOLdata(mach_msg_header_t * const msg);
   void receiveOOLdata(mach_msg_header_t * const msg);
 
@@ -560,7 +577,6 @@ class netmsg
   mach_port_t translatePort2(const mach_port_t port, const unsigned int type);
   mach_port_t translatePort(const mach_port_t port, const unsigned int type);
   void translateHeader(mach_msg_header_t * const msg);
-  void swapHeader(mach_msg_header_t * const msg);
   void translateMessage(mach_msg_header_t * const msg);
   void tcpHandler(void);
 
@@ -1096,7 +1112,7 @@ netmsg::translatePort(const mach_port_t port, const unsigned int type)
 }
 
 void
-netmsg::swapHeader(mach_msg_header_t * const msg)
+swapHeader(mach_msg_header_t * const msg)
 {
   mach_msg_type_name_t this_type = MACH_MSGH_BITS_LOCAL (msg->msgh_bits);
   mach_msg_type_name_t reply_type = MACH_MSGH_BITS_REMOTE (msg->msgh_bits);
@@ -1229,22 +1245,128 @@ netmsg::translateMessage(mach_msg_header_t * const msg)
     }
 }
 
-void
-netmsg::tcpHandler(void)
+/* class networkMessage
+ *
+ * This class contains the buffer space for a single message received
+ * across the network, and an associated thread for processing it.
+ *
+ * Once it's done processing, it puts itself back into the parent
+ * netmsg class's run_queue, indicating that it's available for
+ * another message.
+ *
+ * This is done partly for performance, but primarily to evade
+ * problems with the Mach kernel blocking on IPC sends.
+ */
+
+class networkMessage
 {
-  const mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
+public:
+  netmsg * const parent;
+
+  //const static mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
+  const static mach_msg_size_t max_size = 4096;
   char buffer[max_size];
   mach_msg_header_t * const msg = reinterpret_cast<mach_msg_header_t *> (buffer);
 
+  std::mutex runstop;  // normally locked
+
+  void run(void)
+  {
+    while (1)
+      {
+        {
+          // This blocks us until parent unlocks our mutex by calling
+          // process_buffer() after writing data into our buffer.
+
+          std::unique_lock<std::mutex> lk(runstop);
+
+          // Now process buffer
+
+          /* Bit of an odd ordering here, designed to make sure the debug
+           * messages print sensibly.  We translate all the port numbers
+           * into our own port number space, then print the message, then
+           * swap the header.
+           */
+
+          ddprintf("%x processing\n", this);
+
+          // dprintf("-->");
+          // dprintMessage(msg);
+
+          // XXX these translation functions now need some kind of locking
+          parent->translateMessage(msg);
+          parent->translateHeader(msg);
+
+          dprintf("-->");
+          dprintMessage(msg);
+
+          swapHeader(msg);
+
+          ddprintf("sending IPC message to port %ld\n", msg->msgh_remote_port);
+
+          /* XXX this call could easily return MACH_SEND_INVALID_DEST if the destination died */
+
+          // this is here for debugging purposes; gdb can easily see messages with timeout 1 ms
+          int timeout = (msg->msgh_id == 2089) ? 1 : 0;
+          mach_call (mach_msg(msg, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msg->msgh_size,
+                              0, msg->msgh_remote_port,
+                              timeout, MACH_PORT_NULL));
+
+        }
+        // indicate that we're ready to process another buffer by
+        // putting ourselves into the parent's run_queue
+        runstop.lock();
+        {
+          std::unique_lock<std::mutex> lk(parent->run_queue);
+          parent->run_queue.push_back(this);
+        }
+
+      }
+  }
+
+  void process_buffer(void)
+  {
+    runstop.unlock();  // starts our thread running
+  }
+
+  networkMessage(netmsg * parent) : parent(parent)
+  {
+    // we start stopped, waiting for parent to write data into our buffer
+    runstop.lock();
+    // XXX nothing is done to reap this thread
+    new std::thread{&networkMessage::run, this};
+  }
+};
+
+void
+netmsg::tcpHandler(void)
+{
   ddprintf("waiting for network messages\n");
 
   while (1)
     {
+      /* Obtain a buffer to read into, with an associated thread to process it */
+
+      networkMessage * netmsg;
+      {
+        std::unique_lock<std::mutex> lk(run_queue);
+
+        if (run_queue.empty())
+          {
+            netmsg = new networkMessage(this);
+          }
+        else
+          {
+            netmsg = run_queue.back();
+            run_queue.pop_back();
+          }
+      }
+      ddprintf("netmsg is %x\n", netmsg);
 
       /* Receive a single Mach message on the network socket */
 
-      is.read(buffer, sizeof(mach_msg_header_t));
-      if (is) is.read(buffer + sizeof(mach_msg_header_t), msg->msgh_size - sizeof(mach_msg_header_t));
+      is.read(netmsg->buffer, sizeof(mach_msg_header_t));
+      if (is) is.read(netmsg->buffer + sizeof(mach_msg_header_t), netmsg->msg->msgh_size - sizeof(mach_msg_header_t));
 
       if (! is)
         {
@@ -1283,37 +1405,12 @@ netmsg::tcpHandler(void)
         }
 
       ddprintf("received network message (%s) for port %ld%s\n",
-               msgid_name(msg->msgh_id), msg->msgh_local_port,
-               msg->msgh_bits & MACH_MSGH_BITS_REMOTE_TRANSLATE ? "" : " (local)");
+               msgid_name(netmsg->msg->msgh_id), netmsg->msg->msgh_local_port,
+               netmsg->msg->msgh_bits & MACH_MSGH_BITS_REMOTE_TRANSLATE ? "" : " (local)");
 
-      receiveOOLdata(msg);
+      receiveOOLdata(netmsg->msg);
 
-      /* Bit of an odd ordering here, designed to make sure the debug
-       * messages print sensibly.  We translate all the port numbers
-       * into our own port number space, then print the message, then
-       * swap the header.
-       */
-
-      // dprintf("-->");
-      // dprintMessage(msg);
-
-      translateMessage(msg);
-      translateHeader(msg);
-
-      dprintf("-->");
-      dprintMessage(msg);
-
-      swapHeader(msg);
-
-      ddprintf("sending IPC message to port %ld\n", msg->msgh_remote_port);
-
-      /* XXX this call could easily return MACH_SEND_INVALID_DEST if the destination died */
-
-      int timeout = (msg->msgh_id == 2089) ? 1 : 0;
-      mach_call (mach_msg(msg, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msg->msgh_size,
-                          0, msg->msgh_remote_port,
-                          timeout, MACH_PORT_NULL));
-
+      netmsg->process_buffer();
     }
 }
 
