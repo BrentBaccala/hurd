@@ -179,7 +179,10 @@ void ddprintf(Args... rest)
  */
 
 template <class T>
-class synchronized : public T, public std::mutex { };
+class synchronized : public T, public std::mutex
+{
+  using T::T;    // this picks up T's constructors
+};
 
 static const struct argp_option options[] =
   {
@@ -564,7 +567,7 @@ class netmsg
   __gnu_cxx::stdio_filebuf<char> filebuf_out;
 
   std::istream is;
-  std::ostream os;
+  synchronized<std::ostream> os;
 
   std::thread * ipcThread;
   std::thread * tcpThread;
@@ -951,9 +954,17 @@ netmsg::ipcBufferHandler(networkMessage * netmsg)
 
   translateForTransmission(msg);
 
-  os.write(netmsg->buffer, msg->msgh_size);
-  transmitOOLdata(msg);
-  os.flush();
+  /* Lock the network output stream and transmit the message on it. */
+
+  /* XXX This will hang indefinitely, with the stream locked, if the
+   * memory manager backing our OOL data is screwy.
+   */
+  {
+    std::unique_lock<std::mutex> lk(os);
+    os.write(netmsg->buffer, msg->msgh_size);
+    transmitOOLdata(msg);
+    os.flush();
+  }
 
   ddprintf("sent network message\n");
 }
