@@ -851,25 +851,29 @@ netmsg::ipcHandler(void)
         }
       else if (send_ports_by_local.count(msg->msgh_local_port) == 1)
         {
-          /* translate */
+          /* it's a send right we got via the network.  translate it */
           msg->msgh_local_port = send_ports_by_local[msg->msgh_local_port];
         }
       else if (send_once_ports_by_local.count(msg->msgh_local_port) == 1)
         {
-          /* translate */
+          /* it's a send-once right we got via the network.  translate it */
           mach_port_t remote_port = send_once_ports_by_local[msg->msgh_local_port];
+
+          /* Since it's a send-once right, we'll never see it again, so forget its mappings */
+          send_once_ports_by_local.erase(msg->msgh_local_port);
+          send_once_ports_by_remote.erase(remote_port);
+
+          /* Also, we can deallocate the receive right now */
+          mach_call (mach_port_mod_refs (mach_task_self(), msg->msgh_local_port,
+                                         MACH_PORT_RIGHT_RECEIVE, -1));
 
           ddprintf("Translating dest port %ld to %ld\n", msg->msgh_local_port, remote_port);
 
-          send_once_ports_by_local.erase(msg->msgh_local_port);
-          send_once_ports_by_remote.erase(remote_port);
           msg->msgh_local_port = remote_port;
-
-          /* XXX it's a send once port; we can deallocate the receive right now */
         }
       else
         {
-          /* it's a receive port we got via IPC.  Let the remote translate it. */
+          /* it's a receive right we got via IPC.  Let the remote translate it. */
           msg->msgh_bits |= MACH_MSGH_BITS_REMOTE_TRANSLATE;
         }
 
