@@ -578,6 +578,7 @@ class netmsg
   void receiveOOLdata(mach_msg_header_t * const msg);
 
   void translateForTransmission(mach_msg_header_t * const msg);
+  void ipcBufferHandler(networkMessage * netmsg);
   void ipcHandler(void);
 
   mach_port_t translatePort2(const mach_port_t port, const unsigned int type);
@@ -877,12 +878,89 @@ netmsg::translateForTransmission(mach_msg_header_t * const msg)
 }
 
 void
+netmsg::ipcBufferHandler(networkMessage * netmsg)
+{
+  mach_msg_header_t * const msg = netmsg->msg;
+
+  /* Print debugging messages in our local port space, before translation */
+
+  dprintf("<--");
+  dprintMessage(msg);
+
+  /* A message has been received via IPC.  Transmit it across the
+   * network, letting the receiver translate it.
+   *
+   * XXX several problems with this:
+   *
+   * - Flow control: If the remote queue is full, we want to
+   * remove this port from our portset until space is available on
+   * the remote.
+   *
+   * - Error handling: If the remote port died, or some other
+   * error is returned, we want to relay it back to the sender.
+   */
+
+  /* We need to distinguish between messages received on ports
+   * that we created, vs messages received on ports we got
+   * via IPC transfer.
+   *
+   * Several ways to handle this:
+   *
+   * 1. use libports and put the ports into two different classes,
+   *    but keep them in the same portset (so we can receive from
+   *    both of them with one mach_msg call).
+   *
+   * 2. use two different threads to receive from two different
+   *    portsets, but that requires locking on the network
+   *    stream, because they'll both be trying to transmit on it
+   *
+   * 3. distinguish between them based on C++ maps
+   */
+
+  if (msg->msgh_local_port == control)
+    {
+      msg->msgh_local_port = MACH_PORT_CONTROL;
+    }
+  else if (send_ports_by_local.count(msg->msgh_local_port) == 1)
+    {
+      /* it's a send right we got via the network.  translate it */
+      msg->msgh_local_port = send_ports_by_local[msg->msgh_local_port];
+    }
+  else if (send_once_ports_by_local.count(msg->msgh_local_port) == 1)
+    {
+      /* it's a send-once right we got via the network.  translate it */
+      mach_port_t remote_port = send_once_ports_by_local[msg->msgh_local_port];
+
+      /* Since it's a send-once right, we'll never see it again, so forget its mappings */
+      send_once_ports_by_local.erase(msg->msgh_local_port);
+      send_once_ports_by_remote.erase(remote_port);
+
+      /* Also, we can deallocate the receive right now */
+      mach_call (mach_port_mod_refs (mach_task_self(), msg->msgh_local_port,
+                                     MACH_PORT_RIGHT_RECEIVE, -1));
+
+      ddprintf("Translating dest port %ld to %ld\n", msg->msgh_local_port, remote_port);
+
+      msg->msgh_local_port = remote_port;
+    }
+  else
+    {
+      /* it's a receive right we got via IPC.  Let the remote translate it. */
+      msg->msgh_bits |= MACH_MSGH_BITS_REMOTE_TRANSLATE;
+    }
+
+  translateForTransmission(msg);
+
+  os.write(netmsg->buffer, msg->msgh_size);
+  transmitOOLdata(msg);
+  os.flush();
+
+  ddprintf("sent network message\n");
+}
+
+void
 netmsg::ipcHandler(void)
 {
-  const mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
-  char buffer[max_size];
-  mach_msg_header_t * const msg = reinterpret_cast<mach_msg_header_t *> (buffer);
-
   mach_call (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_PORT_SET, &portset));
 
   mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &my_sendonce_receive_port));
@@ -902,91 +980,23 @@ netmsg::ipcHandler(void)
   /* Launch */
   while (1)
     {
+      /* Obtain a buffer to read into, with an associated thread to process it */
+
+      networkMessage * netmsg = fetchMessage();
+
+      ddprintf("ipc recv netmsg is %x\n", netmsg);
+
       /* XXX Specify MACH_RCV_LARGE to handle messages larger than the buffer */
 
       /* Ports can be added and removed while a receive from a portset is in progress. */
 
-      mach_call (mach_msg (msg, MACH_RCV_MSG,
-                           0, max_size, portset,
+      mach_call (mach_msg (netmsg->msg, MACH_RCV_MSG,
+                           0, netmsg->max_size, portset,
                            MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
 
-      ddprintf("received IPC message (%s) on port %ld\n", msgid_name(msg->msgh_id), msg->msgh_local_port);
+      ddprintf("received IPC message (%s) on port %ld\n", msgid_name(netmsg->msg->msgh_id), netmsg->msg->msgh_local_port);
 
-      /* Print debugging messages in our local port space, before translation */
-
-      dprintf("<--");
-      dprintMessage(msg);
-
-      /* A message has been received via IPC.  Transmit it across the
-       * network, letting the receiver translate it.
-       *
-       * XXX several problems with this:
-       *
-       * - Flow control: If the remote queue is full, we want to
-       * remove this port from our portset until space is available on
-       * the remote.
-       *
-       * - Error handling: If the remote port died, or some other
-       * error is returned, we want to relay it back to the sender.
-       */
-
-      /* We need to distinguish between messages received on ports
-       * that we created, vs messages received on ports we got
-       * via IPC transfer.
-       *
-       * Several ways to handle this:
-       *
-       * 1. use libports and put the ports into two different classes,
-       *    but keep them in the same portset (so we can receive from
-       *    both of them with one mach_msg call).
-       *
-       * 2. use two different threads to receive from two different
-       *    portsets, but that requires locking on the network
-       *    stream, because they'll both be trying to transmit on it
-       *
-       * 3. distinguish between them based on C++ maps
-       */
-
-      if (msg->msgh_local_port == control)
-        {
-          msg->msgh_local_port = MACH_PORT_CONTROL;
-        }
-      else if (send_ports_by_local.count(msg->msgh_local_port) == 1)
-        {
-          /* it's a send right we got via the network.  translate it */
-          msg->msgh_local_port = send_ports_by_local[msg->msgh_local_port];
-        }
-      else if (send_once_ports_by_local.count(msg->msgh_local_port) == 1)
-        {
-          /* it's a send-once right we got via the network.  translate it */
-          mach_port_t remote_port = send_once_ports_by_local[msg->msgh_local_port];
-
-          /* Since it's a send-once right, we'll never see it again, so forget its mappings */
-          send_once_ports_by_local.erase(msg->msgh_local_port);
-          send_once_ports_by_remote.erase(remote_port);
-
-          /* Also, we can deallocate the receive right now */
-          mach_call (mach_port_mod_refs (mach_task_self(), msg->msgh_local_port,
-                                         MACH_PORT_RIGHT_RECEIVE, -1));
-
-          ddprintf("Translating dest port %ld to %ld\n", msg->msgh_local_port, remote_port);
-
-          msg->msgh_local_port = remote_port;
-        }
-      else
-        {
-          /* it's a receive right we got via IPC.  Let the remote translate it. */
-          msg->msgh_bits |= MACH_MSGH_BITS_REMOTE_TRANSLATE;
-        }
-
-      translateForTransmission(msg);
-
-      os.write(buffer, msg->msgh_size);
-      transmitOOLdata(msg);
-      os.flush();
-
-      ddprintf("sent network message\n");
-
+      netmsg->process_buffer(&netmsg::ipcBufferHandler);
     }
 
 }
@@ -1433,11 +1443,12 @@ netmsg::tcpHandler(void)
 
       networkMessage * netmsg = fetchMessage();
 
-      ddprintf("netmsg is %x\n", netmsg);
+      ddprintf("tcp recv netmsg is %x\n", netmsg);
 
       /* Receive a single Mach message on the network socket */
 
       is.read(netmsg->buffer, sizeof(mach_msg_header_t));
+      assert(netmsg->msg->msgh_size <= netmsg->max_size);
       if (is) is.read(netmsg->buffer + sizeof(mach_msg_header_t), netmsg->msg->msgh_size - sizeof(mach_msg_header_t));
 
       if (! is)
