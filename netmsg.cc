@@ -594,6 +594,101 @@ public:
 };
 
 
+/* class networkMessage
+ *
+ * This class contains the buffer space for a single Mach message, and
+ * an associated thread for processing it.
+ *
+ * It can be used for messages going in either direction, as a handler
+ * subroutine is passed to it, indicating what processing should be
+ * done on the buffer.
+ *
+ * Once it's done processing, it puts itself back into the parent
+ * netmsg class's run_queue, indicating that it's available for
+ * another message.
+ *
+ * This is done partly for performance, but primarily to evade
+ * problems with the Mach kernel blocking on IPC sends.
+ */
+
+class networkMessage
+{
+public:
+  netmsg * const parent;
+
+  //const static mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
+  const static mach_msg_size_t max_size = 4096;
+  char buffer[max_size];
+  mach_msg_header_t * const msg = reinterpret_cast<mach_msg_header_t *> (buffer);
+
+  void (netmsg::* handler)(networkMessage *);
+
+  std::mutex runstop;  // normally locked
+
+  void run(void)
+  {
+    while (1)
+      {
+        {
+          // This blocks us until parent unlocks our mutex by calling
+          // process_buffer() after writing data into our buffer.
+
+          std::unique_lock<std::mutex> lk(runstop);
+
+          // Now process buffer
+
+          ddprintf("%x processing\n", this);
+
+          (parent->*handler)(this);
+
+        }
+        // indicate that we're ready to process another buffer by
+        // putting ourselves into the parent's run_queue
+        runstop.lock();
+        {
+          std::unique_lock<std::mutex> lk(parent->run_queue);
+          parent->run_queue.push_back(this);
+        }
+
+      }
+  }
+
+  void process_buffer(void (netmsg::* new_handler)(networkMessage *))
+  {
+    handler = new_handler;
+    // XXX what if we're not waiting to start?
+    runstop.unlock();  // starts our thread running
+  }
+
+  networkMessage(netmsg * parent) : parent(parent)
+  {
+    // we start stopped, waiting for parent to write data into our buffer
+    runstop.lock();
+    // XXX nothing is done to reap this thread
+    new std::thread{&networkMessage::run, this};
+  }
+};
+
+networkMessage *
+netmsg::fetchMessage(void)
+{
+  std::unique_lock<std::mutex> lk(run_queue);
+  networkMessage * netmsg;
+
+  if (run_queue.empty())
+    {
+      netmsg = new networkMessage(this);
+    }
+  else
+    {
+      netmsg = run_queue.back();
+      run_queue.pop_back();
+    }
+
+  return netmsg;
+}
+
+
 // XXX should be const...
 // dprintMessage(const mach_msg_header_t * const msg)
 
@@ -1289,81 +1384,6 @@ netmsg::translateMessage(mach_msg_header_t * const msg)
     }
 }
 
-/* class networkMessage
- *
- * This class contains the buffer space for a single Mach message, and
- * an associated thread for processing it.
- *
- * It can be used for messages going in either direction, as a handler
- * subroutine is passed to it, indicating what processing should be
- * done on the buffer.
- *
- * Once it's done processing, it puts itself back into the parent
- * netmsg class's run_queue, indicating that it's available for
- * another message.
- *
- * This is done partly for performance, but primarily to evade
- * problems with the Mach kernel blocking on IPC sends.
- */
-
-class networkMessage
-{
-public:
-  netmsg * const parent;
-
-  //const static mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
-  const static mach_msg_size_t max_size = 4096;
-  char buffer[max_size];
-  mach_msg_header_t * const msg = reinterpret_cast<mach_msg_header_t *> (buffer);
-
-  void (netmsg::* handler)(networkMessage *);
-
-  std::mutex runstop;  // normally locked
-
-  void run(void)
-  {
-    while (1)
-      {
-        {
-          // This blocks us until parent unlocks our mutex by calling
-          // process_buffer() after writing data into our buffer.
-
-          std::unique_lock<std::mutex> lk(runstop);
-
-          // Now process buffer
-
-          ddprintf("%x processing\n", this);
-
-          (parent->*handler)(this);
-
-        }
-        // indicate that we're ready to process another buffer by
-        // putting ourselves into the parent's run_queue
-        runstop.lock();
-        {
-          std::unique_lock<std::mutex> lk(parent->run_queue);
-          parent->run_queue.push_back(this);
-        }
-
-      }
-  }
-
-  void process_buffer(void (netmsg::* new_handler)(networkMessage *))
-  {
-    handler = new_handler;
-    // XXX what if we're not waiting to start?
-    runstop.unlock();  // starts our thread running
-  }
-
-  networkMessage(netmsg * parent) : parent(parent)
-  {
-    // we start stopped, waiting for parent to write data into our buffer
-    runstop.lock();
-    // XXX nothing is done to reap this thread
-    new std::thread{&networkMessage::run, this};
-  }
-};
-
 void
 netmsg::tcpBufferHandler(networkMessage * netmsg)
 {
@@ -1400,25 +1420,6 @@ netmsg::tcpBufferHandler(networkMessage * netmsg)
                           timeout, MACH_PORT_NULL));
     }
 
-}
-
-networkMessage *
-netmsg::fetchMessage(void)
-{
-  std::unique_lock<std::mutex> lk(run_queue);
-  networkMessage * netmsg;
-
-  if (run_queue.empty())
-    {
-      netmsg = new networkMessage(this);
-    }
-  else
-    {
-      netmsg = run_queue.back();
-      run_queue.pop_back();
-    }
-
-  return netmsg;
 }
 
 void
