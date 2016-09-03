@@ -536,7 +536,32 @@ mach_port_t control = MACH_PORT_NULL;
  * servers will have an instance for every client that connects to them
  */
 
+class netmsg;
 class networkMessage;
+
+/* class RunQueue
+ *
+ * To ensure in-order delivery of messages, we keep run queues,
+ * organized by the original destination port number as it appeared in
+ * the network message (not the translated port number).  Each run
+ * queue has a handler function, set when it's constructed.  When
+ * you push onto a run queue, if it's empty, the message you've
+ * pushed starts processing.  When you pop from a run queue, if
+ * there's anything left in the run queue, the top item starts
+ * processing.  It's all protected by a mutex lock.
+ */
+
+class RunQueue : synchronized<std::map<mach_port_t, std::deque<networkMessage *>>>
+{
+  void (netmsg::* const handler)(networkMessage *);
+
+ public:
+
+  void push_back(mach_port_t port, networkMessage * netmsg);
+  void pop_front(mach_port_t port);
+
+  RunQueue(void (netmsg::* handler)(networkMessage *)) : handler(handler) { }
+};
 
 class netmsg
 {
@@ -576,8 +601,6 @@ class netmsg
 
   synchronized<std::vector<networkMessage *>> free_messages;
 
-  synchronized<std::map<mach_port_t, std::deque<networkMessage *>>> tcp_run_queue;
-
   networkMessage * fetchMessage(void);
 
   void transmitOOLdata(mach_msg_header_t * const msg);
@@ -593,6 +616,8 @@ class netmsg
   void translateMessage(mach_msg_header_t * const msg);
   void tcpHandler(void);
   void tcpBufferHandler(networkMessage * netmsg);
+
+  RunQueue tcp_run_queue {&netmsg::tcpBufferHandler};
 
 public:
 
@@ -693,6 +718,37 @@ netmsg::fetchMessage(void)
     }
 
   return netmsg;
+}
+
+/* class RunQueue
+ */
+
+void
+RunQueue::push_back(mach_port_t port, networkMessage * netmsg)
+{
+  std::unique_lock<std::mutex> lk;
+
+  bool empty = (*this)[port].empty();
+  (*this)[port].push_back(netmsg);
+  if (empty)
+    {
+      netmsg->process_buffer(handler);
+    }
+}
+
+/* Put ourselves on the run queue and, if we're the only message there, start delivery. */
+void
+RunQueue::pop_front(mach_port_t port)
+{
+  std::unique_lock<std::mutex> lk;
+
+  // assert(netmsg == tcp_run_queue[original_local_port].front());
+  at(port).pop_front();
+
+  if (! at(port).empty())
+    {
+      at(port).front()->process_buffer(handler);
+    }
 }
 
 
@@ -1445,24 +1501,7 @@ netmsg::tcpBufferHandler(networkMessage * netmsg)
                           timeout, MACH_PORT_NULL));
     }
 
-  /* To ensure in-order delivery of messages, we keep a run queue,
-   * organized by the original destination port number as it appeared
-   * in the network message (not the translated port number).  We
-   * should be the front item in the run queue.  Remove ourselves, and
-   * if a message is waiting behind us, start its delivery.
-   */
-
-  {
-    std::unique_lock<std::mutex> lk(tcp_run_queue);
-
-    assert(netmsg == tcp_run_queue[original_local_port].front());
-    tcp_run_queue[original_local_port].pop_front();
-
-    if (! tcp_run_queue[original_local_port].empty())
-      {
-        tcp_run_queue[original_local_port].front()->process_buffer(&netmsg::tcpBufferHandler);
-      }
-  }
+  tcp_run_queue.pop_front(original_local_port);
 }
 
 void
@@ -1526,17 +1565,9 @@ netmsg::tcpHandler(void)
 
       receiveOOLdata(netmsg->msg);
 
-      /* Put ourselves on the run queue and, if we're the only message there, start delivery. */
-      /* XXX the run queue should be a class, and this should be a method */
-      {
-        std::unique_lock<std::mutex> lk(tcp_run_queue);
-        bool empty = tcp_run_queue[netmsg->msg->msgh_local_port].empty();
-        tcp_run_queue[netmsg->msg->msgh_local_port].push_back(netmsg);
-        if (empty)
-          {
-            netmsg->process_buffer(&netmsg::tcpBufferHandler);
-          }
-      }
+      /* Put ourselves on the run queue and, if we're the only message there, this will start delivery. */
+
+      tcp_run_queue.push_back(netmsg->msg->msgh_local_port, netmsg);
 
     }
 }
