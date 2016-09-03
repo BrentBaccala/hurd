@@ -618,6 +618,7 @@ class netmsg
   void tcpBufferHandler(networkMessage * netmsg);
 
   RunQueue tcp_run_queue {&netmsg::tcpBufferHandler};
+  RunQueue ipc_run_queue {&netmsg::ipcBufferHandler};
 
 public:
 
@@ -943,6 +944,7 @@ void
 netmsg::ipcBufferHandler(networkMessage * netmsg)
 {
   mach_msg_header_t * const msg = netmsg->msg;
+  mach_port_t original_local_port = msg->msgh_local_port;
 
   /* Print debugging messages in our local port space, before translation */
 
@@ -1026,6 +1028,8 @@ netmsg::ipcBufferHandler(networkMessage * netmsg)
   }
 
   ddprintf("sent network message\n");
+
+  ipc_run_queue.pop_front(original_local_port);
 }
 
 void
@@ -1066,7 +1070,7 @@ netmsg::ipcHandler(void)
 
       ddprintf("received IPC message (%s) on port %ld\n", msgid_name(netmsg->msg->msgh_id), netmsg->msg->msgh_local_port);
 
-      netmsg->process_buffer(&netmsg::ipcBufferHandler);
+      ipc_run_queue.push_back(netmsg->msg->msgh_local_port, netmsg);
     }
 
 }
