@@ -118,6 +118,7 @@
 
 #include <vector>
 #include <map>
+#include <deque>
 
 #include <ext/stdio_filebuf.h>
 
@@ -573,7 +574,9 @@ class netmsg
   std::thread * tcpThread;
   std::thread * fsysThread;
 
-  synchronized<std::vector<networkMessage *>> run_queue;
+  synchronized<std::vector<networkMessage *>> free_messages;
+
+  synchronized<std::map<mach_port_t, std::deque<networkMessage *>>> tcp_run_queue;
 
   networkMessage * fetchMessage(void);
 
@@ -608,7 +611,7 @@ public:
  * done on the buffer.
  *
  * Once it's done processing, it puts itself back into the parent
- * netmsg class's run_queue, indicating that it's available for
+ * netmsg class's free_messages, indicating that it's available for
  * another message.
  *
  * This is done partly for performance, but primarily to evade
@@ -647,11 +650,11 @@ public:
 
         }
         // indicate that we're ready to process another buffer by
-        // putting ourselves into the parent's run_queue
+        // putting ourselves into the parent's free_messages
         runstop.lock();
         {
-          std::unique_lock<std::mutex> lk(parent->run_queue);
-          parent->run_queue.push_back(this);
+          std::unique_lock<std::mutex> lk(parent->free_messages);
+          parent->free_messages.push_back(this);
         }
 
       }
@@ -676,17 +679,17 @@ public:
 networkMessage *
 netmsg::fetchMessage(void)
 {
-  std::unique_lock<std::mutex> lk(run_queue);
+  std::unique_lock<std::mutex> lk(free_messages);
   networkMessage * netmsg;
 
-  if (run_queue.empty())
+  if (free_messages.empty())
     {
       netmsg = new networkMessage(this);
     }
   else
     {
-      netmsg = run_queue.back();
-      run_queue.pop_back();
+      netmsg = free_messages.back();
+      free_messages.pop_back();
     }
 
   return netmsg;
@@ -1409,6 +1412,7 @@ void
 netmsg::tcpBufferHandler(networkMessage * netmsg)
 {
   mach_msg_header_t * const msg = netmsg->msg;
+  mach_port_t original_local_port = netmsg->msg->msgh_local_port;
 
   /* Bit of an odd ordering here, designed to make sure the debug
    * messages print sensibly.  We translate all the port numbers
@@ -1441,6 +1445,24 @@ netmsg::tcpBufferHandler(networkMessage * netmsg)
                           timeout, MACH_PORT_NULL));
     }
 
+  /* To ensure in-order delivery of messages, we keep a run queue,
+   * organized by the original destination port number as it appeared
+   * in the network message (not the translated port number).  We
+   * should be the front item in the run queue.  Remove ourselves, and
+   * if a message is waiting behind us, start its delivery.
+   */
+
+  {
+    std::unique_lock<std::mutex> lk(tcp_run_queue);
+
+    assert(netmsg == tcp_run_queue[original_local_port].front());
+    tcp_run_queue[original_local_port].pop_front();
+
+    if (! tcp_run_queue[original_local_port].empty())
+      {
+        tcp_run_queue[original_local_port].front()->process_buffer(&netmsg::tcpBufferHandler);
+      }
+  }
 }
 
 void
@@ -1504,7 +1526,18 @@ netmsg::tcpHandler(void)
 
       receiveOOLdata(netmsg->msg);
 
-      netmsg->process_buffer(&netmsg::tcpBufferHandler);
+      /* Put ourselves on the run queue and, if we're the only message there, start delivery. */
+      /* XXX the run queue should be a class, and this should be a method */
+      {
+        std::unique_lock<std::mutex> lk(tcp_run_queue);
+        bool empty = tcp_run_queue[netmsg->msg->msgh_local_port].empty();
+        tcp_run_queue[netmsg->msg->msgh_local_port].push_back(netmsg);
+        if (empty)
+          {
+            netmsg->process_buffer(&netmsg::tcpBufferHandler);
+          }
+      }
+
     }
 }
 
