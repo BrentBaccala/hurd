@@ -558,7 +558,7 @@ class RunQueue : synchronized<std::map<mach_port_t, std::deque<networkMessage *>
  public:
 
   void push_back(mach_port_t port, networkMessage * netmsg);
-  void pop_front(mach_port_t port);
+  networkMessage * pop_front(mach_port_t port);
 
   RunQueue(void (netmsg::* handler)(networkMessage *)) : handler(handler) { }
 };
@@ -738,18 +738,21 @@ RunQueue::push_back(mach_port_t port, networkMessage * netmsg)
 }
 
 /* Put ourselves on the run queue and, if we're the only message there, start delivery. */
-void
+networkMessage *
 RunQueue::pop_front(mach_port_t port)
 {
   std::unique_lock<std::mutex> lk;
 
-  // assert(netmsg == tcp_run_queue[original_local_port].front());
+  networkMessage * netmsg = at(port).front();
+
   at(port).pop_front();
 
   if (! at(port).empty())
     {
       at(port).front()->process_buffer(handler);
     }
+
+  return netmsg;
 }
 
 
@@ -1029,7 +1032,7 @@ netmsg::ipcBufferHandler(networkMessage * netmsg)
 
   ddprintf("sent network message\n");
 
-  ipc_run_queue.pop_front(original_local_port);
+  assert(ipc_run_queue.pop_front(original_local_port) == netmsg);
 }
 
 void
@@ -1505,7 +1508,7 @@ netmsg::tcpBufferHandler(networkMessage * netmsg)
                           timeout, MACH_PORT_NULL));
     }
 
-  tcp_run_queue.pop_front(original_local_port);
+  assert(tcp_run_queue.pop_front(original_local_port) == netmsg);
 }
 
 void
