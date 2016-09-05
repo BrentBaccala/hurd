@@ -83,13 +83,20 @@
    remote port number because that's what came in earlier over the
    network.
 
+   BUFFERING
+
+   In order to preserve ordering of Mach messages, each destination
+   port (either local or remote) has a run queue of messages waiting
+   for delivery to it.  This queue can grow arbitrarily large, so a
+   string of messages sent to an unresponsive receive right will cause
+   netmsg's memory utilization to grow without bound.  This is
+   obviously a problem, as it defeats Mach's queue limits.
+
 
    XXX known issues XXX
 
    - no byte order swapping
-   - if sends (either network or IPC) block, the server blocks
    - can't detect three party loops
-   - no-senders notifications don't work
    - no Hurd authentication (it runs with the server's permissions)
    - no checks made if Mach produces ports with the highest bit set
 
@@ -137,6 +144,7 @@ extern "C" {
 #include <mach_error.h>
 #include <hurd.h>
 #include <hurd/fsys.h>
+#include <hurd/sigpreempt.h>
 #include "fsys_S.h"
 
   extern int fsys_server (mach_msg_header_t *, mach_msg_header_t *);
@@ -295,9 +303,9 @@ msgid_name (mach_msg_id_t msgid)
  * The pointer returned by data() is a mach_msg_data_ptr, a
  * polymorphic type that will convert to a char * (for reading and
  * writing to the network stream), a mach_port_t * (for port
- * translation), or a vm_address_t (for passing to vm_deallocate).  No
- * type checking is done on any of these conversions, so use with
- * care...
+ * translation), a void * (for hurd_safe_copyin), or a vm_address_t
+ * (for passing to vm_deallocate).  No type checking is done on any of
+ * these conversions, so use with care...
  *
  * It is also possible to index into a data item using [].  However,
  * this doesn't follow the usual C convention, since there are
@@ -327,6 +335,11 @@ public:
   operator char * ()
   {
     return reinterpret_cast<char *>(ptr);
+  }
+
+  operator void * ()
+  {
+    return reinterpret_cast<void *>(ptr);
   }
 
   operator mach_port_t * ()
@@ -913,6 +926,35 @@ netmsg::receiveOOLdata(mach_msg_header_t * const msg)
     }
 }
 
+/* OOL data can point to a memory region backed by an unreliable
+ * memory manager.  In this case, we don't want to wait until we're
+ * trying to transmit over the network before finding this out, so we
+ * copy it now into our own address space.
+ */
+
+void
+copyOOLdata(mach_msg_header_t * const msg)
+{
+  for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
+    {
+      if (! ptr.is_inline() && (ptr.data_size() > 0))
+        {
+          vm_address_t new_location;
+          mach_call (vm_allocate(mach_task_self(), &new_location, ptr.data_size(), 1));
+
+          fprintf(stderr, "safe copyin from %p to 0x%lx (%d bytes)\n", ptr.data().operator void *(), new_location, ptr.data_size());
+          /* hurd_safe_copyin() is declared in hurd/sigpreempt.h */
+          hurd_safe_copyin(reinterpret_cast<void *>(new_location), ptr.data().operator void *(), ptr.data_size());
+          fprintf(stderr, "safe copyin done\n");
+
+          vm_deallocate(mach_task_self(), ptr.data(), ptr.data_size());
+
+          /* XXX perhaps ptr.data() should return a reference to facilitate this step */
+          * ptr.OOLptr() = new_location;
+        }
+    }
+}
+
 void
 netmsg::translateForTransmission(mach_msg_header_t * const msg)
 {
@@ -948,6 +990,8 @@ netmsg::ipcBufferHandler(networkMessage * netmsg)
 {
   mach_msg_header_t * const msg = netmsg->msg;
   mach_port_t original_local_port = msg->msgh_local_port;
+
+  copyOOLdata(msg);
 
   /* Print debugging messages in our local port space, before translation */
 
