@@ -944,12 +944,11 @@ copyOOLdata(mach_msg_header_t * const msg)
           vm_address_t new_location;
           mach_call (vm_allocate(mach_task_self(), &new_location, ptr.data_size(), 1));
 
-          fprintf(stderr, "safe copyin from %p to 0x%lx (%d bytes)\n", ptr.data().operator void *(), new_location, ptr.data_size());
           /* hurd_safe_copyin() is declared in hurd/sigpreempt.h */
+          /* XXX what should we do when this fails? */
           hurd_safe_copyin(reinterpret_cast<void *>(new_location), ptr.data().operator void *(), ptr.data_size());
-          fprintf(stderr, "safe copyin done\n");
 
-          vm_deallocate(mach_task_self(), ptr.data(), ptr.data_size());
+          mach_call (vm_deallocate(mach_task_self(), ptr.data(), ptr.data_size()));
 
           /* XXX perhaps ptr.data() should return a reference to facilitate this step */
           * ptr.OOLptr() = new_location;
