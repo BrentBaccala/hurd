@@ -264,13 +264,15 @@ const struct argp_child children[] =
 static struct argp argp = { options, parse_opt, args_doc, doc, children };
 
 void
-mach_call(kern_return_t err)
+mach_call(kern_return_t err, int line)
 {
   if (err != KERN_SUCCESS)
     {
-      mach_error("mach_call", err);
+      fprintf(stderr, "mach_call line %d %s\n", line, mach_error_string(err));
     }
 }
+
+#define mach_call(err) mach_call(err, __LINE__)
 
 // XXX should look this up dynamically, though it's not likely to change
 #define MSGID_NO_SENDERS 70
