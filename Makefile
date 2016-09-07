@@ -5,11 +5,14 @@ all: netmsg looper
 # libports.  Disable the default payload to port conversion.
 fsys-MIGSFLAGS = "-DHURD_DEFAULT_PAYLOAD_TO_PORT=1"
 
-netmsg: netmsg.o fsysServer.o msgids.o
-	g++ -g -Wall -o netmsg fsysServer.o netmsg.o msgids.o -lpthread -lihash
+netmsg: netmsg.o fsysServer.o msgids.o catch-signal.o
+	g++ -g -Wall -o netmsg fsysServer.o netmsg.o msgids.o catch-signal.o -lpthread -lihash
 
 netmsg.o: netmsg.cc msgids.h
 	g++ -g -std=c++11 -Wall -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 $(CFLAGS) -c netmsg.cc
+
+catch-signal.o: catch-signal.c
+	gcc -g -Wall -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 $(CFLAGS) -c catch-signal.c
 
 msgids.o: msgids.c msgids.h
 	gcc -g -Wall -c -D_GNU_SOURCE -DDATADIR=\"/usr/share\" msgids.c
