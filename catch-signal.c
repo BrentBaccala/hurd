@@ -16,6 +16,7 @@
    License along with the GNU C Library; if not, see
    <http://www.gnu.org/licenses/>.  */
 
+#include <stdio.h>
 #include <hurd/signal.h>
 #include <hurd/sigpreempt.h>
 #include <string.h>
@@ -34,10 +35,21 @@ hurd_catch_signal (sigset_t sigset,
   void throw (int signo, long int sigcode, struct sigcontext *scp)
     { siglongjmp (buf, scp->sc_error ?: EGRATUITOUS); }
 
+  sighandler_t print_preemptor (struct hurd_signal_preemptor *preemptor,
+				struct hurd_sigstate *ss,
+				int *signo, struct hurd_signal_detail *detail)
+  {
+    fprintf(stderr, "detail: exc %d, exc_code %d, exc_subcode %d, code %d, error %d\n",
+	    detail->exc, detail->exc_code, detail->exc_subcode, detail->code, detail->error);
+    return handler == SIG_ERR ? (sighandler_t) &throw : handler;
+  }
+
   struct hurd_signal_preemptor preemptor =
     {
-      sigset, first, last,
-      NULL, handler == SIG_ERR ? (sighandler_t) &throw : handler,
+      //sigset, first, last,
+      //NULL, handler == SIG_ERR ? (sighandler_t) &throw : handler,
+      sigset, 0, ~0,
+      print_preemptor, NULL,
     };
 
   struct hurd_sigstate *const ss = _hurd_self_sigstate ();
