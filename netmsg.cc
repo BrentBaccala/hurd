@@ -1544,13 +1544,22 @@ netmsg::tcpBufferHandler(networkMessage * netmsg)
 
       ddprintf("sending IPC message to port %ld\n", msg->msgh_remote_port);
 
+      /* No timeout.  First of all, I've had problems with relaying a
+       * vm_map message on a flaky memory manager.  It causes the
+       * mach_msg call to block, even with zero timeout specified.
+       *
+       * To avoid this problem, and also to avoid blocking when trying
+       * to access OOL memory from a flaky memory manager, we run this
+       * code in a separate thread.  So, no timeout.  We block this
+       * thread, and everything else on this port's run queue, until
+       * this mach_msg send returns.
+       */
+
       /* XXX this call could easily return MACH_SEND_INVALID_DEST if the destination died */
 
-      // this is here for debugging purposes; gdb can easily see messages with timeout 1 ms
-      int timeout = (msg->msgh_id == 2089) ? 1 : 0;
-      mach_call (mach_msg(msg, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msg->msgh_size,
+      mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
                           0, msg->msgh_remote_port,
-                          timeout, MACH_PORT_NULL));
+                          MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
     }
 
   assert(tcp_run_queue.pop_front(original_local_port) == netmsg);
