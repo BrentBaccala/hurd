@@ -1500,9 +1500,19 @@ netmsg::translateHeader(mach_msg_header_t * const msg)
        * trigger another no senders notification if one was requested,
        * but there might be other local send rights.  All we know for
        * sure is that there are no more remote send rights.
+       *
+       * We didn't record anything about this right in our maps
+       * because we didn't need to; the remote took care of
+       * translating it for us.
+       *
+       * We ignore KERN_INVALID_RIGHT because it will be generated
+       * if the receiver has died.
        */
+
       mach_call (mach_port_mod_refs (mach_task_self(), local_port,
-                                     MACH_PORT_RIGHT_SEND, -1));
+                                     MACH_PORT_RIGHT_SEND, -1),
+                 KERN_INVALID_RIGHT);
+
       return false;
     }
 
