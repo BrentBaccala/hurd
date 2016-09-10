@@ -118,7 +118,9 @@
 #include <netdb.h>
 
 #include <iostream>
+#include <iomanip>
 #include <iosfwd>
+#include <sstream>
 
 #include <thread>
 #include <mutex>
@@ -167,18 +169,18 @@ const char * targetHost;   /* required argument */
 
 bool serverMode = false;
 
-unsigned int debugMode = 0;
+unsigned int debugLevel = 0;
 
 template<typename... Args>
 void dprintf(Args... rest)
 {
-  if (debugMode >= 1) fprintf(stderr, rest...);
+  if (debugLevel >= 1) fprintf(stderr, rest...);
 }
 
 template<typename... Args>
 void ddprintf(Args... rest)
 {
-  if (debugMode >= 2) fprintf(stderr, rest...);
+  if (debugLevel >= 2) fprintf(stderr, rest...);
 }
 
 /* Java-like synchronized classes
@@ -229,7 +231,7 @@ parse_opt (int key, char *arg, struct argp_state *state)
       break;
 
     case 'd':
-      debugMode ++;
+      debugLevel ++;
       break;
 
     case ARGP_KEY_ARG:
@@ -775,20 +777,30 @@ RunQueue::pop_front(mach_port_t port)
 // dprintMessage(const mach_msg_header_t * const msg)
 
 void
-dprintMessage(mach_msg_header_t * const msg)
+dprintMessage(std::string prefix, mach_msg_header_t * const msg)
 {
+  if (debugLevel == 0) return;
+
+  /* Print everything to a buffer, then dump it to stderr, to avoid
+   * interspersed output if two threads are printing at once.
+   */
+
+  std::stringstream buffer;
+
+  buffer << prefix;
+
+  buffer << msg->msgh_local_port;
+
   if (msg->msgh_remote_port)
     {
-      dprintf("%d(%d) %s", msg->msgh_local_port, msg->msgh_remote_port, msgid_name(msg->msgh_id));
+      buffer << "(" << msg->msgh_remote_port << ")";
     }
-  else
-    {
-      dprintf("%d %s", msg->msgh_local_port, msgid_name(msg->msgh_id));
-    }
+
+  buffer << " " << msgid_name(msg->msgh_id);
 
   for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
     {
-      dprintf(" ");
+      buffer << " ";
 
       /* MACH_MSG_TYPE_STRING is special.  elemsize will be 1 byte and
        * nelems() will be the size of the buffer, which might be bigger
@@ -796,50 +808,50 @@ dprintMessage(mach_msg_header_t * const msg)
        */
       if (ptr.name() == MACH_MSG_TYPE_STRING)
         {
-          dprintf("\"%s\" ", ptr.data());
+          buffer << "\"" << ptr.data().operator char *() << "\" ";
           continue;
         }
 
       if (ptr.name() == MACH_MSG_TYPE_BIT)
         {
           assert(ptr.nelems() <= 8 * sizeof(long));
-          dprintf("%x", * reinterpret_cast<long *>(static_cast<vm_address_t>(ptr.data())));
+          buffer << std::hex << * reinterpret_cast<long *>(static_cast<vm_address_t>(ptr.data())) << std::dec;
           continue;
         }
 
       if (ptr.nelems() > 32)
         {
-          dprintf("%d", ptr.nelems());
+          buffer << ptr.nelems();
         }
 
       switch (ptr.name())
         {
         case MACH_MSG_TYPE_PORT_NAME:
-          dprintf("pn");
+          buffer << "pn";
           break;
 
         case MACH_MSG_TYPE_MOVE_RECEIVE:
-          dprintf("r");
+          buffer << "r";
           break;
 
         case MACH_MSG_TYPE_MOVE_SEND:
-          dprintf("s");
+          buffer << "s";
           break;
 
         case MACH_MSG_TYPE_MOVE_SEND_ONCE:
-          dprintf("so");
+          buffer << "so";
           break;
 
         case MACH_MSG_TYPE_COPY_SEND:
-          dprintf("cs");
+          buffer << "cs";
           break;
 
         case MACH_MSG_TYPE_MAKE_SEND:
-          dprintf("ms");
+          buffer << "ms";
           break;
 
         case MACH_MSG_TYPE_MAKE_SEND_ONCE:
-          dprintf("mso");
+          buffer << "mso";
           break;
 
         default:
@@ -848,13 +860,16 @@ dprintMessage(mach_msg_header_t * const msg)
 
       if (MACH_MSG_TYPE_PORT_ANY(ptr.name()) || (ptr.name() == MACH_MSG_TYPE_PORT_NAME) || (ptr.nelems() > 1))
         {
-          dprintf("{");
+          buffer << "{";
         }
+
+      std::ios::fmtflags f( buffer.flags() );
+
       for (unsigned int i = 0; i < ptr.nelems() && i < 32; i ++)
         {
-          if (i > 0)
+          if ((i > 0) && (ptr.name() != MACH_MSG_TYPE_CHAR))
             {
-              dprintf(" ");
+              buffer << " ";
             }
           switch (ptr.name())
             {
@@ -864,7 +879,18 @@ dprintMessage(mach_msg_header_t * const msg)
 
             case MACH_MSG_TYPE_CHAR:
               // XXX why is this AND needed?
-              dprintf("%02x", ptr[i] & 0xff);
+              {
+                char c = ptr[i];
+                if (std::isprint(c))
+                  {
+                    buffer << c;
+                  }
+                else
+                  {
+                    buffer << "\\x" << std::hex << std::setfill('0') << std::setw(2) << (ptr[i] & 0xff) << std::dec;
+                  }
+              }
+              //dprintf("%02x", ptr[i] & 0xff);
               break;
 
             case MACH_MSG_TYPE_INTEGER_8:
@@ -881,7 +907,7 @@ dprintMessage(mach_msg_header_t * const msg)
             case MACH_MSG_TYPE_MAKE_SEND:
             case MACH_MSG_TYPE_MAKE_SEND_ONCE:
 
-              dprintf("%d", ptr[i]);
+              buffer << ptr[i];
               break;
 
             case MACH_MSG_TYPE_STRING:
@@ -889,17 +915,21 @@ dprintMessage(mach_msg_header_t * const msg)
               assert(0);
             }
         }
+
+      buffer.flags(f);
+
       if (ptr.nelems() > 32)
         {
-          dprintf("...");
+          buffer << "...";
         }
       if (MACH_MSG_TYPE_PORT_ANY(ptr.name()) || (ptr.name() == MACH_MSG_TYPE_PORT_NAME) || (ptr.nelems() > 1))
         {
-          dprintf("}");
+          buffer << "}";
         }
     }
 
-  dprintf("\n");
+  buffer << "\n";
+  std::cerr << buffer.str();
 }
 
 void
@@ -996,8 +1026,7 @@ netmsg::ipcBufferHandler(networkMessage * netmsg)
 
   /* Print debugging messages in our local port space, before translation */
 
-  dprintf("<--");
-  dprintMessage(msg);
+  dprintMessage("<--", msg);
 
   /* A message has been received via IPC.  Transmit it across the
    * network, letting the receiver translate it.
@@ -1535,8 +1564,7 @@ netmsg::tcpBufferHandler(networkMessage * netmsg)
   translateMessage(msg);
   bool transmit = translateHeader(msg);
 
-  dprintf("-->");
-  dprintMessage(msg);
+  dprintMessage("-->", msg);
 
   if (transmit)
     {
