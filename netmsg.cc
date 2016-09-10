@@ -128,6 +128,7 @@
 #include <vector>
 #include <map>
 #include <deque>
+#include <set>
 
 #include <ext/stdio_filebuf.h>
 
@@ -265,16 +266,31 @@ const struct argp_child children[] =
 
 static struct argp argp = { options, parse_opt, args_doc, doc, children };
 
+/* mach_call - a combination preprocessor / template trick designed to
+ * call an RPC, print a warning message if anything is returned other
+ * than KERN_SUCCESS or a list of values to be ignored (that's the
+ * template trick), and include the line number in the error message
+ * (that's the preprocessor trick).
+ */
+
 void
-mach_call(kern_return_t err, int line)
+_mach_call(int line, kern_return_t err, std::set<kern_return_t> ignores)
 {
-  if (err != KERN_SUCCESS)
+  if ((err != KERN_SUCCESS) && (ignores.count(err) == 0))
     {
       fprintf(stderr, "mach_call line %d %s\n", line, mach_error_string(err));
     }
 }
 
-#define mach_call(err) mach_call(err, __LINE__)
+template<typename... Args>
+void
+_mach_call(int line, kern_return_t err, Args... rest)
+{
+  std::set<kern_return_t> ignores{rest...};
+  _mach_call(line, err, ignores);
+}
+
+#define mach_call(...) _mach_call(__LINE__, __VA_ARGS__)
 
 // XXX should look this up dynamically, though it's not likely to change
 #define MSGID_NO_SENDERS 70
