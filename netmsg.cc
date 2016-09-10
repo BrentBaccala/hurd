@@ -1017,8 +1017,27 @@ netmsg::translateForTransmission(mach_msg_header_t * const msg)
               {
                 if (send_ports_by_local.count(ports[i]) == 1)
                   {
+                    /* We're transmitting a send right that we earlier
+                     * received over the network.  Convert to the
+                     * remote's name space, and indicate to the
+                     * remote, by bit flipping the port number, that
+                     * we're sending it a port number in its own name
+                     * space.  Also, destroy the send right we
+                     * received with the message, which is a send
+                     * right to ourself!  If it's the port's last send
+                     * right, then we'll get a no senders notification
+                     * and deallocate the receive right then, so all
+                     * we destroy here is the send right.
+                     */
+
+                    /* XXX all we currently do with that no senders
+                     * notification is relay it to the other side
+                     */
+
+                    mach_call (mach_port_mod_refs (mach_task_self(), ports[i],
+                                                   MACH_PORT_RIGHT_SEND, -1));
+
                     ports[i] = (~ send_ports_by_local[ports[i]]);
-                    // XXX destroy the send right we received with this message
                   }
               }
           }
