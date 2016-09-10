@@ -607,11 +607,11 @@ class netmsg
   /* Maps remote RECEIVE rights to local SEND rights */
   std::map<mach_port_t, mach_port_t> receive_ports_by_remote;
 
-  std::map<mach_port_t, mach_port_t> send_ports_by_remote;    /* map remote port to local port; these local ports have receive rights */
+  std::map<mach_port_t, mach_port_t> send_ports_by_remote;    /* map remote send port to local receive port */
   std::map<mach_port_t, mach_port_t> send_ports_by_local;    /* map local receive port to remote send port */
 
-  std::map<mach_port_t, mach_port_t> send_once_ports_by_remote;    /* map remote port to local port; these local ports have receive rights */
-  std::map<mach_port_t, mach_port_t> send_once_ports_by_local;    /* map local receive port to remote send port */
+  std::map<mach_port_t, mach_port_t> send_once_ports_by_remote;    /* map remote send-once port to local receive port */
+  std::map<mach_port_t, mach_port_t> send_once_ports_by_local;    /* map local receive port to remote send once port */
 
   /* Use a non-standard GNU extension to wrap the network socket in a
    * C++ iostream that will provide buffering.
@@ -1383,7 +1383,11 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
       /* move the receive right into the portset so we'll be listening on it */
       mach_call (mach_port_move_member (mach_task_self (), newport, portset));
 
-      /* don't need to remember sendonce_port; it'll be used once and then forgoten */
+      /* don't need to remember sendonce_port; it'll be used once and
+       * then forgotten.  remember the port number of the receive
+       * right so when we get the message on it, we can translate it
+       * into the remote send-once right.
+       */
       send_once_ports_by_remote[port] = newport;
       send_once_ports_by_local[newport] = port;
 
