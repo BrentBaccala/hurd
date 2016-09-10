@@ -1110,9 +1110,6 @@ netmsg::ipcBufferHandler(networkMessage * netmsg)
 
   /* Lock the network output stream and transmit the message on it. */
 
-  /* XXX This will hang indefinitely, with the stream locked, if the
-   * memory manager backing our OOL data is screwy.
-   */
   {
     std::unique_lock<std::mutex> lk(os);
     os.write(netmsg->buffer, msg->msgh_size);
