@@ -1200,8 +1200,6 @@ netmsg::ipcHandler(void)
  * relayed it to us.  So we've got a send port to transmit the message
  * on.
  *
- * We don't want to block on the send.
- *
  * Possible port rights:
  *
  * SEND - Check to see if we've seen this remote port before.  If not,
@@ -1209,13 +1207,134 @@ netmsg::ipcHandler(void)
  * transmit the send right on via IPC.  If so, make a new send right
  * on the existing port and send it on.
  *
- * SEND-ONCE - Always on a new name.  Create a new send-once right (do
- * we need a new receive port?) and send it on via IPC.
+ * SEND-ONCE - Always on a new name.  Create a new send-once right,
+ * and a new receive port, and send it on via IPC.
  *
  * RECEIVE - Check to see if we've seen this remote port before.  If
  * so, we got send rights before, so we have a receive port already.
  * Send it on via IPC.  Otherwise, create a new port, save a send
  * right for ourselves, and send the receive port on.
+ *
+ * When can we deallocate ports?
+ *
+ * If we receive a send right across the network, and relay it on via
+ * IPC, it remains valid until we get a local no-senders notification,
+ * or until the remote port either dies, and we get a remote dead name
+ * notification, or the remote receive right is relayed to us.  If
+ * that happens, there might still be remote send rights.  Once we get
+ * a remote no-senders notification, there's no longer any name left
+ * for this port on the other side.
+ *
+ * If we transmit a send right across the network, then we continue to
+ * hold the local send right until either we get a remote no-senders
+ * notification, in which case we can destroy our local send right, or
+ * until we transmit the corresponding receive right across the
+ * network, in which case we may still have local send rights.  We
+ * hold onto the local receive right, and continue to relay message on
+ * it, until we get a local dead name notification, which we relay
+ * to the remote and can then destroy our local rights.
+ *
+ * If we receive a receive right across the network, and relay it on
+ * via IPC (so we've created a local send/receive pair, held on to the
+ * send right, and relayed the receive right), it remains valid until
+ * we get a remote no-senders notification, indicating that there are
+ * no more remote names for the port, or until we get a local dead
+ * name notification, which we relay to remote.
+ *
+ * If we send a receive right across the network, then we continue to
+ * hold the local receive right until we get a local no-senders
+ * notification, which we relay across the network before dropping the
+ * receive right since it no longer has any local names, or we get a
+ * remote dead name notification, which we handle by deallocating the
+ * local receive right, which turns it into a dead name.
+ *
+ * Invariants:
+ *
+ * If we have a local RECEIVE right, we can't hold a SEND right, or
+ * we'll never get a NO SENDERS notification.
+ *
+ * So, we'll either hold a RECEIVE right or a SEND right.  We don't
+ * hold multiple SEND rights, since a single SEND right could
+ * correspond to multiple SEND rights on the remote, but we have no
+ * way of detecting that.  So we just hold single SEND rights.
+ *
+ * We either hold a SEND right with a requested DEAD NAME
+ * notification, or we hold a RECEIVE right with a requested NO
+ * SENDERS notification.
+ *
+ * Actions:
+ *
+ * receive SEND right over network
+ *   - if it's a local port, just create a new send right and send it
+ *     We sent a right (send or receive) across the network earlier,
+ *     which is why the remote knows our local port, but there still
+ *     might be rights on the remote side, so we can't deallocate anything.
+ *   - check if we've seen this remort port before
+ *   - if so, make a new send right and relay it
+ *   - if not, make a new send/receive pair
+ *     relay the send right
+ *     request NO SENDERS notification on the receive right
+ *
+ * receive RECEIVE right over network
+ *   - if it's a local port, and we've got a receive right,
+ *     drop its NO SENDERS request, create and hold a SEND right, request
+ *     a DEAD NAME notification on it, and relay it.
+ *     We sent a receive right over the network earlier, and now we're
+ *     getting it back.  The remote might still have send rights,
+ *     so we need to keep a send right around.
+ *   - if it's a local port, and we've got a send right, it's an error
+ *     (we earlier received a local send right and sent it across, so how did
+ *     the remote get the receive right?)
+ *   - check if we've seen this remort port before
+ *   - if all we've got is a SEND right, it's an error, because
+ *     we either earlier transmitted a SEND right (to a remote
+ *     RECEIVE right?), or we earlier received a RECEIVE right
+ *     (and we can't receive one twice)
+ *   - if so, relay its receive right
+ *     cancel its NO SENDERS notification
+ *     request DEAD NAME notification before relaying it
+ *     there remain remote send rights until we get a remote NO SENDER notification
+ *        so we maintain a local send right (by creating it)
+ *   - if not, make a new send/receive pair
+ *     relay the receive right
+ *     request DEAD NAME notification on the send right
+ *
+ * transmit RECEIVE right over network
+ *   - check if we've seen this local port before
+ *   - if so, convert into the remote's name space
+ *   - request NO SENDERS notification
+ *
+ * transmit SEND right over network
+ *   - check if we've seen this local port before
+ *   - if so, convert into the remote's name space
+ *   - request DEAD PORT notification
+ *
+ * receive local NO SENDERS notification
+ *   - it's for a transmitted receive right or received send right
+ *   - relay it (translating into remote's name space if necessary)
+ *   - deallocate the receive right because it no longer has any local
+ *     names
+ *
+ * receive local DEAD NAME notification
+ *   - relay it (translating into remote's name space if necessary)
+ *   - if it's for a transmitted send right, any more messages
+ *     sent to this port should result in MACH_SEND_INVALID_DEST.
+ *     There's a race condition here.
+ *
+ * receive remote NO SENDERS notification
+ *   - it's for a received receive right or a transmitted send right
+ *   - deallocate the local send right
+ *   - if it's for a received receive right, there are no more
+ *     remote names for it, deallocate the send right we've been holding for it
+ *   - if it's for a transmitted send right,
+ *
+ * Race condition
+ *
+ * Between a local receive right being destroyed, and the dead name
+ * notification being relayed across the network, causing the the
+ * remote port to be destroyed, messages sent to the remote port will
+ * go into limbo - they'll return success, but there'll be no actual
+ * port for them to go to.
  */
 
 /*      translator                                 server
@@ -1296,7 +1415,7 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
       return port;
     }
 
-  /* If the port is flagged local, then the sender already translated it, so leave it alone */
+  /* If the port is flagged local, then the sender already translated it to our port space */
 
   if (port & 0x80000000)
     {
@@ -1304,6 +1423,7 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
       // we do need to create an extra send right, because we'll lose one when we transmit this message
       mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
                                          MACH_MSG_TYPE_COPY_SEND));
+      // XXX this is correct for receiving a SEND right, but not a RECEIVE right
       return newport;
     }
 
