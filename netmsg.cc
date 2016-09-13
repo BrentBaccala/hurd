@@ -981,6 +981,12 @@ netmsg::receiveOOLdata(mach_msg_header_t * const msg)
  * memory manager.  In this case, we don't want to wait until we're
  * trying to transmit over the network before finding this out, so we
  * copy it now into our own address space.
+ *
+ * What should we do if this fails?  Most precisely, we should mimic
+ * this behavior on the remote by arranging for it to have a faulting
+ * memory manager (presumably implemented by netmsg)!  Instead, I just
+ * ignore the return value from hurd_safe_copyin, so we just get
+ * zero-filled memory from vm_allocate passed on to the recipient.
  */
 
 void
@@ -991,10 +997,9 @@ copyOOLdata(mach_msg_header_t * const msg)
       if (! ptr.is_inline() && (ptr.data_size() > 0))
         {
           vm_address_t new_location;
+
           mach_call (vm_allocate(mach_task_self(), &new_location, ptr.data_size(), 1));
 
-          /* hurd_safe_copyin() is declared in hurd/sigpreempt.h */
-          /* XXX what should we do when this fails? */
           hurd_safe_copyin(reinterpret_cast<void *>(new_location), ptr.data().operator void *(), ptr.data_size());
 
           mach_call (vm_deallocate(mach_task_self(), ptr.data(), ptr.data_size()));
