@@ -99,6 +99,7 @@
    - can't detect three party loops
    - no Hurd authentication (it runs with the server's permissions)
    - no checks made if Mach produces ports with the highest bit set
+   - NO SENDERS notifications are sent to the port itself, not to a control port
 
    - emacs over netmsg hangs; last RPC is io_reauthenticate
 */
@@ -605,10 +606,12 @@ class netmsg
   mach_port_t my_sendonce_receive_port = MACH_PORT_NULL;
 
   /* Maps remote RECEIVE rights to local SEND rights */
-  std::map<mach_port_t, mach_port_t> receive_ports_by_remote;
+  // std::map<mach_port_t, mach_port_t> receive_ports_by_remote;
 
-  std::map<mach_port_t, mach_port_t> send_ports_by_remote;    /* map remote send port to local receive port */
-  std::map<mach_port_t, mach_port_t> send_ports_by_local;    /* map local receive port to remote send port */
+  std::map<mach_port_t, mach_port_t> local_ports_by_remote;    /* map remote send port to local receive port */
+  std::map<mach_port_t, mach_port_t> remote_ports_by_local;    /* map local receive port to remote send port */
+
+  std::map<mach_port_t, unsigned int> local_port_type;         /* MACH_MSG_TYPE_PORT_RECEIVE or MACH_MSG_TYPE_PORT_SEND */
 
   std::map<mach_port_t, mach_port_t> send_once_ports_by_remote;    /* map remote send-once port to local receive port */
   std::map<mach_port_t, mach_port_t> send_once_ports_by_local;    /* map local receive port to remote send once port */
@@ -1015,7 +1018,7 @@ netmsg::translateForTransmission(mach_msg_header_t * const msg)
 
             for (unsigned int i = 0; i < ptr.nelems(); i ++)
               {
-                if (send_ports_by_local.count(ports[i]) == 1)
+                if (remote_ports_by_local.count(ports[i]) == 1)
                   {
                     /* We're transmitting a send right that we earlier
                      * received over the network.  Convert to the
@@ -1034,10 +1037,11 @@ netmsg::translateForTransmission(mach_msg_header_t * const msg)
                      * notification is relay it to the other side
                      */
 
+                    assert(local_port_type[ports[i]] == MACH_MSG_TYPE_PORT_RECEIVE);
                     mach_call (mach_port_mod_refs (mach_task_self(), ports[i],
                                                    MACH_PORT_RIGHT_SEND, -1));
 
-                    ports[i] = (~ send_ports_by_local[ports[i]]);
+                    ports[i] = (~ remote_ports_by_local[ports[i]]);
                   }
               }
           }
@@ -1097,10 +1101,11 @@ netmsg::ipcBufferHandler(networkMessage * netmsg)
     {
       msg->msgh_local_port = MACH_PORT_CONTROL;
     }
-  else if (send_ports_by_local.count(msg->msgh_local_port) == 1)
+  else if (remote_ports_by_local.count(msg->msgh_local_port) == 1)
     {
       /* it's a send right we got via the network.  translate it */
-      msg->msgh_local_port = send_ports_by_local[msg->msgh_local_port];
+      assert(local_port_type[msg->msgh_local_port] == MACH_MSG_TYPE_PORT_RECEIVE);
+      msg->msgh_local_port = remote_ports_by_local[msg->msgh_local_port];
     }
   else if (send_once_ports_by_local.count(msg->msgh_local_port) == 1)
     {
@@ -1122,7 +1127,29 @@ netmsg::ipcBufferHandler(networkMessage * netmsg)
   else
     {
       /* it's a receive right we got via IPC.  Let the remote translate it. */
+      assert(local_port_type[msg->msgh_local_port] == MACH_MSG_TYPE_PORT_RECEIVE);
       msg->msgh_bits |= MACH_MSGH_BITS_REMOTE_TRANSLATE;
+    }
+
+  /* If it's a NO SENDERS notification, we deallocate the receive right
+   * that it's targeted at.
+   *
+   * XXX We can't differentiate between a NO SENDERS notification that
+   * we got because we requested it ourselves, vs one that another
+   * program requested.  Need to target the notification at a
+   * different port other than the one in question, then relay that
+   * information to the other side (that's the problem - we have no
+   * structure for that).
+   */
+
+  if (msg->msgh_id == MSGID_NO_SENDERS)
+    {
+      assert(local_port_type[original_local_port] == MACH_MSG_TYPE_PORT_RECEIVE);
+      mach_call (mach_port_mod_refs (mach_task_self(), original_local_port,
+                                     MACH_PORT_RIGHT_RECEIVE, -1));
+      local_port_type.erase(original_local_port);
+      local_ports_by_remote.erase(remote_ports_by_local[original_local_port]);
+      remote_ports_by_local.erase(original_local_port);
     }
 
   translateForTransmission(msg);
@@ -1260,7 +1287,7 @@ netmsg::ipcHandler(void)
  *
  * We either hold a SEND right with a requested DEAD NAME
  * notification, or we hold a RECEIVE right with a requested NO
- * SENDERS notification.
+ * SENDERS notification, targeted at the RECEIVE right itself.
  *
  * Actions:
  *
@@ -1432,11 +1459,35 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
     case MACH_MSG_TYPE_MOVE_RECEIVE:
       // remote network peer now has a receive port.  We want to send a receive port on
       // to our receipient.
-      if (receive_ports_by_remote.count(port) != 0)
+      if (local_ports_by_remote.count(port) != 0)
         {
-          error (1, 0, "Received RECEIVE port %ld twice!?", port);
-          return MACH_PORT_NULL;   // never reached; error() terminates program
-          // return receive_ports_by_remote[port];
+          mach_port_t localport = local_ports_by_remote[port];
+
+          if (local_port_type[localport] == MACH_MSG_TYPE_PORT_SEND)
+            {
+              error (1, 0, "Received RECEIVE port %ld twice!?", port);
+              return MACH_PORT_NULL;   // never reached; error() terminates program
+            }
+          else
+            {
+              // cancel no-senders notification
+              mach_port_t old;
+              mach_call (mach_port_request_notification (mach_task_self (), localport,
+                                                         MACH_NOTIFY_NO_SENDERS, 0,
+                                                         MACH_PORT_NULL,
+                                                         MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+
+              // create a SEND right (we're relaying on a RECEIVE right)
+              mach_call (mach_port_insert_right (mach_task_self (), localport, localport,
+                                                 MACH_MSG_TYPE_MAKE_SEND));
+
+              // our local port type is flipping from RECEIVE to SEND
+              local_port_type[localport] = MACH_MSG_TYPE_PORT_SEND;
+
+              // XXX request DEAD-NAME notification
+
+              return localport;
+            }
         }
       else
         {
@@ -1447,7 +1498,9 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
           mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
                                              MACH_MSG_TYPE_MAKE_SEND));
 
-          receive_ports_by_remote[port] = newport;
+          local_ports_by_remote[port] = newport;
+          remote_ports_by_local[newport] = port;
+          local_port_type[newport] = MACH_MSG_TYPE_PORT_SEND;
 
           return newport;
         }
@@ -1463,9 +1516,11 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
        * relay on a send right, which will be to a local receive
        * right.
        */
-      if (send_ports_by_remote.count(port) == 1)
+      if (local_ports_by_remote.count(port) == 1)
         {
-          const mach_port_t newport = send_ports_by_remote[port];
+          const mach_port_t newport = local_ports_by_remote[port];
+
+          assert(local_port_type[newport] == MACH_MSG_TYPE_PORT_SEND);
 
           /* it already exists; create a new send right to relay on */
           mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
@@ -1493,8 +1548,9 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
           /* move the receive right into the portset so we'll be listening on it */
           mach_call (mach_port_move_member (mach_task_self (), newport, portset));
 
-          send_ports_by_remote[port] = newport;
-          send_ports_by_local[newport] = port;
+          local_ports_by_remote[port] = newport;
+          remote_ports_by_local[newport] = port;
+          local_port_type[newport] = MACH_MSG_TYPE_PORT_RECEIVE;
 
           return newport;
         }
@@ -1620,13 +1676,14 @@ netmsg::translateHeader(mach_msg_header_t * const msg)
        *
        * Translate it into a local send right.
        */
-      if (receive_ports_by_remote.count(local_port) != 1)
+      if (local_ports_by_remote.count(local_port) != 1)
         {
           error (1, 0, "Never saw port %ld before", local_port);
         }
       else
         {
-          local_port = receive_ports_by_remote[local_port];
+          local_port = local_ports_by_remote[local_port];
+          assert(local_port_type[local_port] == MACH_MSG_TYPE_PORT_SEND);
         }
 
       msg->msgh_bits &= ~MACH_MSGH_BITS_REMOTE_TRANSLATE;
