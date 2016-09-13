@@ -1452,10 +1452,32 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
   if (port & 0x80000000)
     {
       mach_port_t newport = (~ port);
-      // we do need to create an extra send right, because we'll lose one when we transmit this message
-      mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
-                                         MACH_MSG_TYPE_COPY_SEND));
-      // XXX this is correct for receiving a SEND right, but not a RECEIVE right
+      if (type == MACH_MSG_TYPE_MOVE_SEND)
+        {
+          // we do need to create an extra send right, because we'll lose one when we transmit this message
+          mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
+                                             MACH_MSG_TYPE_MAKE_SEND));
+        }
+      else if (type == MACH_MSG_TYPE_MOVE_RECEIVE)
+        {
+          assert(local_port_type[newport] == MACH_MSG_TYPE_PORT_RECEIVE);
+
+          // cancel no-senders notification
+          mach_port_t old;
+          mach_call (mach_port_request_notification (mach_task_self (), newport,
+                                                     MACH_NOTIFY_NO_SENDERS, 0,
+                                                     MACH_PORT_NULL,
+                                                     MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+
+          // create a SEND right (we're relaying on the RECEIVE right)
+          mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
+                                             MACH_MSG_TYPE_MAKE_SEND));
+
+          // our local port type is flipping from RECEIVE to SEND
+          local_port_type[newport] = MACH_MSG_TYPE_PORT_SEND;
+
+          // XXX request DEAD-NAME notification
+        }
       return newport;
     }
 
