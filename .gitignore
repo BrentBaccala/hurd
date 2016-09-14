@@ -1,2 +1,16 @@
+
+fsys.sdefs.d
+fsys.sdefs.d.new
+fsys.sdefsi
+fsysServer.c
+fsysServer.o
+fsys_S.h
+
+msgids.o
+netmsg.o
+catch-signal.o
 netmsg
+
 looper
+grab-memory-objects
+mapper
