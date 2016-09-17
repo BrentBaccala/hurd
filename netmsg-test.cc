@@ -1,4 +1,4 @@
-/* -*- mode: C++; indent-tabs-mode: nil -*-
+/* -*- mode: C; indent-tabs-mode: nil -*-
 
    netmsg-test - a test program for netmsg
 
@@ -96,28 +96,32 @@
 #include <argp.h>
 #include <assert.h>
 
-#include <thread>
-
-#include <set>
-
-/* XXX For parse_opt(), we want constants from the error_t enum, and
- * not preprocessor defines for ARGP_ERR_UNKNOWN (E2BIG) and EINVAL.
- */
-
-#undef E2BIG
-#undef EINVAL
-
-extern "C" {
 #include <mach/notify.h>
 #include <mach_error.h>
-#include <hurd.h>
-#include <hurd/fsys.h>
-#include "fsys_S.h"
 
-  extern int fsys_server (mach_msg_header_t *, mach_msg_header_t *);
+#include <hurd/trivfs.h>
+#include <hurd/hurd_types.h>
 
-#include "msgids.h"
-};
+/* trivfs stuff */
+
+int trivfs_fstype = FSTYPE_MISC;
+int trivfs_fsid = 0;               /* 0 = use translator pid as filesystem id */
+int trivfs_allow_open = O_RDWR;
+
+int trivfs_support_read = 0;
+int trivfs_support_write = 0;
+int trivfs_support_execute = 0;
+
+void trivfs_modify_stat (struct trivfs_protid *CRED, io_statbuf_t *STBUF)
+{
+}
+
+error_t trivfs_goaway (struct trivfs_control *CNTL, int FLAGS)
+{
+  exit(0);
+  // return ESUCCESS;
+}
+
 
 const char * targetPath = NULL;
 
@@ -125,6 +129,7 @@ const char * targetPath = NULL;
 
 unsigned int debugLevel = 0;
 
+#if 0
 template<typename... Args>
 void dprintf(Args... rest)
 {
@@ -136,6 +141,7 @@ void ddprintf(Args... rest)
 {
   if (debugLevel >= 2) fprintf(stderr, rest...);
 }
+#endif
 
 /* mach_call - a combination preprocessor / template trick designed to
  * call an RPC, print a warning message if anything is returned other
@@ -144,6 +150,7 @@ void ddprintf(Args... rest)
  * (that's the preprocessor trick).
  */
 
+#if 0
 void
 _mach_call(int line, kern_return_t err, std::set<kern_return_t> ignores)
 {
@@ -162,6 +169,7 @@ _mach_call(int line, kern_return_t err, Args... rest)
 }
 
 #define mach_call(...) _mach_call(__LINE__, __VA_ARGS__)
+#endif
 
 /***** COMMAND-LINE OPTIONS *****/
 
@@ -204,7 +212,6 @@ parse_opt (int key, char *arg, struct argp_state *state)
 
 const struct argp_child children[] =
   {
-    { .argp=&msgid_argp, },
     { 0 }
   };
 
@@ -218,64 +225,17 @@ void
 startAsTranslator(void)
 {
   mach_port_t bootstrap;
-  mach_port_t realnode;
-  kern_return_t err;
+  trivfs_control_t fsys;
 
   task_get_bootstrap_port (mach_task_self (), &bootstrap);
   if (bootstrap == MACH_PORT_NULL)
     error (1, 0, "Must be started as a translator");
 
-  /* Reply to our parent.
-   *
-   * The only thing we want to keep out of this exchange is a receive
-   * right on the control port we'll pass back to our parent.
-   */
+  /*mach_call*/ (trivfs_startup(bootstrap, O_RDWR,
+                            NULL, NULL, NULL, NULL,
+                            &fsys));
 
-  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &control));
-  mach_call (mach_port_insert_right (mach_task_self (), control, control,
-                                     MACH_MSG_TYPE_MAKE_SEND));
-  err =
-    fsys_startup (bootstrap, 0, control, MACH_MSG_TYPE_COPY_SEND, &realnode);
-
-  if (err)
-    error (1, err, "Starting up translator");
-
-  ddprintf("control port is %ld\n", control);
-
-  mach_call (mach_port_deallocate (mach_task_self (), bootstrap));
-  mach_call (mach_port_deallocate (mach_task_self (), realnode));
-
-  /* server port - we listen on this port for our testing messages */
-  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &server));
-
-#if 0
-  void run_fsysServer(void)
-  {
-    while (1)
-      {
-        mach_call (mach_msg_server (fsys_server, 0, control));
-      }
-  }
-
-  fsysThread = new std::thread(run_fsysServer);
-#endif
-
-  /* This is more clever, but it screws up emacs auto-indentation... */
-  new std::thread([]{mach_call (mach_msg_server (fsys_server, 0, control));});
-
-  while (1)
-    {
-      const static mach_msg_size_t max_size = 4096;
-      char buffer[max_size];
-      mach_msg_header_t * const msg = reinterpret_cast<mach_msg_header_t *> (buffer);
-
-      mach_call (mach_msg (msg, MACH_RCV_MSG,
-                           0, max_size, server,
-                           MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
-    }
-
-  /* This call should never return */
-  //mach_call (mach_msg_server (fsys_server, 0, control));
+  ports_manage_port_operations_one_thread (fsys->pi.bucket, trivfs_demuxer, 0);
 }
 
 int
@@ -292,117 +252,4 @@ main (int argc, char **argv)
     {
       mach_port_t node = file_name_lookup (targetPath, O_RDWR, 0);
     }
-}
-
-/*********** fsys (filesystem) server  ***********
-
- These routines implement the RPC server side of an fsys server.
-
- This is the fsys server that runs on the server and is presented
- across the network to the translator/client as its initial port.
-
- We need "C" linkage since these routines will be called by a
- MIG-generated RPC server coded in C.
-
- */
-
-#define error_t kern_return_t
-
-extern "C" {
-
-error_t
-S_fsys_getroot (mach_port_t fsys_t,
-		mach_port_t dotdotnode,
-		uid_t *uids, size_t nuids,
-		uid_t *gids, size_t ngids,
-		int flags,
-		retry_type *do_retry,
-		char *retry_name,
-		mach_port_t *ret,
-		mach_msg_type_name_t *rettype)
-{
-  *ret = server;
-  *rettype = MACH_MSG_TYPE_MAKE_SEND;
-
-  *do_retry = FS_RETRY_NORMAL;
-  retry_name[0] = '\0';
-
-  ddprintf("fsys_getroot returning port %ld\n", *ret);
-
-  return ESUCCESS;
-}
-
-error_t
-S_fsys_startup (mach_port_t bootstrap, int flags, mach_port_t control,
-		mach_port_t *real, mach_msg_type_name_t *realtype)
-{
-  return EOPNOTSUPP;
-}
-
-error_t
-S_fsys_goaway (mach_port_t control, int flags)
-{
-  return ESUCCESS;
-}
-
-error_t
-S_fsys_syncfs (mach_port_t control,
-	       int wait,
-	       int recurse)
-{
-  return ESUCCESS;
-}
-
-error_t
-S_fsys_set_options (mach_port_t control,
-		    char *data, mach_msg_type_number_t len,
-		    int do_children)
-{
-  return EOPNOTSUPP;
-}
-
-error_t
-S_fsys_get_options (mach_port_t control,
-		    char **data, mach_msg_type_number_t *len)
-{
-  return EOPNOTSUPP;
-}
-
-error_t
-S_fsys_getfile (mach_port_t control,
-		uid_t *uids, size_t nuids,
-		uid_t *gids, size_t ngids,
-		char *handle, size_t handllen,
-		mach_port_t *pt,
-		mach_msg_type_name_t *pttype)
-{
-  return EOPNOTSUPP;
-}
-
-error_t
-S_fsys_getpriv (mach_port_t control,
-		mach_port_t *host_priv, mach_msg_type_name_t *host_priv_type,
-		mach_port_t *dev_master, mach_msg_type_name_t *dev_master_type,
-		task_t *fs_task, mach_msg_type_name_t *fs_task_type)
-{
-  return EOPNOTSUPP;
-}
-
-error_t
-S_fsys_init (mach_port_t control,
-	   mach_port_t reply,
-	   mach_msg_type_name_t replytype,
-	   mach_port_t proc,
-	   auth_t auth)
-{
-  return EOPNOTSUPP;
-}
-
-error_t
-S_fsys_forward (mach_port_t server, mach_port_t requestor,
-		char *argz, size_t argz_len)
-{
-  return EOPNOTSUPP;
-}
-
 }
