@@ -17,6 +17,9 @@ catch-signal.o: catch-signal.c
 msgids.o: msgids.c msgids.h
 	gcc -g -Wall -c -D_GNU_SOURCE -DDATADIR=\"/usr/share\" msgids.c
 
+netmsg-test: netmsg-test.cc fsysServer.o msgids.o
+	g++ -g -std=c++11 -Wall -D_GNU_SOURCE $(CFLAGS) -o netmsg-test netmsg-test.cc fsysServer.o msgids.o -lpthread -lihash
+
 looper: looper.c
 	gcc -g -Wall -D_GNU_SOURCE -o looper looper.c
 
