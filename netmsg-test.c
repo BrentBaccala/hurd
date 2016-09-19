@@ -169,6 +169,21 @@ _mach_call(int line, kern_return_t err)
 
 #define mach_call(...) _mach_call(__LINE__, __VA_ARGS__)
 
+/* wassert - like assert, but only print a warning.  Used in server code
+ * where we don't want to terminate the process.
+ */
+
+void
+__wassert_fail(const char *expr, const char *file, int line, const char *func)
+{
+  fprintf(stderr, "%s:%d: Assertion '%s' failed\n", file, line, func, expr);
+}
+
+#define wassert(expr)                                                   \
+  ((expr)                                                               \
+   ? __ASSERT_VOID_CAST (0)                                             \
+   : __wassert_fail (#expr, __FILE__, __LINE__, __ASSERT_FUNCTION))
+
 /***** COMMAND-LINE OPTIONS *****/
 
 static const struct argp_option options[] =
@@ -310,7 +325,7 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
                                              MACH_NOTIFY_DEAD_NAME, 0,
                                              dead_name_port,
                                              MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
-  assert(old == MACH_PORT_NULL);
+  wassert(old == MACH_PORT_NULL);
 
   if (destroy)
     {
@@ -321,7 +336,7 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
       /* Verify that the port has completely gone away */
 
       mach_port_type_t port_type;
-      assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
+      wassert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
     }
   else if (transfer)
     {
@@ -347,7 +362,7 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
       /* Verify that the port has completely gone away */
 
       mach_port_type_t port_type;
-      assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
+      wassert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
     }
 
   /* if we're holding the send right, we expect a DEAD NAME notification
@@ -363,7 +378,7 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
                        0, max_size, dead_name_port,
                        1000, MACH_PORT_NULL));
   //fprintf(stderr, "%d\n", msg->msgh_id);
-  assert(msg->msgh_id == (transfer || destroy ? MSGID_PORT_DELETED : MSGID_DEAD_NAME));
+  wassert(msg->msgh_id == (transfer || destroy ? MSGID_PORT_DELETED : MSGID_DEAD_NAME));
 
   // fprintf(stderr, "got dead name\n");
 
@@ -445,7 +460,7 @@ S_test2(mach_port_t server, mach_port_t testport, int count)
                                              MACH_NOTIFY_NO_SENDERS, 0,
                                              testport,
                                              MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
-  assert(old == MACH_PORT_NULL);
+  wassert(old == MACH_PORT_NULL);
 
   /* wait for COUNT empty messages, correctly numbered */
 
@@ -454,8 +469,8 @@ S_test2(mach_port_t server, mach_port_t testport, int count)
       mach_call (mach_msg (msg, MACH_RCV_MSG,
                            0, max_size, testport,
                            MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
-      assert(msg->msgh_size == sizeof(mach_msg_header_t));
-      assert(msg->msgh_id == count);
+      wassert(msg->msgh_size == sizeof(mach_msg_header_t));
+      wassert(msg->msgh_id == count);
     }
 
   /* wait for a NO SENDERS notification */
@@ -463,7 +478,7 @@ S_test2(mach_port_t server, mach_port_t testport, int count)
   mach_call (mach_msg (msg, MACH_RCV_MSG,
                        0, max_size, testport,
                        MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
-  assert(msg->msgh_id == MSGID_NO_SENDERS);
+  wassert(msg->msgh_id == MSGID_NO_SENDERS);
 
   /* Deallocate the receive right */
 
@@ -473,7 +488,7 @@ S_test2(mach_port_t server, mach_port_t testport, int count)
   /* Verify that the port has completely gone away */
 
   mach_port_type_t port_type;
-  assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
+  wassert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
 
   return ESUCCESS;
 }
