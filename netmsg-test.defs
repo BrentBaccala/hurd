@@ -7,7 +7,8 @@ simpleroutine test1 (
 	requestport server: mach_port_t;
 	handle: mach_port_send_t;
 	count: int;
-	destroy: boolean_t);
+	destroy: boolean_t;
+	transfer: boolean_t);
 
 simpleroutine test2 (
 	requestport server: mach_port_t;
