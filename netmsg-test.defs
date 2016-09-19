@@ -1,0 +1,8 @@
+
+subsystem netmsg_test 50000;
+
+#include <hurd/hurd_types.defs>
+
+simpleroutine test1 (
+	handle: mach_port_send_t;
+	count: int);

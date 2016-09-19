@@ -102,6 +102,8 @@
 #include <hurd/trivfs.h>
 #include <hurd/hurd_types.h>
 
+#include "netmsg-test-server.h"
+
 /* trivfs stuff */
 
 int trivfs_fstype = FSTYPE_MISC;
@@ -150,26 +152,16 @@ void ddprintf(Args... rest)
  * (that's the preprocessor trick).
  */
 
-#if 0
 void
-_mach_call(int line, kern_return_t err, std::set<kern_return_t> ignores)
+_mach_call(int line, kern_return_t err)
 {
-  if ((err != KERN_SUCCESS) && (ignores.count(err) == 0))
+  if (err != KERN_SUCCESS)
     {
       fprintf(stderr, "mach_call line %d %s\n", line, mach_error_string(err));
     }
 }
 
-template<typename... Args>
-void
-_mach_call(int line, kern_return_t err, Args... rest)
-{
-  std::set<kern_return_t> ignores{rest...};
-  _mach_call(line, err, ignores);
-}
-
 #define mach_call(...) _mach_call(__LINE__, __VA_ARGS__)
-#endif
 
 /***** COMMAND-LINE OPTIONS *****/
 
@@ -217,9 +209,9 @@ const struct argp_child children[] =
 
 static struct argp argp = { options, parse_opt, args_doc, doc, children };
 
-mach_port_t control = MACH_PORT_NULL;
 
 mach_port_t server = MACH_PORT_NULL;
+
 
 void
 startAsTranslator(void)
@@ -231,7 +223,9 @@ startAsTranslator(void)
   if (bootstrap == MACH_PORT_NULL)
     error (1, 0, "Must be started as a translator");
 
-  /*mach_call*/ (trivfs_startup(bootstrap, O_RDWR,
+  // mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &server));
+
+  mach_call (trivfs_startup(bootstrap, O_RDWR,
                             NULL, NULL, NULL, NULL,
                             &fsys));
 
@@ -252,4 +246,9 @@ main (int argc, char **argv)
     {
       mach_port_t node = file_name_lookup (targetPath, O_RDWR, 0);
     }
+}
+
+kern_return_t test1(mach_port_t handle, int count)
+{
+  return ESUCCESS;
 }
