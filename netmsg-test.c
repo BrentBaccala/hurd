@@ -103,6 +103,7 @@
 #include <hurd/hurd_types.h>
 
 #include "netmsg-test-server.h"
+#include "netmsg-test-user.h"
 
 /* trivfs stuff */
 
@@ -245,10 +246,19 @@ main (int argc, char **argv)
   else
     {
       mach_port_t node = file_name_lookup (targetPath, O_RDWR, 0);
+
+      /* test1 - create a send/receive pair, transfer the send right,
+       * transmit some messages to it, then destroy the send right and
+       * get a NO SENDERS notification on the receive right
+       */
+
+      mach_port_t testport;
+      mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &testport));
+      mach_call(U_test1(node, testport, MACH_MSG_TYPE_MAKE_SEND, 3));
     }
 }
 
-kern_return_t test1(mach_port_t handle, int count)
+kern_return_t S_test1(mach_port_t server, mach_port_t handle, int count)
 {
   return ESUCCESS;
 }

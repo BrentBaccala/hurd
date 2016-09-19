@@ -17,14 +17,13 @@ catch-signal.o: catch-signal.c
 msgids.o: msgids.c msgids.h
 	gcc -g -Wall -c -D_GNU_SOURCE -DDATADIR=\"/usr/share\" msgids.c
 
-netmsg-test: netmsg-test.c netmsg-test-server.o
-	gcc -g -Wall -D_GNU_SOURCE -o netmsg-test netmsg-test.c netmsg-test-server.o -ltrivfs -lports
+netmsg-test: netmsg-test.c netmsg-test-server.o netmsg-test-user.o
+	gcc -g -Wall -D_GNU_SOURCE -o netmsg-test netmsg-test.c netmsg-test-server.o netmsg-test-user.o -ltrivfs -lports
 
-netmsg-test-server.c: netmsg-test.defs
-	gcc -E -x c  -I. -I../../trans -I.. -I../.. -I../include -I../../include -o - netmsg-test.defs \
-	| mig -cc cat - /dev/null -subrprefix __   \
-		-sheader netmsg-test-server.h -server netmsg-test-server.c \
-		-user netmsg-test-user.c -header netmsg-test-user.h
+%-server.c %-user.c: %.defs
+	mig -DSERVERPREFIX=S_ -DUSERPREFIX=U_ \
+		-sheader $*-server.h -server $*-server.c \
+		-user $*-user.c -header $*-user.h $<
 
 looper: looper.c
 	gcc -g -Wall -D_GNU_SOURCE -o looper looper.c
