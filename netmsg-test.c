@@ -176,7 +176,7 @@ _mach_call(int line, kern_return_t err)
 void
 __wassert_fail(const char *expr, const char *file, int line, const char *func)
 {
-  fprintf(stderr, "%s:%d: Assertion '%s' failed\n", file, line, func, expr);
+  fprintf(stderr, "%s:%d: Assertion '%s' failed\n", file, line, expr);
 }
 
 #define wassert(expr)                                                   \
