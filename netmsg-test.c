@@ -253,7 +253,7 @@ startAsTranslator(void)
                             NULL, NULL, NULL, NULL,
                             &fsys));
 
-  ports_manage_port_operations_one_thread (fsys->pi.bucket, netmsg_test_demuxer, 0);
+  ports_manage_port_operations_multithread (fsys->pi.bucket, netmsg_test_demuxer, 0, 0, NULL);
 }
 
 void
