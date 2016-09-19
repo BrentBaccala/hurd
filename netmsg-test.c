@@ -298,6 +298,20 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
     }
 
 
+  /* Create a new receive right for a dead name notification */
+  mach_port_t dead_name_port;
+
+  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &dead_name_port));
+
+  /* request DEAD NAME notification */
+
+  mach_port_t old;
+  mach_call (mach_port_request_notification (mach_task_self (), testport,
+                                             MACH_NOTIFY_DEAD_NAME, 0,
+                                             dead_name_port,
+                                             MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+  assert(old == MACH_PORT_NULL);
+
   if (destroy)
     {
       /* Deallocate the send right */
@@ -309,61 +323,49 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
       mach_port_type_t port_type;
       assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
     }
-  else
+  else if (transfer)
     {
-      /* Create a new receive right for a dead name notification */
-      mach_port_t dead_name_port;
+      /* transfer the send right back to the original sender */
 
-      mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &dead_name_port));
+      bzero(msg, sizeof(mach_msg_header_t) + sizeof(mach_msg_type_t) + sizeof(mach_port_t));
+      msg->msgh_size = sizeof(mach_msg_header_t) + sizeof(mach_msg_type_t) + sizeof(mach_port_t);
+      msg->msgh_remote_port = testport;
+      msg->msgh_bits = MACH_MSGH_BITS_COMPLEX | MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
+      msg->msgh_id = count;
 
-      /* request DEAD NAME notification */
+      msg_data->msgt_name = MACH_MSG_TYPE_MOVE_SEND;
+      msg_data->msgt_size = 32;
+      msg_data->msgt_number = 1;
+      msg_data->msgt_inline = TRUE;
 
-      mach_port_t old;
-      mach_call (mach_port_request_notification (mach_task_self (), testport,
-                                                 MACH_NOTIFY_DEAD_NAME, 0,
-                                                 dead_name_port,
-                                                 MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
-      assert(old == MACH_PORT_NULL);
+      * msg_data_port = testport;
 
-      if (transfer)
-        {
-          /* transfer the send right back to the original sender */
+      mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
+                          0, msg->msgh_remote_port,
+                          MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
 
-          bzero(msg, sizeof(mach_msg_header_t) + sizeof(mach_msg_type_t) + sizeof(mach_port_t));
-          msg->msgh_size = sizeof(mach_msg_header_t) + sizeof(mach_msg_type_t) + sizeof(mach_port_t);
-          msg->msgh_remote_port = testport;
-          msg->msgh_bits = MACH_MSGH_BITS_COMPLEX | MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
-          msg->msgh_id = count;
+      /* Verify that the port has completely gone away */
 
-          msg_data->msgt_name = MACH_MSG_TYPE_MOVE_SEND;
-          msg_data->msgt_size = 32;
-          msg_data->msgt_number = 1;
-          msg_data->msgt_inline = TRUE;
-
-          * msg_data_port = testport;
-
-          mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
-                              0, msg->msgh_remote_port,
-                              MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
-
-          /* Verify that the port has completely gone away */
-
-          mach_port_type_t port_type;
-          assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
-        }
-
-      /* wait for a DEAD NAME or PORT DELETED (transfer) notification
-       * (with a 1 second timeout)
-       */
-
-      mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
-                           0, max_size, dead_name_port,
-                           1000, MACH_PORT_NULL));
-      //fprintf(stderr, "%d\n", msg->msgh_id);
-      assert(msg->msgh_id == (transfer ? MSGID_PORT_DELETED : MSGID_DEAD_NAME));
-
-      // fprintf(stderr, "got dead name\n");
+      mach_port_type_t port_type;
+      assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
     }
+
+  /* if we're holding the send right, we expect a DEAD NAME notification
+   * when the other side destroys the receive right
+   *
+   * if we transfered or destroyed the send right, we expect a PORT
+   * DELETED notification
+   *
+   * wait for the notification (with a 1 second timeout)
+   */
+
+  mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                       0, max_size, dead_name_port,
+                       1000, MACH_PORT_NULL));
+  //fprintf(stderr, "%d\n", msg->msgh_id);
+  assert(msg->msgh_id == (transfer || destroy ? MSGID_PORT_DELETED : MSGID_DEAD_NAME));
+
+  // fprintf(stderr, "got dead name\n");
 
   return ESUCCESS;
 }
