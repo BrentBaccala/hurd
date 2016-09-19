@@ -107,6 +107,7 @@
 
 // XXX should look this up dynamically, though it's not likely to change
 #define MSGID_NO_SENDERS 70
+#define MSGID_DEAD_NAME 72
 
 /* trivfs stuff */
 
@@ -267,8 +268,10 @@ printPortType(mach_port_t testport)
  * NO SENDERS notification on the receive right
  */
 
+/* test 1/3 server */
+
 kern_return_t
-S_test1(mach_port_t server, mach_port_t testport, int count)
+S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy)
 {
   const static mach_msg_size_t max_size = 4096;
   char buffer[max_size];
@@ -292,14 +295,42 @@ S_test1(mach_port_t server, mach_port_t testport, int count)
     }
 
 
-  /* Deallocate the send right */
-  mach_call (mach_port_mod_refs (mach_task_self(), testport,
-                                 MACH_PORT_RIGHT_SEND, -1));
+  if (destroy)
+    {
+      /* Deallocate the send right */
+      mach_call (mach_port_mod_refs (mach_task_self(), testport,
+                                     MACH_PORT_RIGHT_SEND, -1));
 
-  /* Verify that the port has completely gone away */
+      /* Verify that the port has completely gone away */
 
-  mach_port_type_t port_type;
-  assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
+      mach_port_type_t port_type;
+      assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
+    }
+  else
+    {
+      /* Create a new receive right for a dead name notification */
+      mach_port_t dead_name_port;
+
+      mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &dead_name_port));
+
+      /* request DEAD NAME notification */
+
+      mach_port_t old;
+      mach_call (mach_port_request_notification (mach_task_self (), testport,
+                                                 MACH_NOTIFY_DEAD_NAME, 0,
+                                                 dead_name_port,
+                                                 MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+      assert(old == MACH_PORT_NULL);
+
+      /* wait for a DEAD NAME notification (with a 1 second timeout) */
+
+      mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                           0, max_size, dead_name_port,
+                           1000, MACH_PORT_NULL));
+      assert(msg->msgh_id == MSGID_DEAD_NAME);
+
+      // fprintf(stderr, "got dead name\n");
+    }
 
   return ESUCCESS;
 }
@@ -320,7 +351,7 @@ test1(mach_port_t node)
 
   /* Pass a send right on it to the server */
 
-  mach_call(U_test1(node, testport, MACH_MSG_TYPE_MAKE_SEND, count));
+  mach_call(U_test1(node, testport, MACH_MSG_TYPE_MAKE_SEND, count, TRUE));
 
   /* request NO SENDERS notification be sent to same port */
 
@@ -464,6 +495,52 @@ test2(mach_port_t node)
   assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
 }
 
+/* test3 - create a send/receive pair, transfer the send right,
+ *   transmit some messages to it, then destroy the receive right and
+ *   get a DEAD NAME notification on the send right
+ */
+
+void
+test3(mach_port_t node)
+{
+  mach_port_t testport;
+  const int count = 3;
+
+  const static mach_msg_size_t max_size = 4096;
+  char buffer[max_size];
+  mach_msg_header_t * const msg = (mach_msg_header_t *) (buffer);
+
+  /* Create a receive right */
+
+  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &testport));
+
+  /* Pass a send right on it to the server */
+
+  mach_call(U_test1(node, testport, MACH_MSG_TYPE_MAKE_SEND, count, FALSE));
+
+  /* wait for COUNT empty messages, correctly numbered */
+
+  for (int i = 0; i < count; i ++)
+    {
+      mach_call (mach_msg (msg, MACH_RCV_MSG,
+                           0, max_size, testport,
+                           MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+      assert(msg->msgh_size == sizeof(mach_msg_header_t));
+      assert(msg->msgh_id == count);
+    }
+
+  /* Deallocate the receive right */
+#if 0
+  mach_call (mach_port_mod_refs (mach_task_self(), testport,
+                                 MACH_PORT_RIGHT_RECEIVE, -1));
+
+  /* Verify that the port has completely gone away */
+
+  mach_port_type_t port_type;
+  assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
+#endif
+}
+
 /* MAIN ROUTINE */
 
 int
@@ -482,5 +559,7 @@ main (int argc, char **argv)
 
       test1(node);
       test2(node);
+      test3(node);
+      //while (1) ;
     }
 }
