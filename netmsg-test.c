@@ -105,6 +105,9 @@
 #include "netmsg-test-server.h"
 #include "netmsg-test-user.h"
 
+// XXX should look this up dynamically, though it's not likely to change
+#define MSGID_NO_SENDERS 70
+
 /* trivfs stuff */
 
 int trivfs_fstype = FSTYPE_MISC;
@@ -214,6 +217,24 @@ static struct argp argp = { options, parse_opt, args_doc, doc, children };
 mach_port_t server = MACH_PORT_NULL;
 
 
+/* XXX why isn't netmsg_test_server() declared in netmsg-test-server.h? */
+
+boolean_t netmsg_test_server (mach_msg_header_t *InHeadP, mach_msg_header_t *OutHeadP);
+
+int netmsg_test_demuxer (mach_msg_header_t *in, mach_msg_header_t *out)
+{
+
+  if (trivfs_demuxer (in, out) || netmsg_test_server(in, out))
+    {
+      return TRUE;
+    }
+  else
+    {
+      return FALSE;
+    }
+}
+
+
 void
 startAsTranslator(void)
 {
@@ -230,7 +251,7 @@ startAsTranslator(void)
                             NULL, NULL, NULL, NULL,
                             &fsys));
 
-  ports_manage_port_operations_one_thread (fsys->pi.bucket, trivfs_demuxer, 0);
+  ports_manage_port_operations_one_thread (fsys->pi.bucket, netmsg_test_demuxer, 0);
 }
 
 int
@@ -253,12 +274,59 @@ main (int argc, char **argv)
        */
 
       mach_port_t testport;
+      const int count = 3;
+
       mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &testport));
-      mach_call(U_test1(node, testport, MACH_MSG_TYPE_MAKE_SEND, 3));
+      mach_call(U_test1(node, testport, MACH_MSG_TYPE_MAKE_SEND, count));
+
+      /* request NO SENDERS notification be sent to same port */
+      mach_port_t old;
+      mach_call (mach_port_request_notification (mach_task_self (), testport,
+                                                 MACH_NOTIFY_NO_SENDERS, 0,
+                                                 testport,
+                                                 MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+      assert(old == MACH_PORT_NULL);
+
+      const static mach_msg_size_t max_size = 4096;
+      char buffer[max_size];
+      mach_msg_header_t * const msg = (mach_msg_header_t *) (buffer);
+
+      for (int i = 0; i < count; i ++)
+        {
+
+          mach_call (mach_msg (msg, MACH_RCV_MSG,
+                               0, max_size, testport,
+                               MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+          assert(msg->msgh_id == count);
+        }
+
+      mach_call (mach_msg (msg, MACH_RCV_MSG,
+                           0, max_size, testport,
+                           MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+      assert(msg->msgh_id == MSGID_NO_SENDERS);
     }
 }
 
 kern_return_t S_test1(mach_port_t server, mach_port_t handle, int count)
 {
+  for (int i = 0; i < count; i ++)
+    {
+      const static mach_msg_size_t max_size = 4096;
+      char buffer[max_size];
+      mach_msg_header_t * const msg = (mach_msg_header_t *) (buffer);
+
+      msg->msgh_size = sizeof(mach_msg_header_t);
+      msg->msgh_remote_port = handle;
+      msg->msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
+      msg->msgh_id = count;
+
+      mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
+                          0, msg->msgh_remote_port,
+                          MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+    }
+
+  mach_call (mach_port_mod_refs (mach_task_self(), handle,
+                                 MACH_PORT_RIGHT_SEND, -1));
+
   return ESUCCESS;
 }
