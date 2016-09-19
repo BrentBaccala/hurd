@@ -279,7 +279,7 @@ _mach_call(int line, kern_return_t err, std::set<kern_return_t> ignores)
 {
   if ((err != KERN_SUCCESS) && (ignores.count(err) == 0))
     {
-      fprintf(stderr, "mach_call line %d %s\n", line, mach_error_string(err));
+      fprintf(stderr, "%s:%d %s\n", __FILE__, line, mach_error_string(err));
     }
 }
 
