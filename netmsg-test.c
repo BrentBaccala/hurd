@@ -438,7 +438,7 @@ test1(mach_port_t node)
 
   mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                        0, max_size, testport,
-                       1000, MACH_PORT_NULL));
+                       timeout, MACH_PORT_NULL));
   assert(msg->msgh_id == MSGID_NO_SENDERS);
 
   /* Deallocate the receive right */
