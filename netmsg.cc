@@ -100,6 +100,8 @@
    - no Hurd authentication (it runs with the server's permissions)
    - no checks made if Mach produces ports with the highest bit set
    - NO SENDERS notifications are sent to the port itself, not to a control port
+   - race condition: when a port is destroyed, there's an interval
+     of time when sends return success but the messages get dropped
 
    - emacs over netmsg hangs; last RPC is io_reauthenticate
 */
@@ -1048,9 +1050,74 @@ netmsg::translateForTransmission(mach_msg_header_t * const msg)
 
                     ports[i] = (~ remote_ports_by_local[ports[i]]);
                   }
+                else
+                  {
+                    /* We've got a send right (note it), but no
+                     * mapping to a remote port (the remote takes care
+                     * of that).
+                     */
+
+                    local_port_type[ports[i]] = MACH_MSG_TYPE_PORT_SEND;
+
+                    /* XXX should request a DEAD NAME notification */
+                  }
               }
           }
           break;
+
+        case MACH_MSG_TYPE_MOVE_RECEIVE:
+          {
+            mach_port_t * ports = ptr.data();
+
+            for (unsigned int i = 0; i < ptr.nelems(); i ++)
+              {
+                /* We're transmitting a receive right over the
+                 * network.  Add it to our port set, and request a
+                 * NO SENDERS notification on it.
+                 */
+                mach_call (mach_port_move_member (mach_task_self (), ports[i], portset));
+
+                mach_port_t old;
+                mach_call (mach_port_request_notification (mach_task_self (), ports[i],
+                                                           MACH_NOTIFY_NO_SENDERS, 0,
+                                                           ports[i],
+                                                           MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+                assert(old == MACH_PORT_NULL);
+
+                if (remote_ports_by_local.count(ports[i]) == 1)
+                  {
+                    /* We're transmitting a receive right that we
+                     * earlier received over the network.  Convert to
+                     * the remote's name space, and indicate to the
+                     * remote, by bit flipping the port number, that
+                     * we're sending it a port number in its own name
+                     * space.  Also, destroy the send right we were
+                     * holding, since one of our invariants is that we
+                     * never hold both send and receive rights on the
+                     * same port.  If it's the port's last send right,
+                     * then we'll get a no senders notification and
+                     * deallocate the receive right then, so all we
+                     * destroy here is the send right.
+                     */
+
+                    /* XXX the old send right had a DEAD PORT notification
+                     * that needs to be destroyed
+                     */
+
+                    /* XXX all we currently do with that no senders
+                     * notification is relay it to the other side
+                     */
+
+                    assert(local_port_type[ports[i]] == MACH_MSG_TYPE_PORT_SEND);
+                    mach_call (mach_port_mod_refs (mach_task_self(), ports[i],
+                                                   MACH_PORT_RIGHT_SEND, -1));
+
+                    ports[i] = (~ remote_ports_by_local[ports[i]]);
+                  }
+
+                local_port_type[ports[i]] = MACH_MSG_TYPE_PORT_RECEIVE;
+              }
+          }
 
         default:
           // do nothing; just pass through the data
@@ -1725,17 +1792,16 @@ netmsg::translateHeader(mach_msg_header_t * const msg)
        * but there might be other local send rights.  All we know for
        * sure is that there are no more remote send rights.
        *
-       * We didn't record anything about this right in our maps
-       * because we didn't need to; the remote took care of
-       * translating it for us.
-       *
        * We ignore KERN_INVALID_RIGHT because it will be generated
        * if the receiver has died.
        */
 
+      assert(local_port_type[local_port] == MACH_MSG_TYPE_PORT_SEND);
       mach_call (mach_port_mod_refs (mach_task_self(), local_port,
                                      MACH_PORT_RIGHT_SEND, -1),
                  KERN_INVALID_RIGHT);
+      local_port_type.erase(local_port);
+      assert (remote_ports_by_local.count(local_port) == 0);
 
       return false;
     }
@@ -1831,13 +1897,17 @@ netmsg::tcpBufferHandler(networkMessage * netmsg)
        * code in a separate thread.  So, no timeout.  We block this
        * thread, and everything else on this port's run queue, until
        * this mach_msg send returns.
+       *
+       * If the destination has died, we'll get MACH_SEND_INVALID_DEST
+       * and quietly ignore it.  The problem with that is that the
+       * original send call (on the remote side) already returned
+       * success, but there's not too much we can do about it now.
        */
-
-      /* XXX this call could easily return MACH_SEND_INVALID_DEST if the destination died */
 
       mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
                           0, msg->msgh_remote_port,
-                          MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+                          MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL),
+                 MACH_SEND_INVALID_DEST);
     }
 
   assert(tcp_run_queue.pop_front(original_local_port) == netmsg);
