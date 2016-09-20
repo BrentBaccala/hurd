@@ -305,7 +305,7 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
       msg->msgh_size = sizeof(mach_msg_header_t);
       msg->msgh_remote_port = testport;
       msg->msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
-      msg->msgh_id = count;
+      msg->msgh_id = i;
 
       mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
                           0, msg->msgh_remote_port,
@@ -346,7 +346,7 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
       msg->msgh_size = sizeof(mach_msg_header_t) + sizeof(mach_msg_type_t) + sizeof(mach_port_t);
       msg->msgh_remote_port = testport;
       msg->msgh_bits = MACH_MSGH_BITS_COMPLEX | MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
-      msg->msgh_id = count;
+      msg->msgh_id = count+1;
 
       msg_data->msgt_name = MACH_MSG_TYPE_MOVE_SEND;
       msg_data->msgt_size = 32;
@@ -377,8 +377,11 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
   mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                        0, max_size, dead_name_port,
                        1000, MACH_PORT_NULL));
-  //fprintf(stderr, "%d\n", msg->msgh_id);
   wassert(msg->msgh_id == (transfer || destroy ? MSGID_PORT_DELETED : MSGID_DEAD_NAME));
+  if (msg->msgh_id != (transfer || destroy ? MSGID_PORT_DELETED : MSGID_DEAD_NAME))
+    {
+      fprintf(stderr, "%d\n", msg->msgh_id);
+    }
 
   // fprintf(stderr, "got dead name\n");
 
@@ -420,7 +423,7 @@ test1(mach_port_t node)
                            0, max_size, testport,
                            MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
       assert(msg->msgh_size == sizeof(mach_msg_header_t));
-      assert(msg->msgh_id == count);
+      assert(msg->msgh_id == i);
     }
 
   /* wait for a NO SENDERS notification */
@@ -470,7 +473,7 @@ S_test2(mach_port_t server, mach_port_t testport, int count)
                            0, max_size, testport,
                            MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
       wassert(msg->msgh_size == sizeof(mach_msg_header_t));
-      wassert(msg->msgh_id == count);
+      wassert(msg->msgh_id == i);
     }
 
   /* wait for a NO SENDERS notification */
@@ -526,7 +529,7 @@ test2(mach_port_t node)
       msg->msgh_size = sizeof(mach_msg_header_t);
       msg->msgh_remote_port = testport;
       msg->msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
-      msg->msgh_id = count;
+      msg->msgh_id = i;
 
       mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
                           0, msg->msgh_remote_port,
@@ -576,7 +579,7 @@ test3(mach_port_t node)
                            0, max_size, testport,
                            MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
       assert(msg->msgh_size == sizeof(mach_msg_header_t));
-      assert(msg->msgh_id == count);
+      assert(msg->msgh_id == i);
     }
 
   /* Deallocate the receive right */
@@ -634,7 +637,7 @@ test4(mach_port_t node)
                            MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
       //fprintf(stderr, "%d %d\n", msg->msgh_size, msg->msgh_id);
       assert(msg->msgh_size == sizeof(mach_msg_header_t));
-      assert(msg->msgh_id == count);
+      assert(msg->msgh_id == i);
     }
 
   /* wait for the send right to come back */
