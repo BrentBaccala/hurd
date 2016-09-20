@@ -233,6 +233,7 @@ static struct argp argp = { options, parse_opt, args_doc, doc, children };
 
 mach_port_t server = MACH_PORT_NULL;
 
+const int timeout = 1000;   /* 1 second timeout on almost all our operations */
 
 /* XXX why isn't netmsg_test_server() declared in netmsg-test-server.h? */
 
@@ -307,9 +308,9 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
       msg->msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
       msg->msgh_id = i;
 
-      mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
+      mach_call (mach_msg(msg, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msg->msgh_size,
                           0, msg->msgh_remote_port,
-                          MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+                          timeout, MACH_PORT_NULL));
     }
 
 
@@ -355,9 +356,9 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
 
       * msg_data_port = testport;
 
-      mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
+      mach_call (mach_msg(msg, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msg->msgh_size,
                           0, msg->msgh_remote_port,
-                          MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+                          timeout, MACH_PORT_NULL));
 
       /* Verify that the port has completely gone away */
 
@@ -371,12 +372,12 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
    * if we transfered or destroyed the send right, we expect a PORT
    * DELETED notification
    *
-   * wait for the notification (with a 1 second timeout)
+   * wait for the notification
    */
 
   mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                        0, max_size, dead_name_port,
-                       1000, MACH_PORT_NULL));
+                       timeout, MACH_PORT_NULL));
   wassert(msg->msgh_id == (transfer || destroy ? MSGID_PORT_DELETED : MSGID_DEAD_NAME));
   if (msg->msgh_id != (transfer || destroy ? MSGID_PORT_DELETED : MSGID_DEAD_NAME))
     {
@@ -419,18 +420,18 @@ test1(mach_port_t node)
 
   for (int i = 0; i < count; i ++)
     {
-      mach_call (mach_msg (msg, MACH_RCV_MSG,
+      mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                            0, max_size, testport,
-                           MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+                           timeout, MACH_PORT_NULL));
       assert(msg->msgh_size == sizeof(mach_msg_header_t));
       assert(msg->msgh_id == i);
     }
 
   /* wait for a NO SENDERS notification */
 
-  mach_call (mach_msg (msg, MACH_RCV_MSG,
+  mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                        0, max_size, testport,
-                       MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+                       1000, MACH_PORT_NULL));
   assert(msg->msgh_id == MSGID_NO_SENDERS);
 
   /* Deallocate the receive right */
@@ -469,18 +470,18 @@ S_test2(mach_port_t server, mach_port_t testport, int count)
 
   for (int i = 0; i < count; i ++)
     {
-      mach_call (mach_msg (msg, MACH_RCV_MSG,
+      mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                            0, max_size, testport,
-                           MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+                           timeout, MACH_PORT_NULL));
       wassert(msg->msgh_size == sizeof(mach_msg_header_t));
       wassert(msg->msgh_id == i);
     }
 
   /* wait for a NO SENDERS notification */
 
-  mach_call (mach_msg (msg, MACH_RCV_MSG,
+  mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                        0, max_size, testport,
-                       MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+                       timeout, MACH_PORT_NULL));
   wassert(msg->msgh_id == MSGID_NO_SENDERS);
 
   /* Deallocate the receive right */
@@ -531,9 +532,9 @@ test2(mach_port_t node)
       msg->msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
       msg->msgh_id = i;
 
-      mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
+      mach_call (mach_msg(msg, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msg->msgh_size,
                           0, msg->msgh_remote_port,
-                          MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+                          timeout, MACH_PORT_NULL));
     }
 
 
@@ -575,9 +576,9 @@ test3(mach_port_t node)
 
   for (int i = 0; i < count; i ++)
     {
-      mach_call (mach_msg (msg, MACH_RCV_MSG,
+      mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                            0, max_size, testport,
-                           MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+                           timeout, MACH_PORT_NULL));
       assert(msg->msgh_size == sizeof(mach_msg_header_t));
       assert(msg->msgh_id == i);
     }
@@ -632,9 +633,9 @@ test4(mach_port_t node)
 
   for (int i = 0; i < count; i ++)
     {
-      mach_call (mach_msg (msg, MACH_RCV_MSG,
+      mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                            0, max_size, testport,
-                           MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+                           timeout, MACH_PORT_NULL));
       //fprintf(stderr, "%d %d\n", msg->msgh_size, msg->msgh_id);
       assert(msg->msgh_size == sizeof(mach_msg_header_t));
       assert(msg->msgh_id == i);
@@ -642,9 +643,9 @@ test4(mach_port_t node)
 
   /* wait for the send right to come back */
 
-  mach_call (mach_msg (msg, MACH_RCV_MSG,
+  mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                        0, max_size, testport,
-                       MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+                       timeout, MACH_PORT_NULL));
   assert(msg->msgh_size == sizeof(mach_msg_header_t) + sizeof(mach_msg_type_t) + sizeof(mach_port_t));
   assert(* msg_data_port == testport);
 
@@ -655,9 +656,9 @@ test4(mach_port_t node)
 
   /* wait for a NO SENDERS notification */
 
-  mach_call (mach_msg (msg, MACH_RCV_MSG,
+  mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                        0, max_size, testport,
-                       MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+                       timeout, MACH_PORT_NULL));
   assert(msg->msgh_id == MSGID_NO_SENDERS);
 
   /* Deallocate the receive right */
@@ -689,8 +690,8 @@ main (int argc, char **argv)
 
       test1(node);
       test2(node);
-      test3(node);
-      test4(node);
+      //test3(node);
+      //test4(node);
       //while (1) ;
     }
 }
