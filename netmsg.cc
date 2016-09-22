@@ -728,7 +728,12 @@ void auditPorts(void)
       for (auto pair: netmsgptr->local_port_type)
         {
           //fprintf(stderr, "port %lu\n", pair.first);
-          if (pair.second == MACH_MSG_TYPE_PORT_RECEIVE)
+          if (ports.count(pair.first) == 0)
+            {
+              fprintf(stderr, "auditPorts: port %ld doesn't exist, but is recorded as %s\n",
+                      pair.first, pair.second == MACH_MSG_TYPE_PORT_RECEIVE ? "RECEIVE" : "SEND");
+            }
+          else if (pair.second == MACH_MSG_TYPE_PORT_RECEIVE)
             {
               if (ports[pair.first] != MACH_PORT_TYPE_RECEIVE)
                 {
