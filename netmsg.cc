@@ -672,6 +672,35 @@ public:
 
 std::set<netmsg *> active_netmsg_classes;
 
+std::string porttype2str(mach_port_type_t type)
+{
+  std::vector<std::pair<mach_port_t, std::string>> port_types
+    = {{MACH_PORT_TYPE_RECEIVE, "RECEIVE"},
+       {MACH_PORT_TYPE_SEND, "SEND"},
+       {MACH_PORT_TYPE_SEND_ONCE, "SEND-ONCE"},
+       {MACH_PORT_TYPE_PORT_SET, "PORTSET"},
+       {MACH_PORT_TYPE_DEAD_NAME, "DEADNAME"}};
+
+  std::string result;
+
+  for (auto & t: port_types)
+    {
+      if (type & t.first) {
+        //fprintf(stderr, "%s ", t.second.c_str());
+        result += t.second + " ";
+        type &= ~(t.first);
+      }
+    }
+
+  if (type)
+    {
+      //fprintf(stderr, "UNDECODED(0x%x) ", type);
+      result += "UNDECODED";
+    }
+
+  return result;
+}
+
 void auditPorts(void)
 {
   mach_port_array_t names;
@@ -703,8 +732,8 @@ void auditPorts(void)
             {
               if (ports[pair.first] != MACH_PORT_TYPE_RECEIVE)
                 {
-                  fprintf(stderr, "auditPorts: port %ld is 0x%x, not MACH_PORT_TYPE_RECEIVE (0x%x)\n",
-                          pair.first, ports[pair.first], MACH_PORT_TYPE_RECEIVE);
+                  fprintf(stderr, "auditPorts: port %ld is %s, not RECEIVE\n",
+                          pair.first, porttype2str(ports[pair.first]).c_str());
                 }
               // XXX check to make sure we've got a NO SENDERS notification outstanding
             }
@@ -712,8 +741,8 @@ void auditPorts(void)
             {
               if (ports[pair.first] != MACH_PORT_TYPE_SEND)
                 {
-                  fprintf(stderr, "auditPorts: port %ld is 0x%x, not MACH_PORT_TYPE_SEND (0x%x)\n",
-                          pair.first, ports[pair.first], MACH_PORT_TYPE_SEND);
+                  fprintf(stderr, "auditPorts: port %ld is %s, not SEND\n",
+                          pair.first, porttype2str(ports[pair.first]).c_str());
                 }
               // wassert_equal(ports[pair.first], MACH_PORT_TYPE_SEND);
               // XXX check to make sure we've got a DEAD NAME notification outstanding
