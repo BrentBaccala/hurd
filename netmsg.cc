@@ -602,6 +602,7 @@ class RunQueue : synchronized<std::map<mach_port_t, std::deque<networkMessage *>
 class netmsg
 {
   friend networkMessage;
+  friend void auditPorts(void);
 
   mach_port_t first_port = MACH_PORT_NULL;    /* server sets this to a send right on underlying node; client leaves it MACH_PORT_NULL */
   mach_port_t portset = MACH_PORT_NULL;
@@ -664,6 +665,66 @@ public:
   ~netmsg();
 };
 
+/* For debugging purposes, we keep a list of all netmsg instances and
+ * can use them to audit our ports to ensure that all ports are
+ * accounted for and all our invarients are maintained.
+ */
+
+std::set<netmsg *> active_netmsg_classes;
+
+void auditPorts(void)
+{
+  mach_port_array_t names;
+  mach_port_type_array_t types;
+  mach_msg_type_number_t ncount;
+  mach_msg_type_number_t tcount;
+
+  mach_call (mach_port_names(mach_task_self(), &names, &ncount, &types, &tcount));
+
+  assert(ncount == tcount);
+
+  /* Convert to a C++ map; it's easier to handle */
+
+  std::map<mach_port_t, mach_port_type_t> ports;
+
+  for (unsigned int i = 0; i < ncount; i ++)
+    {
+      ports[names[i]] = types[i];
+    }
+
+  for (auto netmsgptr: active_netmsg_classes)
+    {
+      assert(ports[netmsgptr->portset] == MACH_PORT_TYPE_PORT_SET);
+
+      for (auto pair: netmsgptr->local_port_type)
+        {
+          //fprintf(stderr, "port %lu\n", pair.first);
+          if (pair.second == MACH_MSG_TYPE_PORT_RECEIVE)
+            {
+              if (ports[pair.first] != MACH_PORT_TYPE_RECEIVE)
+                {
+                  fprintf(stderr, "auditPorts: port %ld is 0x%x, not MACH_PORT_TYPE_RECEIVE (0x%x)\n",
+                          pair.first, ports[pair.first], MACH_PORT_TYPE_RECEIVE);
+                }
+              // XXX check to make sure we've got a NO SENDERS notification outstanding
+            }
+          else
+            {
+              if (ports[pair.first] != MACH_PORT_TYPE_SEND)
+                {
+                  fprintf(stderr, "auditPorts: port %ld is 0x%x, not MACH_PORT_TYPE_SEND (0x%x)\n",
+                          pair.first, ports[pair.first], MACH_PORT_TYPE_SEND);
+                }
+              // wassert_equal(ports[pair.first], MACH_PORT_TYPE_SEND);
+              // XXX check to make sure we've got a DEAD NAME notification outstanding
+            }
+        }
+    }
+
+  mach_call (vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(names), ncount * sizeof(* names)));
+  mach_call (vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(types), tcount * sizeof(* types)));
+
+}
 
 /* class networkMessage
  *
@@ -712,6 +773,8 @@ public:
 
           (parent->*handler)(this);
 
+          /* for debugging purposes - audit our ports to make sure all of our invariants are still satisfied */
+          auditPorts();
         }
         // indicate that we're ready to process another buffer by
         // putting ourselves into the parent's free_messages
@@ -1996,6 +2059,8 @@ netmsg::netmsg(int networkSocket) :
   is(&filebuf_in),
   os(&filebuf_out)
 {
+  active_netmsg_classes.insert(this);
+
   if (serverMode)
     {
       /* Spawn an fsys server on a newly created first_port.
@@ -2034,6 +2099,7 @@ netmsg::~netmsg()
     {
       fsysThread->join();
     }
+  active_netmsg_classes.erase(this);
 }
 
 /***********  networking code and main()  ***********
@@ -2271,6 +2337,8 @@ S_fsys_getroot (mach_port_t fsys_t,
 
   *ret = node;
   *rettype = MACH_MSG_TYPE_MOVE_SEND;
+
+  /* XXX need to drop reference to dotdotnode */
 
   /* XXX maybe FS_RETRY_REAUTH - what about authentication ? */
   /* XXX I'll bet we're authenticated as the netmsg server itself - probably root! */
