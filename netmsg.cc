@@ -2338,7 +2338,10 @@ S_fsys_getroot (mach_port_t fsys_t,
   *ret = node;
   *rettype = MACH_MSG_TYPE_MOVE_SEND;
 
-  /* XXX need to drop reference to dotdotnode */
+  /* drop reference to dotdotnode so it doesn't dangle */
+
+  mach_call (mach_port_mod_refs (mach_task_self(), dotdotnode,
+                                 MACH_PORT_RIGHT_SEND, -1));
 
   /* XXX maybe FS_RETRY_REAUTH - what about authentication ? */
   /* XXX I'll bet we're authenticated as the netmsg server itself - probably root! */
