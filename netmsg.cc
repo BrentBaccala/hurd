@@ -1879,15 +1879,17 @@ netmsg::translateHeader(mach_msg_header_t * const msg)
 
       msg->msgh_bits &= ~MACH_MSGH_BITS_REMOTE_TRANSLATE;
     }
-  else if (msg->msgh_id == MSGID_NO_SENDERS)
+
+  if (msg->msgh_id == MSGID_NO_SENDERS)
     {
       /* We earlier got a send right via IPC and relayed it across the
-       * network.  Now we've got a notification from the other side
-       * that there are no more senders (there).  Destroy our local
-       * send right.  If it's the last send right, this call will
-       * trigger another no senders notification if one was requested,
-       * but there might be other local send rights.  All we know for
-       * sure is that there are no more remote send rights.
+       * network, or got a receive right over the network.  Now we've
+       * got a notification from the other side that there are no more
+       * senders (there).  Destroy our local send right.  If it's the
+       * last send right, this call will trigger another no senders
+       * notification if one was requested, but there might be other
+       * local send rights.  All we know for sure is that there are no
+       * more remote send rights.
        *
        * We ignore KERN_INVALID_RIGHT because it will be generated
        * if the receiver has died.
@@ -1898,7 +1900,15 @@ netmsg::translateHeader(mach_msg_header_t * const msg)
                                      MACH_PORT_RIGHT_SEND, -1),
                  KERN_INVALID_RIGHT);
       local_port_type.erase(local_port);
-      assert (remote_ports_by_local.count(local_port) == 0);
+      if (remote_ports_by_local.count(local_port) > 0)
+        {
+          /* This is the case where we got a receive right over the
+           * network, so we have a remote/local mapping.  If we
+           * transmitted a send right, then we have no mapping.
+           */
+          local_ports_by_remote.erase(remote_ports_by_local[local_port]);
+          remote_ports_by_local.erase(local_port);
+        }
 
       return false;
     }
