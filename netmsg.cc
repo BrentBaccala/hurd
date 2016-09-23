@@ -296,7 +296,9 @@ _mach_call(int line, kern_return_t err, Args... rest)
 #define mach_call(...) _mach_call(__LINE__, __VA_ARGS__)
 
 // XXX should look this up dynamically, though it's not likely to change
+#define MSGID_PORT_DELETED 65
 #define MSGID_NO_SENDERS 70
+#define MSGID_DEAD_NAME 72
 
 static const char *
 msgid_name (mach_msg_id_t msgid)
@@ -606,7 +608,7 @@ class netmsg
 
   mach_port_t first_port = MACH_PORT_NULL;    /* server sets this to a send right on underlying node; client leaves it MACH_PORT_NULL */
   mach_port_t portset = MACH_PORT_NULL;
-  mach_port_t my_sendonce_receive_port = MACH_PORT_NULL;
+  mach_port_t notification_port = MACH_PORT_NULL;
 
   /* Maps remote RECEIVE rights to local SEND rights */
   // std::map<mach_port_t, mach_port_t> receive_ports_by_remote;
@@ -679,7 +681,10 @@ std::string porttype2str(mach_port_type_t type)
        {MACH_PORT_TYPE_SEND, "SEND"},
        {MACH_PORT_TYPE_SEND_ONCE, "SEND-ONCE"},
        {MACH_PORT_TYPE_PORT_SET, "PORTSET"},
-       {MACH_PORT_TYPE_DEAD_NAME, "DEADNAME"}};
+       {MACH_PORT_TYPE_DEAD_NAME, "DEADNAME"},
+       {MACH_PORT_TYPE_DNREQUEST, "DNREQUEST"},
+       {MACH_PORT_TYPE_MAREQUEST, "MAREQUEST"},
+       {MACH_PORT_TYPE_COMPAT, "COMPACT"}};
 
   std::string result;
 
@@ -727,7 +732,6 @@ void auditPorts(void)
 
       for (auto pair: netmsgptr->local_port_type)
         {
-          //fprintf(stderr, "port %lu\n", pair.first);
           if (ports.count(pair.first) == 0)
             {
               fprintf(stderr, "auditPorts: port %ld doesn't exist, but is recorded as %s\n",
@@ -744,7 +748,9 @@ void auditPorts(void)
             }
           else
             {
-              if (ports[pair.first] != MACH_PORT_TYPE_SEND)
+              /* XXX all send ports should have a DEAD NAME notification outstanding */
+              if ((ports[pair.first] != MACH_PORT_TYPE_SEND)
+                  && (ports[pair.first] != (MACH_PORT_TYPE_SEND | MACH_PORT_TYPE_DNREQUEST)))
                 {
                   fprintf(stderr, "auditPorts: port %ld is %s, not SEND\n",
                           pair.first, porttype2str(ports[pair.first]).c_str());
@@ -1156,7 +1162,14 @@ netmsg::translateForTransmission(mach_msg_header_t * const msg)
 
                     local_port_type[ports[i]] = MACH_MSG_TYPE_PORT_SEND;
 
-                    /* XXX should request a DEAD NAME notification */
+                    /* request a DEAD NAME notification */
+
+                    mach_port_t old;
+                    mach_call (mach_port_request_notification (mach_task_self (), ports[i],
+                                                               MACH_NOTIFY_DEAD_NAME, 0,
+                                                               notification_port,
+                                                               MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+                    assert(old == MACH_PORT_NULL);
                   }
               }
           }
@@ -1342,12 +1355,12 @@ netmsg::ipcHandler(void)
 {
   mach_call (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_PORT_SET, &portset));
 
-  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &my_sendonce_receive_port));
+  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &notification_port));
 
-  ddprintf("my_sendonce_receive_port = %ld\n", my_sendonce_receive_port);
+  ddprintf("notification_port = %ld\n", notification_port);
 
   /* move the receive right into the portset so we'll be listening on it */
-  mach_call (mach_port_move_member (mach_task_self (), my_sendonce_receive_port, portset));
+  mach_call (mach_port_move_member (mach_task_self (), notification_port, portset));
 
   if (control != MACH_PORT_NULL)
     {
@@ -1375,7 +1388,66 @@ netmsg::ipcHandler(void)
 
       ddprintf("received IPC message (%s) on port %ld\n", msgid_name(netmsg->msg->msgh_id), netmsg->msg->msgh_local_port);
 
-      ipc_run_queue.push_back(netmsg->msg->msgh_local_port, netmsg);
+      if (netmsg->msg->msgh_local_port == notification_port)
+        {
+          switch (netmsg->msg->msgh_id)
+            {
+              case MSGID_DEAD_NAME:
+                {
+                  /* DEAD NAME notification for local send rights,
+                   * which are either local send rights we've sent
+                   * over the network, or remote receive rights that
+                   * we've received.
+                   */
+
+                  auto data = mach_msg_iterator(netmsg->msg);
+
+                  assert(data.name() == MACH_MSG_TYPE_PORT_NAME);
+                  assert(data.nelems() == 1);
+
+                  mach_port_t dead_name = data[0];
+
+                  ddprintf("DEAD NAME notification for port %ld\n", dead_name);
+
+                  assert(local_port_type[dead_name] == MACH_MSG_TYPE_PORT_SEND);
+
+                  /* the send right has turned into a dead name */
+
+                  mach_call (mach_port_mod_refs (mach_task_self(), dead_name,
+                                                 MACH_PORT_RIGHT_DEAD_NAME, -1));
+
+                  local_port_type.erase(dead_name);
+
+                  if (remote_ports_by_local.count(dead_name) > 0)
+                    {
+                      /* This is the case where we got a receive right
+                       * over the network, so we have a remote/local
+                       * mapping.  If we transmitted a send right,
+                       * then we have no mapping.
+                       */
+                      local_ports_by_remote.erase(remote_ports_by_local[dead_name]);
+                      remote_ports_by_local.erase(dead_name);
+                    }
+                }
+
+                break;
+
+            case MSGID_PORT_DELETED:
+              /* this happens when we delete a send right without cancelling
+               * an outstanding DEAD NAME notification request
+               *
+               * XXX avoid these entirely by canceling all such requests
+               */
+              break;
+
+            default:
+              error (1, 0, "unknown notification msgid = %d\n", netmsg->msg->msgh_id);
+            }
+        }
+      else
+        {
+          ipc_run_queue.push_back(netmsg->msg->msgh_local_port, netmsg);
+        }
     }
 
 }
@@ -1513,9 +1585,10 @@ netmsg::ipcHandler(void)
  *
  * receive local DEAD NAME notification
  *   - relay it (translating into remote's name space if necessary)
+ *   - deallocate our local send right
  *   - if it's for a transmitted send right, any more messages
  *     sent to this port should result in MACH_SEND_INVALID_DEST.
- *     There's a race condition here.
+ *     There's a race condition here (see known bugs at top of file).
  *
  * receive remote NO SENDERS notification
  *   - it's for a received receive right or a transmitted send right
