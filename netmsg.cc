@@ -799,6 +799,8 @@ std::string porttype2str(mach_port_type_t type)
   return result;
 }
 
+/* XXX add some locking here so this works multi-threaded */
+
 void auditPorts(void)
 {
   mach_port_array_t names;
@@ -819,11 +821,11 @@ void auditPorts(void)
       ports[names[i]] = types[i];
     }
 
-  for (auto netmsgptr: active_netmsg_classes)
+  for (auto & netmsgptr: active_netmsg_classes)
     {
       assert(ports[netmsgptr->portset] == MACH_PORT_TYPE_PORT_SET);
 
-      for (auto pair: netmsgptr->local_port_type)
+      for (auto & pair: netmsgptr->local_port_type)
         {
           if (ports.count(pair.first) == 0)
             {
@@ -837,7 +839,15 @@ void auditPorts(void)
                   fprintf(stderr, "auditPorts: port %ld is %s, not RECEIVE\n",
                           pair.first, porttype2str(ports[pair.first]).c_str());
                 }
-              // XXX check to make sure we've got a NO SENDERS notification outstanding
+
+              /* check to make sure we've got a NO SENDERS notification outstanding */
+
+              mach_port_t old;
+              mach_call (mach_port_request_notification (mach_task_self (), ports[pair.first],
+                                                         MACH_NOTIFY_NO_SENDERS, 0,
+                                                         ports[pair.first],
+                                                         MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+              assert(old == ports[pair.first]);
             }
           else
             {
@@ -846,7 +856,6 @@ void auditPorts(void)
                   fprintf(stderr, "auditPorts: port %ld is %s, not SEND DNREQUEST\n",
                           pair.first, porttype2str(ports[pair.first]).c_str());
                 }
-              // wassert_equal(ports[pair.first], MACH_PORT_TYPE_SEND);
             }
         }
     }
@@ -856,13 +865,10 @@ void auditPorts(void)
 
 }
 
-/* class RunQueues */
-
-
-
 
 // XXX should be const...
 // dprintMessage(const machMessage & msg)
+// ... but we need a const mach_msg_iterator to make that work
 
 void
 dprintMessage(std::string prefix, machMessage & msg)
