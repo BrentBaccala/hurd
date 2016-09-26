@@ -556,7 +556,10 @@ public:
 /* class machMessage
  *
  * This class contains a single Mach message.  It can be used for
- * messages going in either direction.
+ * messages going in either direction, can be passed directly to
+ * mach_msg(), can be used to access mach header variables, and
+ * includes data(), a member function that returns a mach_msg_iterator
+ * for accessing the typed data.
  */
 
 class machMessage
@@ -565,7 +568,16 @@ public:
   //const static mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
   const static mach_msg_size_t max_size = 4096;
   char buffer[max_size];
+
   mach_msg_header_t * const msg = reinterpret_cast<mach_msg_header_t *> (buffer);
+
+  /* This conversion lets us pass a machMessage directly to mach_msg() */
+  operator mach_msg_header_t * () { return msg; }
+
+  /* This operator lets us access mach_msg_header_t members */
+  mach_msg_header_t * operator-> () { return msg; }
+
+  mach_msg_iterator data(void) { return mach_msg_iterator(msg); }
 };
 
 /* We use this unused bit in the Mach message header to indicate that
@@ -625,7 +637,7 @@ class RunQueues : synchronized<std::map<mach_port_t, std::deque<machMessage *>>>
 {
   netmsg * const parent;
 
-  typedef void (netmsg::* handlerType) (machMessage *);
+  typedef void (netmsg::* handlerType) (machMessage &);
   handlerType handler;
 
   void
@@ -646,7 +658,7 @@ class RunQueues : synchronized<std::map<mach_port_t, std::deque<machMessage *>>>
 
         ddprintf("%x processing\n", netmsg);
 
-        (parent->*handler)(netmsg);
+        (parent->*handler)(*netmsg);
 
         /* for debugging purposes - audit our ports to make sure all of our invariants are still satisfied */
         auditPorts();
@@ -721,23 +733,23 @@ class netmsg
   std::thread * tcpThread;
   std::thread * fsysThread;
 
-  synchronized<std::vector<machMessage *>> free_messages;
+  // synchronized<std::vector<machMessage *>> free_messages;
 
-  machMessage * fetchMessage(void);
+  // machMessage * fetchMessage(void);
 
-  void transmitOOLdata(mach_msg_header_t * const msg);
-  void receiveOOLdata(mach_msg_header_t * const msg);
+  void transmitOOLdata(machMessage & msg);
+  void receiveOOLdata(machMessage & msg);
 
-  void translateForTransmission(mach_msg_header_t * const msg);
-  void ipcBufferHandler(machMessage * netmsg);
+  void translateForTransmission(machMessage & msg);
+  void ipcBufferHandler(machMessage & netmsg);
   void ipcHandler(void);
 
   mach_port_t translatePort2(const mach_port_t port, const unsigned int type);
   mach_port_t translatePort(const mach_port_t port, const unsigned int type);
-  bool translateHeader(mach_msg_header_t * const msg);
-  void translateMessage(mach_msg_header_t * const msg);
+  bool translateHeader(machMessage & msg);
+  void translateMessage(machMessage & msg);
   void tcpHandler(void);
-  void tcpBufferHandler(machMessage * netmsg);
+  void tcpBufferHandler(machMessage & netmsg);
 
   RunQueues tcp_run_queue {this, &netmsg::tcpBufferHandler};
   RunQueues ipc_run_queue {this, &netmsg::ipcBufferHandler};
@@ -850,10 +862,10 @@ void auditPorts(void)
 
 
 // XXX should be const...
-// dprintMessage(const mach_msg_header_t * const msg)
+// dprintMessage(const machMessage & msg)
 
 void
-dprintMessage(std::string prefix, mach_msg_header_t * const msg)
+dprintMessage(std::string prefix, machMessage & msg)
 {
   if (debugLevel == 0) return;
 
@@ -874,7 +886,7 @@ dprintMessage(std::string prefix, mach_msg_header_t * const msg)
 
   buffer << " " << msgid_name(msg->msgh_id);
 
-  for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
+  for (auto ptr = msg.data(); ptr; ++ ptr)
     {
       buffer << " ";
 
@@ -1009,9 +1021,9 @@ dprintMessage(std::string prefix, mach_msg_header_t * const msg)
 }
 
 void
-netmsg::transmitOOLdata(mach_msg_header_t * const msg)
+netmsg::transmitOOLdata(machMessage & msg)
 {
-  for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
+  for (auto ptr = msg.data(); ptr; ++ ptr)
     {
       if ((! ptr.is_inline()) && (ptr.data_size() > 0))
         {
@@ -1022,9 +1034,9 @@ netmsg::transmitOOLdata(mach_msg_header_t * const msg)
 }
 
 void
-netmsg::receiveOOLdata(mach_msg_header_t * const msg)
+netmsg::receiveOOLdata(machMessage & msg)
 {
-  for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
+  for (auto ptr = msg.data(); ptr; ++ ptr)
     {
       if (! ptr.is_inline() && (ptr.data_size() > 0))
         {
@@ -1047,9 +1059,9 @@ netmsg::receiveOOLdata(mach_msg_header_t * const msg)
  */
 
 void
-copyOOLdata(mach_msg_header_t * const msg)
+copyOOLdata(machMessage & msg)
 {
-  for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
+  for (auto ptr = msg.data(); ptr; ++ ptr)
     {
       if (! ptr.is_inline() && (ptr.data_size() > 0))
         {
@@ -1068,9 +1080,9 @@ copyOOLdata(mach_msg_header_t * const msg)
 }
 
 void
-netmsg::translateForTransmission(mach_msg_header_t * const msg)
+netmsg::translateForTransmission(machMessage & msg)
 {
-  for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
+  for (auto ptr = msg.data(); ptr; ++ ptr)
     {
       switch (ptr.name())
         {
@@ -1208,9 +1220,8 @@ netmsg::translateForTransmission(mach_msg_header_t * const msg)
 }
 
 void
-netmsg::ipcBufferHandler(machMessage * netmsg)
+netmsg::ipcBufferHandler(machMessage & msg)
 {
-  mach_msg_header_t * const msg = netmsg->msg;
   mach_port_t original_local_port = msg->msgh_local_port;
 
   mach_port_t dead_name = MACH_PORT_NULL;
@@ -1268,7 +1279,7 @@ netmsg::ipcBufferHandler(machMessage * netmsg)
              * or remote receive rights that we've received.
              */
 
-            auto data = mach_msg_iterator(msg);
+            auto data = msg.data();
 
             assert(data.name() == MACH_MSG_TYPE_PORT_NAME);
             assert(data.nelems() == 1);
@@ -1384,7 +1395,7 @@ netmsg::ipcBufferHandler(machMessage * netmsg)
 
   {
     std::unique_lock<std::mutex> lk(os);
-    os.write(netmsg->buffer, msg->msgh_size);
+    os.write(msg.buffer, msg->msgh_size);
     transmitOOLdata(msg);
     os.flush();
   }
@@ -1416,27 +1427,30 @@ netmsg::ipcHandler(void)
     {
       /* Obtain a buffer to read into */
 
-      machMessage * netmsg = new machMessage;
+      //machMessage * netmsg = new machMessage;
+      //machMessage & msg = * netmsg;
+      machMessage & msg = * (new machMessage);
 
-      ddprintf("ipc recv netmsg is %x\n", netmsg);
+      ddprintf("ipc recv netmsg is %x\n", &msg);
 
       /* XXX Specify MACH_RCV_LARGE to handle messages larger than the buffer */
 
       /* Ports can be added and removed while a receive from a portset is in progress. */
 
-      mach_call (mach_msg (netmsg->msg, MACH_RCV_MSG,
-                           0, netmsg->max_size, portset,
+      mach_call (mach_msg (msg, MACH_RCV_MSG,
+                           0, msg.max_size, portset,
                            MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
 
-      ddprintf("received IPC message (%s) on port %ld\n", msgid_name(netmsg->msg->msgh_id), netmsg->msg->msgh_local_port);
+      ddprintf("received IPC message (%s) on port %ld\n", msgid_name(msg->msgh_id), msg->msgh_local_port);
 
       if (multi_threaded)
         {
-          ipc_run_queue.push_back(netmsg->msg->msgh_local_port, netmsg);
+          ipc_run_queue.push_back(msg->msgh_local_port, &msg);
         }
       else
         {
-          ipcBufferHandler(netmsg);
+          ipcBufferHandler(msg);
+          delete &msg;
         }
     }
 
@@ -1904,7 +1918,7 @@ netmsg::translatePort(const mach_port_t port, const unsigned int type)
 }
 
 void
-swapHeader(mach_msg_header_t * const msg)
+swapHeader(machMessage & msg)
 {
   mach_msg_type_name_t this_type = MACH_MSGH_BITS_LOCAL (msg->msgh_bits);
   mach_msg_type_name_t reply_type = MACH_MSGH_BITS_REMOTE (msg->msgh_bits);
@@ -1946,7 +1960,7 @@ swapHeader(mach_msg_header_t * const msg)
  */
 
 bool
-netmsg::translateHeader(mach_msg_header_t * const msg)
+netmsg::translateHeader(machMessage & msg)
 {
   mach_msg_type_name_t local_type = MACH_MSGH_BITS_LOCAL (msg->msgh_bits);
   mach_msg_type_name_t remote_type = MACH_MSGH_BITS_REMOTE (msg->msgh_bits);
@@ -2051,7 +2065,7 @@ netmsg::translateHeader(mach_msg_header_t * const msg)
        * how these notifications are relayed from one node to another.
        */
 
-      auto data = mach_msg_iterator(msg);
+      auto data = msg.data();
 
       assert(data.name() == MACH_MSG_TYPE_PORT_NAME);
       assert(data.nelems() == 1);
@@ -2124,9 +2138,9 @@ netmsg::translateHeader(mach_msg_header_t * const msg)
 }
 
 void
-netmsg::translateMessage(mach_msg_header_t * const msg)
+netmsg::translateMessage(machMessage & msg)
 {
-  for (auto ptr = mach_msg_iterator(msg); ptr; ++ ptr)
+  for (auto ptr = msg.data(); ptr; ++ ptr)
     {
       switch (ptr.name())
         {
@@ -2158,10 +2172,8 @@ netmsg::translateMessage(mach_msg_header_t * const msg)
 }
 
 void
-netmsg::tcpBufferHandler(machMessage * netmsg)
+netmsg::tcpBufferHandler(machMessage & msg)
 {
-  mach_msg_header_t * const msg = netmsg->msg;
-
   /* Bit of an odd ordering here, designed to make sure the debug
    * messages print sensibly.  We translate all the port numbers
    * into our own port number space, then print the message, then
@@ -2215,17 +2227,20 @@ netmsg::tcpHandler(void)
 
   while (1)
     {
-      /* Obtain a buffer to read into */
+      /* Obtain a buffer to read into, with a lifetime that exceeds
+       * the scope of this block, thus we allocate off the heap with
+       * 'new'.
+       */
 
-      machMessage * netmsg = new machMessage;
+      machMessage & msg = * (new machMessage);
 
-      ddprintf("tcp recv netmsg is %x\n", netmsg);
+      ddprintf("tcp recv netmsg is %x\n", &msg);
 
       /* Receive a single Mach message on the network socket */
 
-      is.read(netmsg->buffer, sizeof(mach_msg_header_t));
-      assert(netmsg->msg->msgh_size <= netmsg->max_size);
-      if (is) is.read(netmsg->buffer + sizeof(mach_msg_header_t), netmsg->msg->msgh_size - sizeof(mach_msg_header_t));
+      is.read(msg.buffer, sizeof(mach_msg_header_t));
+      assert(msg->msgh_size <= msg.max_size);
+      if (is) is.read(msg.buffer + sizeof(mach_msg_header_t), msg->msgh_size - sizeof(mach_msg_header_t));
 
       if (! is)
         {
@@ -2264,20 +2279,21 @@ netmsg::tcpHandler(void)
         }
 
       ddprintf("received network message (%s) for port %ld%s\n",
-               msgid_name(netmsg->msg->msgh_id), netmsg->msg->msgh_local_port,
-               netmsg->msg->msgh_bits & MACH_MSGH_BITS_REMOTE_TRANSLATE ? "" : " (local)");
+               msgid_name(msg->msgh_id), msg->msgh_local_port,
+               msg->msgh_bits & MACH_MSGH_BITS_REMOTE_TRANSLATE ? "" : " (local)");
 
-      receiveOOLdata(netmsg->msg);
+      receiveOOLdata(msg);
 
       /* Put ourselves on the run queue and, if we're the only message there, this will start delivery. */
 
       if (multi_threaded)
         {
-          tcp_run_queue.push_back(netmsg->msg->msgh_local_port, netmsg);
+          tcp_run_queue.push_back(msg->msgh_local_port, &msg);
         }
       else
         {
-          tcpBufferHandler(netmsg);
+          tcpBufferHandler(msg);
+          delete &msg;
         }
 
     }
