@@ -740,14 +740,14 @@ class netmsg
   void transmitOOLdata(machMessage & msg);
   void receiveOOLdata(machMessage & msg);
 
-  void translateForTransmission(machMessage & msg);
+  void translateForTransmission(machMessage & msg, bool translatePortNames);
   void ipcBufferHandler(machMessage & netmsg);
   void ipcHandler(void);
 
   mach_port_t translatePort2(const mach_port_t port, const unsigned int type);
   mach_port_t translatePort(const mach_port_t port, const unsigned int type);
   bool translateHeader(machMessage & msg);
-  void translateMessage(machMessage & msg);
+  void translateMessage(machMessage & msg, bool translatePortNames);
   void tcpHandler(void);
   void tcpBufferHandler(machMessage & netmsg);
 
@@ -1095,7 +1095,7 @@ copyOOLdata(machMessage & msg)
 }
 
 void
-netmsg::translateForTransmission(machMessage & msg)
+netmsg::translateForTransmission(machMessage & msg, bool translatePortNames)
 {
   for (auto ptr = msg.data(); ptr; ++ ptr)
     {
@@ -1218,22 +1218,24 @@ netmsg::translateForTransmission(machMessage & msg)
           }
 
         case MACH_MSG_TYPE_PORT_NAME:
-          {
-            mach_port_t * ports = ptr.data();
 
-            /* We transferring port names with no rights, but we do
-             * want to translate into the remote name space if the
-             * mapping is held locally.
-             */
+          if (translatePortNames)
+            {
+              mach_port_t * ports = ptr.data();
 
-            for (unsigned int i = 0; i < ptr.nelems(); i ++)
-              {
-                if (remote_ports_by_local.count(ports[i]) == 1)
-                  {
-                    ports[i] = (~ remote_ports_by_local[ports[i]]);
-                  }
-              }
-          }
+              /* We transferring port names with no rights, but we do
+               * want to translate into the remote name space if the
+               * mapping is held locally.
+               */
+
+              for (unsigned int i = 0; i < ptr.nelems(); i ++)
+                {
+                  if (remote_ports_by_local.count(ports[i]) == 1)
+                    {
+                      ports[i] = (~ remote_ports_by_local[ports[i]]);
+                    }
+                }
+            }
 
         default:
           // do nothing; just pass through the data
@@ -1410,7 +1412,14 @@ netmsg::ipcBufferHandler(machMessage & msg)
       remote_ports_by_local.erase(original_local_port);
     }
 
-  translateForTransmission(msg);
+  /* If dead_name isn't MACH_PORT_NULL, then this is a DEAD NAME
+   * notification targeted at our notification port, so the port name
+   * in the message is one of our own, and we want to translate it.
+   * Otherwise, any port names in the message belong to some other
+   * task, so we don't translate them.
+   */
+
+  translateForTransmission(msg, dead_name != MACH_PORT_NULL);
 
   /* Deferred handling of DEAD NAME mappings until after
    * translateForTransmission()
@@ -2181,19 +2190,22 @@ netmsg::translateHeader(machMessage & msg)
 }
 
 void
-netmsg::translateMessage(machMessage & msg)
+netmsg::translateMessage(machMessage & msg, bool translatePortNames)
 {
   for (auto ptr = msg.data(); ptr; ++ ptr)
     {
       switch (ptr.name())
         {
+        case MACH_MSG_TYPE_PORT_NAME:
+          if (! translatePortNames) continue;
+          /* else fall through */
+
         case MACH_MSG_TYPE_MOVE_RECEIVE:
         case MACH_MSG_TYPE_MOVE_SEND:
         case MACH_MSG_TYPE_MOVE_SEND_ONCE:
         case MACH_MSG_TYPE_COPY_SEND:
         case MACH_MSG_TYPE_MAKE_SEND:
         case MACH_MSG_TYPE_MAKE_SEND_ONCE:
-        case MACH_MSG_TYPE_PORT_NAME:
 
           {
             mach_port_t * ports = ptr.data();
@@ -2229,7 +2241,17 @@ netmsg::tcpBufferHandler(machMessage & msg)
   // dprintMessage("!!>", msg);
 
   // XXX these translation functions now need some kind of locking
-  translateMessage(msg);
+
+  /* If the message is a DEAD NAME notification targeted at our
+   * control port, we translate the port name in the message, because
+   * it names one of our own ports.  Otherwise, any port names in the
+   * message belong to a different process, so we don't translate
+   * them.
+   *
+   * XXX we could have a better way to detect this then a hardwired compare
+   */
+
+  translateMessage(msg, (msg->msgh_local_port == MACH_PORT_CONTROL) && (msg->msgh_id == MSGID_DEAD_NAME));
   bool transmit = translateHeader(msg);
 
   dprintMessage("-->", msg);
