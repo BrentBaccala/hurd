@@ -695,10 +695,10 @@ test4(mach_port_t node)
  *
  * This exercises the following bug:
  *
- * Client fires off an RPC message (no reply) with a receive
- * right, then three messages targeted at the receive right, then
- * destroys the send right, triggering a NO SENDERS notification to the
- * receive right.
+ * Client fires off an RPC message (no reply) with a receive right,
+ * then three messages targeted at the receive right, then destroys
+ * the send right, triggering a NO SENDERS notification over the
+ * network to the receive right.
  *
  * Server gets the RPC message and destroys its receive right,
  * triggering a DEAD NAME notification, which gets processed by
