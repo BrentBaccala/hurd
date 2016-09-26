@@ -20,6 +20,7 @@ msgids.o: msgids.c msgids.h
 netmsg-test: netmsg-test.c netmsg-test-server.o netmsg-test-user.o
 	gcc -g -Wall -D_GNU_SOURCE -o netmsg-test netmsg-test.c netmsg-test-server.o netmsg-test-user.o -ltrivfs -lports
 
+.PRECIOUS: %-server.c %-user.c
 %-server.c %-user.c: %.defs
 	mig -DSERVERPREFIX=S_ -DUSERPREFIX=U_ \
 		-sheader $*-server.h -server $*-server.c \
