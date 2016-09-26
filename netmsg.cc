@@ -2102,28 +2102,6 @@ netmsg::translateHeader(machMessage & msg)
 
       mach_port_t dead_name = data[0];
 
-      /* XXX move this code into the data translation routine */
-      /* XXX that's been done; we'll never see 0x80000000 here */
-
-      if (dead_name & 0x80000000)
-        {
-          /* This is the case where we sent a receive right over the
-           * network, so we have no remote/local mapping; the remote
-           * translated for us.
-           */
-
-          dead_name = (~ dead_name);
-          assert (remote_ports_by_local.count(dead_name) == 0);
-        }
-      else
-        {
-          /* This is the case where we got a send right over the
-           * network, so we have a remote/local mapping.
-           */
-          assert (local_ports_by_remote.count(dead_name) == 1);
-          dead_name = local_ports_by_remote[dead_name];
-        }
-
       //fprintf(stderr, "dead_name = %ld\n", dead_name);
       assert(local_port_type[dead_name] == MACH_MSG_TYPE_PORT_RECEIVE);
       mach_call (mach_port_mod_refs (mach_task_self(), dead_name,
