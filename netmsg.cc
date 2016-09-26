@@ -1107,7 +1107,11 @@ netmsg::translateForTransmission(machMessage & msg)
 
             for (unsigned int i = 0; i < ptr.nelems(); i ++)
               {
-                if (remote_ports_by_local.count(ports[i]) == 1)
+                if ((ports[i] == MACH_PORT_NULL) || (ports[i] == MACH_PORT_DEAD))
+                  {
+                    continue;
+                  }
+                else if (remote_ports_by_local.count(ports[i]) == 1)
                   {
                     /* We're transmitting a send right that we earlier
                      * received over the network.  Convert to the
@@ -1160,6 +1164,11 @@ netmsg::translateForTransmission(machMessage & msg)
 
             for (unsigned int i = 0; i < ptr.nelems(); i ++)
               {
+                if ((ports[i] == MACH_PORT_NULL) || (ports[i] == MACH_PORT_DEAD))
+                  {
+                    continue;
+                  }
+
                 /* We're transmitting a receive right over the
                  * network.  Add it to our port set, and request a
                  * NO SENDERS notification on it.
