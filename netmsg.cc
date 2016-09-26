@@ -966,7 +966,11 @@ dprintMessage(std::string prefix, machMessage & msg)
 
       if (ptr.name() == MACH_MSG_TYPE_CHAR)
         {
-          buffer << std::hex << std::setfill('0') << std::setw(2);
+          /* I'd like to setw(2) here, but the width gets reset to
+           * zero everytime you print a string (like "\x"), so it's
+           * pointless...
+           */
+          buffer << std::hex << std::setfill('0');
         }
 
       for (unsigned int i = 0; i < ptr.nelems() && i < 32; i ++)
@@ -991,7 +995,7 @@ dprintMessage(std::string prefix, machMessage & msg)
                 else
                   {
                     // XXX why is this AND needed?
-                    buffer << "\\x" << (ptr[i] & 0xff);
+                    buffer << "\\x" << std::setw(2) << (ptr[i] & 0xff);
                   }
               }
               break;
