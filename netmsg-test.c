@@ -386,6 +386,11 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
    * wait for the notification
    */
 
+  /* XXX if client runs test3 then exits, using netmsg code that
+   * doesn't transfer DEAD NAME notifications, this mach_msg timeouts
+   * (like it should), but then returns ESUCCESS!
+   */
+
   mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                        0, max_size, dead_name_port,
                        timeout, MACH_PORT_NULL));
@@ -697,8 +702,8 @@ main (int argc, char **argv)
 
       test1(node);
       test2(node);
-      //test3(node);
-      //test4(node);
+      test3(node);
+      test4(node);
       //while (1) ;
     }
 }

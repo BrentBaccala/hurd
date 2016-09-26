@@ -1744,8 +1744,16 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
       if (type == MACH_MSG_TYPE_MOVE_SEND)
         {
           // we do need to create an extra send right, because we'll lose one when we transmit this message
-          mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
-                                             MACH_MSG_TYPE_MAKE_SEND));
+          if (local_port_type[newport] == MACH_MSG_TYPE_PORT_RECEIVE)
+            {
+              mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
+                                                 MACH_MSG_TYPE_MAKE_SEND));
+            }
+          else
+            {
+              mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
+                                                 MACH_MSG_TYPE_COPY_SEND));
+            }
         }
       else if (type == MACH_MSG_TYPE_MOVE_RECEIVE)
         {
