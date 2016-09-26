@@ -2254,8 +2254,12 @@ netmsg::tcpHandler(void)
       /* Receive a single Mach message on the network socket */
 
       is.read(msg.buffer, sizeof(mach_msg_header_t));
-      assert(msg->msgh_size <= msg.max_size);
-      if (is) is.read(msg.buffer + sizeof(mach_msg_header_t), msg->msgh_size - sizeof(mach_msg_header_t));
+
+      if (is)
+        {
+          assert(msg->msgh_size <= msg.max_size);
+          is.read(msg.buffer + sizeof(mach_msg_header_t), msg->msgh_size - sizeof(mach_msg_header_t));
+        }
 
       if (! is)
         {
