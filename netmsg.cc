@@ -703,11 +703,10 @@ class netmsg
   mach_port_t portset = MACH_PORT_NULL;
   mach_port_t notification_port = MACH_PORT_NULL;
 
-  /* Maps remote RECEIVE rights to local SEND rights */
-  // std::map<mach_port_t, mach_port_t> receive_ports_by_remote;
+  /* These next two maps are used for RECEIVE and SEND rights, but not SEND ONCE rights. */
 
-  std::map<mach_port_t, mach_port_t> local_ports_by_remote;    /* map remote send port to local receive port */
-  std::map<mach_port_t, mach_port_t> remote_ports_by_local;    /* map local receive port to remote send port */
+  std::map<mach_port_t, mach_port_t> local_ports_by_remote;
+  std::map<mach_port_t, mach_port_t> remote_ports_by_local;
 
   std::map<mach_port_t, unsigned int> local_port_type;         /* MACH_MSG_TYPE_PORT_RECEIVE or MACH_MSG_TYPE_PORT_SEND */
 
@@ -732,10 +731,6 @@ class netmsg
   std::thread * ipcThread;
   std::thread * tcpThread;
   std::thread * fsysThread;
-
-  // synchronized<std::vector<machMessage *>> free_messages;
-
-  // machMessage * fetchMessage(void);
 
   void transmitOOLdata(machMessage & msg);
   void receiveOOLdata(machMessage & msg);
@@ -1130,10 +1125,6 @@ netmsg::translateForTransmission(machMessage & msg, bool translatePortNames)
                      * we destroy here is the send right.
                      */
 
-                    /* XXX all we currently do with that no senders
-                     * notification is relay it to the other side
-                     */
-
                     assert(local_port_type[ports[i]] == MACH_MSG_TYPE_PORT_RECEIVE);
                     mach_call (mach_port_mod_refs (mach_task_self(), ports[i],
                                                    MACH_PORT_RIGHT_SEND, -1));
@@ -1177,6 +1168,7 @@ netmsg::translateForTransmission(machMessage & msg, bool translatePortNames)
                  * network.  Add it to our port set, and request a
                  * NO SENDERS notification on it.
                  */
+
                 mach_call (mach_port_move_member (mach_task_self (), ports[i], portset));
 
                 mach_port_t old;
@@ -1204,10 +1196,6 @@ netmsg::translateForTransmission(machMessage & msg, bool translatePortNames)
 
                     /* XXX the old send right had a DEAD PORT notification
                      * that needs to be destroyed
-                     */
-
-                    /* XXX all we currently do with that no senders
-                     * notification is relay it to the other side
                      */
 
                     assert(local_port_type[ports[i]] == MACH_MSG_TYPE_PORT_SEND);
@@ -1477,10 +1465,11 @@ netmsg::ipcHandler(void)
   /* Launch */
   while (1)
     {
-      /* Obtain a buffer to read into */
+      /* Obtain a buffer to read into, with a lifetime that exceeds
+       * the scope of this block, thus we allocate off the heap with
+       * 'new'.
+       */
 
-      //machMessage * netmsg = new machMessage;
-      //machMessage & msg = * netmsg;
       machMessage & msg = * (new machMessage);
 
       ddprintf("ipc recv netmsg is %x\n", &msg);
