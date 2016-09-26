@@ -1922,8 +1922,14 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
       return sendonce_port;
 
     case MACH_MSG_TYPE_PORT_NAME:
-      /* do nothing if we got to this point */
-      return port;
+      if (local_ports_by_remote.count(port) != 0)
+        {
+          return local_ports_by_remote[port];
+        }
+      else
+        {
+          error (1, 0, "unknown received PORT NAME %ld!?", port);
+        }
 
     default:
       error (1, 0, "Unknown port type %d in translatePort", type);
