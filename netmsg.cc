@@ -957,7 +957,17 @@ dprintMessage(std::string prefix, machMessage & msg)
           buffer << "{";
         }
 
+      /* Save stream format flags because we'll change it from decimal
+       * to hex if we're printing a character string, to handle
+       * non-printing characters.
+       */
+
       std::ios::fmtflags f( buffer.flags() );
+
+      if (ptr.name() == MACH_MSG_TYPE_CHAR)
+        {
+          buffer << std::hex << std::setfill('0') << std::setw(2);
+        }
 
       for (unsigned int i = 0; i < ptr.nelems() && i < 32; i ++)
         {
@@ -972,7 +982,6 @@ dprintMessage(std::string prefix, machMessage & msg)
               assert(0);
 
             case MACH_MSG_TYPE_CHAR:
-              // XXX why is this AND needed?
               {
                 char c = ptr[i];
                 if (std::isprint(c))
@@ -981,10 +990,10 @@ dprintMessage(std::string prefix, machMessage & msg)
                   }
                 else
                   {
-                    buffer << "\\x" << std::hex << std::setfill('0') << std::setw(2) << (ptr[i] & 0xff) << std::dec;
+                    // XXX why is this AND needed?
+                    buffer << "\\x" << (ptr[i] & 0xff);
                   }
               }
-              //dprintf("%02x", ptr[i] & 0xff);
               break;
 
             case MACH_MSG_TYPE_INTEGER_8:
