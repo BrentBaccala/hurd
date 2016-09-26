@@ -173,6 +173,14 @@ const char * targetHost;   /* required argument */
 
 bool serverMode = false;
 
+/* Normally, we run multi threaded, with each port given a separate
+ * thread, to better handle slow operations (both IPC and network
+ * sends, and OOL data backed by slow memory managers).  Sometimes,
+ * for debugging purposes, we want to run single threaded.
+ */
+
+bool multi_threaded = false;
+
 unsigned int debugLevel = 0;
 
 template<typename... Args>
@@ -1437,7 +1445,10 @@ netmsg::ipcBufferHandler(networkMessage * netmsg)
 
   ddprintf("sent network message\n");
 
-  assert(ipc_run_queue.pop_front(original_local_port) == netmsg);
+  if (multi_threaded)
+    {
+      assert(ipc_run_queue.pop_front(original_local_port) == netmsg);
+    }
 }
 
 void
@@ -1478,7 +1489,14 @@ netmsg::ipcHandler(void)
 
       ddprintf("received IPC message (%s) on port %ld\n", msgid_name(netmsg->msg->msgh_id), netmsg->msg->msgh_local_port);
 
-      ipc_run_queue.push_back(netmsg->msg->msgh_local_port, netmsg);
+      if (multi_threaded)
+        {
+          ipc_run_queue.push_back(netmsg->msg->msgh_local_port, netmsg);
+        }
+      else
+        {
+          ipcBufferHandler(netmsg);
+        }
     }
 
 }
@@ -2241,7 +2259,10 @@ netmsg::tcpBufferHandler(networkMessage * netmsg)
                  MACH_SEND_INVALID_DEST);
     }
 
-  assert(tcp_run_queue.pop_front(original_local_port) == netmsg);
+  if (multi_threaded)
+    {
+      assert(tcp_run_queue.pop_front(original_local_port) == netmsg);
+    }
 }
 
 void
@@ -2307,7 +2328,14 @@ netmsg::tcpHandler(void)
 
       /* Put ourselves on the run queue and, if we're the only message there, this will start delivery. */
 
-      tcp_run_queue.push_back(netmsg->msg->msgh_local_port, netmsg);
+      if (multi_threaded)
+        {
+          tcp_run_queue.push_back(netmsg->msg->msgh_local_port, netmsg);
+        }
+      else
+        {
+          tcpBufferHandler(netmsg);
+        }
 
     }
 }
