@@ -586,22 +586,28 @@ mach_port_t control = MACH_PORT_NULL;
 class netmsg;
 class networkMessage;
 
-/* class RunQueue
+/* class RunQueues
  *
  * To ensure in-order delivery of messages, we keep run queues,
  * organized by the original destination port number as it appeared in
- * the network message (not the translated port number).  Each run
- * queue has a handler function, set when it's constructed.  When
- * you push onto a run queue, if it's empty, the message you've
- * pushed starts processing.  When you pop from a run queue, if
- * there's anything left in the run queue, the top item starts
- * processing.  It's all protected by a mutex lock.
+ * the network message (not the translated port number).  Each
+ * RunQueues has a handler function, the same of all its run queues,
+ * set when it's constructed.  When you push onto a run queue, if it's
+ * empty, the message you've pushed starts processing.  As each
+ * message completes processing, if there's anything left in the run
+ * queue, the top item starts processing.  It's all protected by a
+ * mutex lock.
+ *
+ * XXX could use a thread pool.  Instead we create and destroy threads
+ * pretty liberally as we get work and run out of it.
  */
 
-class RunQueue : synchronized<std::map<mach_port_t, std::deque<networkMessage *>>>
+class RunQueues : synchronized<std::map<mach_port_t, std::deque<networkMessage *>>>
 {
-  netmsg * parent;
-  void (netmsg::* handler)(networkMessage *);
+  netmsg * const parent;
+
+  typedef void (netmsg::* handlerType) (networkMessage *);
+  handlerType handler;
 
   void run(mach_port_t port);
 
@@ -609,7 +615,7 @@ class RunQueue : synchronized<std::map<mach_port_t, std::deque<networkMessage *>
 
   void push_back(mach_port_t port, networkMessage * netmsg);
 
-  RunQueue(netmsg * parent, void (netmsg::* handler)(networkMessage *)) : parent(parent), handler(handler) { }
+  RunQueues(netmsg * const parent, handlerType handler) : parent(parent), handler(handler) { }
 };
 
 class netmsg
@@ -669,8 +675,8 @@ class netmsg
   void tcpHandler(void);
   void tcpBufferHandler(networkMessage * netmsg);
 
-  RunQueue tcp_run_queue {this, &netmsg::tcpBufferHandler};
-  RunQueue ipc_run_queue {this, &netmsg::ipcBufferHandler};
+  RunQueues tcp_run_queue {this, &netmsg::tcpBufferHandler};
+  RunQueues ipc_run_queue {this, &netmsg::ipcBufferHandler};
 
 public:
 
@@ -801,11 +807,10 @@ public:
 
 };
 
-/* class RunQueue
- */
+/* class RunQueues */
 
 void
-RunQueue::run(mach_port_t port)
+RunQueues::run(mach_port_t port)
 {
   bool empty = false;
 
@@ -841,7 +846,7 @@ RunQueue::run(mach_port_t port)
 }
 
 void
-RunQueue::push_back(mach_port_t port, networkMessage * netmsg)
+RunQueues::push_back(mach_port_t port, networkMessage * netmsg)
 {
   std::unique_lock<std::mutex> lk;
 
@@ -850,7 +855,7 @@ RunQueue::push_back(mach_port_t port, networkMessage * netmsg)
   if (empty)
     {
       // XXX nothing is done to reap this thread
-      new std::thread {&RunQueue::run, this, port};
+      new std::thread {&RunQueues::run, this, port};
     }
 }
 
