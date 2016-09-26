@@ -751,7 +751,7 @@ void auditPorts(void)
             {
               if (ports[pair.first] != (MACH_PORT_TYPE_SEND | MACH_PORT_TYPE_DNREQUEST))
                 {
-                  fprintf(stderr, "auditPorts: port %ld is %s, not SEND\n",
+                  fprintf(stderr, "auditPorts: port %ld is %s, not SEND DNREQUEST\n",
                           pair.first, porttype2str(ports[pair.first]).c_str());
                 }
               // wassert_equal(ports[pair.first], MACH_PORT_TYPE_SEND);
