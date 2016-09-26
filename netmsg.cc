@@ -553,6 +553,21 @@ public:
   }
 };
 
+/* class machMessage
+ *
+ * This class contains a single Mach message.  It can be used for
+ * messages going in either direction.
+ */
+
+class machMessage
+{
+public:
+  //const static mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
+  const static mach_msg_size_t max_size = 4096;
+  char buffer[max_size];
+  mach_msg_header_t * const msg = reinterpret_cast<mach_msg_header_t *> (buffer);
+};
+
 /* We use this unused bit in the Mach message header to indicate that
  * the receiver should translate the message's destination port.
  */
@@ -581,10 +596,14 @@ mach_port_t control = MACH_PORT_NULL;
  * translator/client will only have a single instance of this class
  *
  * servers will have an instance for every client that connects to them
+ *
+ * We need to define a few more things before we're ready to define
+ * class netmsg itself.
  */
 
 class netmsg;
-class networkMessage;
+
+void auditPorts(void);
 
 /* class RunQueues
  *
@@ -602,25 +621,70 @@ class networkMessage;
  * pretty liberally as we get work and run out of it.
  */
 
-class RunQueues : synchronized<std::map<mach_port_t, std::deque<networkMessage *>>>
+class RunQueues : synchronized<std::map<mach_port_t, std::deque<machMessage *>>>
 {
   netmsg * const parent;
 
-  typedef void (netmsg::* handlerType) (networkMessage *);
+  typedef void (netmsg::* handlerType) (machMessage *);
   handlerType handler;
 
-  void run(mach_port_t port);
+  void
+    run(mach_port_t port)
+  {
+    bool empty = false;
+
+    do
+      {
+        machMessage * netmsg;
+
+        {
+          std::unique_lock<std::mutex> lk;
+
+          assert(! at(port).empty());
+          netmsg = at(port).front();
+        }
+
+        ddprintf("%x processing\n", netmsg);
+
+        (parent->*handler)(netmsg);
+
+        /* for debugging purposes - audit our ports to make sure all of our invariants are still satisfied */
+        auditPorts();
+
+        {
+          std::unique_lock<std::mutex> lk;
+
+          at(port).pop_front();
+
+          delete netmsg;
+
+          empty = at(port).empty();
+        }
+      }
+    while (! empty);
+  }
 
  public:
 
-  void push_back(mach_port_t port, networkMessage * netmsg);
+ void
+   push_back(mach_port_t port, machMessage * netmsg)
+ {
+   std::unique_lock<std::mutex> lk;
+
+   bool empty = (*this)[port].empty();
+   (*this)[port].push_back(netmsg);
+   if (empty)
+     {
+       // XXX nothing is done to reap this thread
+       new std::thread {&RunQueues::run, this, port};
+     }
+ }
 
   RunQueues(netmsg * const parent, handlerType handler) : parent(parent), handler(handler) { }
 };
 
 class netmsg
 {
-  friend networkMessage;
   friend void auditPorts(void);
 
   mach_port_t first_port = MACH_PORT_NULL;    /* server sets this to a send right on underlying node; client leaves it MACH_PORT_NULL */
@@ -657,15 +721,15 @@ class netmsg
   std::thread * tcpThread;
   std::thread * fsysThread;
 
-  synchronized<std::vector<networkMessage *>> free_messages;
+  synchronized<std::vector<machMessage *>> free_messages;
 
-  networkMessage * fetchMessage(void);
+  machMessage * fetchMessage(void);
 
   void transmitOOLdata(mach_msg_header_t * const msg);
   void receiveOOLdata(mach_msg_header_t * const msg);
 
   void translateForTransmission(mach_msg_header_t * const msg);
-  void ipcBufferHandler(networkMessage * netmsg);
+  void ipcBufferHandler(machMessage * netmsg);
   void ipcHandler(void);
 
   mach_port_t translatePort2(const mach_port_t port, const unsigned int type);
@@ -673,7 +737,7 @@ class netmsg
   bool translateHeader(mach_msg_header_t * const msg);
   void translateMessage(mach_msg_header_t * const msg);
   void tcpHandler(void);
-  void tcpBufferHandler(networkMessage * netmsg);
+  void tcpBufferHandler(machMessage * netmsg);
 
   RunQueues tcp_run_queue {this, &netmsg::tcpBufferHandler};
   RunQueues ipc_run_queue {this, &netmsg::ipcBufferHandler};
@@ -780,84 +844,8 @@ void auditPorts(void)
 
 }
 
-/* class networkMessage
- *
- * This class contains the buffer space for a single Mach message, and
- * an associated thread for processing it.
- *
- * It can be used for messages going in either direction, as a handler
- * subroutine is passed to it, indicating what processing should be
- * done on the buffer.
- *
- * Once it's done processing, it puts itself back into the parent
- * netmsg class's free_messages, indicating that it's available for
- * another message.
- *
- * This is done partly for performance, but primarily to evade
- * problems with the Mach kernel blocking on IPC sends.
- */
-
-class networkMessage
-{
-public:
-  //const static mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
-  const static mach_msg_size_t max_size = 4096;
-  char buffer[max_size];
-  mach_msg_header_t * const msg = reinterpret_cast<mach_msg_header_t *> (buffer);
-
-};
-
 /* class RunQueues */
 
-void
-RunQueues::run(mach_port_t port)
-{
-  bool empty = false;
-
-  do
-    {
-      networkMessage * netmsg;
-
-      {
-        std::unique_lock<std::mutex> lk;
-
-        assert(! at(port).empty());
-        netmsg = at(port).front();
-      }
-
-      ddprintf("%x processing\n", netmsg);
-
-      (parent->*handler)(netmsg);
-
-      /* for debugging purposes - audit our ports to make sure all of our invariants are still satisfied */
-      auditPorts();
-
-      {
-        std::unique_lock<std::mutex> lk;
-
-        at(port).pop_front();
-
-        delete netmsg;
-
-        empty = at(port).empty();
-      }
-    }
-  while (! empty);
-}
-
-void
-RunQueues::push_back(mach_port_t port, networkMessage * netmsg)
-{
-  std::unique_lock<std::mutex> lk;
-
-  bool empty = (*this)[port].empty();
-  (*this)[port].push_back(netmsg);
-  if (empty)
-    {
-      // XXX nothing is done to reap this thread
-      new std::thread {&RunQueues::run, this, port};
-    }
-}
 
 
 
@@ -1220,7 +1208,7 @@ netmsg::translateForTransmission(mach_msg_header_t * const msg)
 }
 
 void
-netmsg::ipcBufferHandler(networkMessage * netmsg)
+netmsg::ipcBufferHandler(machMessage * netmsg)
 {
   mach_msg_header_t * const msg = netmsg->msg;
   mach_port_t original_local_port = msg->msgh_local_port;
@@ -1428,7 +1416,7 @@ netmsg::ipcHandler(void)
     {
       /* Obtain a buffer to read into */
 
-      networkMessage * netmsg = new networkMessage;
+      machMessage * netmsg = new machMessage;
 
       ddprintf("ipc recv netmsg is %x\n", netmsg);
 
@@ -2170,7 +2158,7 @@ netmsg::translateMessage(mach_msg_header_t * const msg)
 }
 
 void
-netmsg::tcpBufferHandler(networkMessage * netmsg)
+netmsg::tcpBufferHandler(machMessage * netmsg)
 {
   mach_msg_header_t * const msg = netmsg->msg;
 
@@ -2229,7 +2217,7 @@ netmsg::tcpHandler(void)
     {
       /* Obtain a buffer to read into */
 
-      networkMessage * netmsg = new networkMessage;
+      machMessage * netmsg = new machMessage;
 
       ddprintf("tcp recv netmsg is %x\n", netmsg);
 
