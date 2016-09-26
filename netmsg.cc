@@ -749,15 +749,12 @@ void auditPorts(void)
             }
           else
             {
-              /* XXX all send ports should have a DEAD NAME notification outstanding */
-              if ((ports[pair.first] != MACH_PORT_TYPE_SEND)
-                  && (ports[pair.first] != (MACH_PORT_TYPE_SEND | MACH_PORT_TYPE_DNREQUEST)))
+              if (ports[pair.first] != (MACH_PORT_TYPE_SEND | MACH_PORT_TYPE_DNREQUEST))
                 {
                   fprintf(stderr, "auditPorts: port %ld is %s, not SEND\n",
                           pair.first, porttype2str(ports[pair.first]).c_str());
                 }
               // wassert_equal(ports[pair.first], MACH_PORT_TYPE_SEND);
-              // XXX check to make sure we've got a DEAD NAME notification outstanding
             }
         }
     }
