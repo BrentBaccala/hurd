@@ -1742,6 +1742,7 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
                                                      MACH_NOTIFY_NO_SENDERS, 0,
                                                      MACH_PORT_NULL,
                                                      MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+          assert(old == newport);
 
           // create a SEND right (we're relaying on the RECEIVE right)
           mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
@@ -1750,7 +1751,13 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
           // our local port type is flipping from RECEIVE to SEND
           local_port_type[newport] = MACH_MSG_TYPE_PORT_SEND;
 
-          // XXX request DEAD-NAME notification
+          /* request a DEAD NAME notification */
+
+          mach_call (mach_port_request_notification (mach_task_self (), newport,
+                                                     MACH_NOTIFY_DEAD_NAME, 0,
+                                                     notification_port,
+                                                     MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+          assert(old == MACH_PORT_NULL);
         }
       else if (type == MACH_MSG_TYPE_PORT_NAME)
         {
@@ -1794,7 +1801,13 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
               // our local port type is flipping from RECEIVE to SEND
               local_port_type[localport] = MACH_MSG_TYPE_PORT_SEND;
 
-              // XXX request DEAD-NAME notification
+              /* request a DEAD NAME notification */
+
+              mach_call (mach_port_request_notification (mach_task_self (), localport,
+                                                         MACH_NOTIFY_DEAD_NAME, 0,
+                                                         notification_port,
+                                                         MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+              assert(old == MACH_PORT_NULL);
 
               return localport;
             }
@@ -1811,6 +1824,15 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
           local_ports_by_remote[port] = newport;
           remote_ports_by_local[newport] = port;
           local_port_type[newport] = MACH_MSG_TYPE_PORT_SEND;
+
+          /* request a DEAD NAME notification */
+
+          mach_port_t old;
+          mach_call (mach_port_request_notification (mach_task_self (), newport,
+                                                     MACH_NOTIFY_DEAD_NAME, 0,
+                                                     notification_port,
+                                                     MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+          assert(old == MACH_PORT_NULL);
 
           return newport;
         }
@@ -2022,12 +2044,25 @@ netmsg::translateHeader(mach_msg_header_t * const msg)
        */
 
       assert(local_port_type[local_port] == MACH_MSG_TYPE_PORT_SEND);
+
+      /* destroy outstanding DEAD NAME request */
+
+      mach_port_t old;
+      mach_call (mach_port_request_notification (mach_task_self (), local_port,
+                                                 MACH_NOTIFY_DEAD_NAME, 0,
+                                                 MACH_PORT_NULL,
+                                                 MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+      /* this assert doesn't work because notification_port is a
+       * RECEIVE right, but old will give us back a SEND ONCE right
+       */
+      // assert(old == notification_port);
+
+      /* now destroy the send right itself */
+
       mach_call (mach_port_mod_refs (mach_task_self(), local_port,
                                      MACH_PORT_RIGHT_SEND, -1),
                  KERN_INVALID_RIGHT);
       local_port_type.erase(local_port);
-
-      /* XXX should destroy outstanding DEAD NAME request */
 
       if (remote_ports_by_local.count(local_port) > 0)
         {
