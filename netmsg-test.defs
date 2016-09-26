@@ -13,4 +13,5 @@ simpleroutine test1 (
 simpleroutine test2 (
 	requestport server: mach_port_t;
 	handle: mach_port_receive_t;
-	count: int);
+	count: int;
+	returnport: mach_port_send_t);

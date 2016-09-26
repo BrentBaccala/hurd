@@ -24,15 +24,15 @@
 
 /* TESTS
 
-   test1 - create a send/receive pair, transfer the send right,
+   test 1 - create a send/receive pair, transfer the send right,
       transmit some messages to it, then destroy the send right
       and get a NO SENDERS notification on the receive right
 
-   test2 - create a send/receive pair, transfer the receive right,
+   test 2 - create a send/receive pair, transfer the receive right,
       transmit some messages on it, then destroy the send right
       and get a NO SENDERS notification on the receive right
 
-   test3 - create a send/receive pair, transfer the send right,
+   test 3 - create a send/receive pair, transfer the send right,
       transmit some messages to it, then destroy the receive right
       and get a DEAD NAME notification on the send right
 
@@ -56,19 +56,19 @@
       destroying it and getting a NO SENDERS notification on the
       receive right
 
-   test8 - create a send/receive pair, transfer the send right,
+   test 8 - create a send/receive pair, transfer the send right,
       transmit some messages to it, then transfer another copy of the
       send right, verify that it came in on the same port number, send
       some more messages, destroy one of the send rights, send more
       messages, then destroy the last copy of the send right and
       get a NO SENDERS notification on the receive right
 
-   test9 - create a send/receive pair, transfer the send right,
+   test 9 - create a send/receive pair, transfer the send right,
       transmit some messages to it, then transfer the receive right,
       verify that it came in on the same port number, destroy the
       send right, and get a NO SENDERS notification on the receive right
 
-   test10 - create a send/receive pair, transfer the send right,
+   test 10 - create a send/receive pair, transfer the send right,
       transmit some messages to it, make a copy of it, then transfer
       the receive right, verify that it came in on the same port
       number, send some messages on the copy of the send right, then
@@ -85,6 +85,7 @@
       check client exits correctly when translator detaches
       check for lingering ports
       check multi-threaded operation somehow?
+      check sending MACH_PORT_NULL and MACH_PORT_DEAD in both send and receive rights
  */
 
 #include <stdio.h>
@@ -463,7 +464,7 @@ test1(mach_port_t node)
  */
 
 kern_return_t
-S_test2(mach_port_t server, mach_port_t testport, int count)
+S_test2(mach_port_t server, mach_port_t testport, int count, mach_port_t returnport)
 {
   const static mach_msg_size_t max_size = 4096;
   char buffer[max_size];
@@ -530,7 +531,7 @@ test2(mach_port_t node)
 
   /* Pass the receive right to the server */
 
-  mach_call(U_test2(node, testport, MACH_MSG_TYPE_MOVE_RECEIVE, count));
+  mach_call(U_test2(node, testport, MACH_MSG_TYPE_MOVE_RECEIVE, count, MACH_PORT_NULL, MACH_MSG_TYPE_MAKE_SEND));
 
   /* Transmit COUNT empty messages, with msgh_id running from 0 to
    * COUNT-1.
