@@ -2022,7 +2022,16 @@ netmsg::translateHeader(machMessage & msg)
        */
       if (local_ports_by_remote.count(local_port) != 1)
         {
-          error (1, 0, "Never saw port %ld before", local_port);
+          /* The local receive port has been destroyed, but there are
+           * still messages in transit to it.  Discard the message.
+           */
+
+          // XXX verify that we really destroyed the port, and that
+          // we didn't hit this code because of a bug
+
+          // error (1, 0, "Never saw port %ld before", local_port);
+
+          return false;
         }
       else
         {
@@ -2101,6 +2110,17 @@ netmsg::translateHeader(machMessage & msg)
       assert(data.nelems() == 1);
 
       mach_port_t dead_name = data[0];
+
+      if (local_port_type.count(dead_name) == 0)
+        {
+          /* This is the bug triggered by test 11.  Our client
+           * destroyed a local send right while a remote client
+           * destroyed the matching remote receive right, so we're
+           * getting a DEAD NAME notification on a port we've
+           * already deallocated.
+           */
+          return false;
+        }
 
       //fprintf(stderr, "dead_name = %ld\n", dead_name);
       assert(local_port_type[dead_name] == MACH_MSG_TYPE_PORT_RECEIVE);
