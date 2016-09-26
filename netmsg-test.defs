@@ -15,3 +15,7 @@ simpleroutine test2 (
 	handle: mach_port_receive_t;
 	count: int;
 	returnport: mach_port_send_t);
+
+simpleroutine test11 (
+	requestport server: mach_port_t;
+	handle: mach_port_receive_t);

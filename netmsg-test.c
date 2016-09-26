@@ -75,6 +75,10 @@
       destroy both send rights, and get a NO SENDERS notification on
       the receive right
 
+   test 11 - create a send/receive pair, transfer the receive right
+      and destroy it upon reception, transmit some messages on it,
+      then destroy the send right
+
    MORE TESTS
       send all the various data types across
       send OOL data
@@ -685,6 +689,94 @@ test4(mach_port_t node)
   assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
 }
 
+/* test 11 - create a send/receive pair, transfer the receive right
+ *     and destroy it upon reception, transmit some messages on it,
+ *     then destroy the send right
+ *
+ * This exercises the following bug:
+ *
+ * Client fires off an RPC message (no reply) with a receive
+ * right, then three messages targeted at the receive right, then
+ * destroys the send right, triggering a NO SENDERS notification to the
+ * receive right.
+ *
+ * Server gets the RPC message and destroys its receive right,
+ * triggering a DEAD NAME notification, which gets processed by
+ * netmsg, the port mapping is deallocated, and the first of the three
+ * inbound messages hits an unknown port.
+ *
+ * Finally, the client gets the DEAD NAME message targeted at an
+ * unknown port.
+ */
+
+kern_return_t
+S_test11(mach_port_t server, mach_port_t testport)
+{
+  /* Deallocate the receive right */
+
+  mach_call (mach_port_mod_refs (mach_task_self(), testport,
+                                 MACH_PORT_RIGHT_RECEIVE, -1));
+
+  /* Verify that the port has completely gone away */
+
+  mach_port_type_t port_type;
+  wassert_equal (mach_port_type(mach_task_self(), testport, &port_type), KERN_INVALID_NAME);
+
+  return ESUCCESS;
+}
+
+void
+test11(mach_port_t node)
+{
+  mach_port_t testport;
+  const int count = 3;
+
+  const static mach_msg_size_t max_size = 4096;
+  char buffer[max_size];
+  mach_msg_header_t * const msg = (mach_msg_header_t *) (buffer);
+
+  /* Create a receive right */
+
+  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &testport));
+
+  /* Keep a send right for ourselves */
+
+  mach_call (mach_port_insert_right (mach_task_self (), testport, testport,
+                                     MACH_MSG_TYPE_MAKE_SEND));
+
+  /* Pass the receive right to the server */
+
+  mach_call(U_test11(node, testport, MACH_MSG_TYPE_MOVE_RECEIVE));
+
+  /* Transmit COUNT empty messages, with msgh_id running from 0 to
+   * COUNT-1.
+   */
+
+  for (int i = 0; i < count; i ++)
+    {
+      bzero(msg, sizeof(mach_msg_header_t));
+      msg->msgh_size = sizeof(mach_msg_header_t);
+      msg->msgh_remote_port = testport;
+      msg->msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
+      msg->msgh_id = i;
+
+      mach_call (mach_msg(msg, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msg->msgh_size,
+                          0, msg->msgh_remote_port,
+                          timeout, MACH_PORT_NULL));
+    }
+
+
+  /* Deallocate the send right */
+
+  mach_call (mach_port_mod_refs (mach_task_self(), testport,
+                                 MACH_PORT_RIGHT_SEND, -1));
+
+  /* Verify that the port has completely gone away */
+
+  mach_port_type_t port_type;
+  assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
+}
+
 /* MAIN ROUTINE */
 
 int
@@ -705,6 +797,7 @@ main (int argc, char **argv)
       test2(node);
       test3(node);
       test4(node);
+      test11(node);
       //while (1) ;
     }
 }
