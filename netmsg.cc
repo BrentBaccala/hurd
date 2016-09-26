@@ -600,14 +600,16 @@ class networkMessage;
 
 class RunQueue : synchronized<std::map<mach_port_t, std::deque<networkMessage *>>>
 {
-  void (netmsg::* const handler)(networkMessage *);
+  netmsg * parent;
+  void (netmsg::* handler)(networkMessage *);
+
+  void run(mach_port_t port);
 
  public:
 
   void push_back(mach_port_t port, networkMessage * netmsg);
-  networkMessage * pop_front(mach_port_t port);
 
-  RunQueue(void (netmsg::* handler)(networkMessage *)) : handler(handler) { }
+  RunQueue(netmsg * parent, void (netmsg::* handler)(networkMessage *)) : parent(parent), handler(handler) { }
 };
 
 class netmsg
@@ -667,8 +669,8 @@ class netmsg
   void tcpHandler(void);
   void tcpBufferHandler(networkMessage * netmsg);
 
-  RunQueue tcp_run_queue {&netmsg::tcpBufferHandler};
-  RunQueue ipc_run_queue {&netmsg::ipcBufferHandler};
+  RunQueue tcp_run_queue {this, &netmsg::tcpBufferHandler};
+  RunQueue ipc_run_queue {this, &netmsg::ipcBufferHandler};
 
 public:
 
@@ -792,84 +794,51 @@ void auditPorts(void)
 class networkMessage
 {
 public:
-  netmsg * const parent;
-
   //const static mach_msg_size_t max_size = 4 * __vm_page_size; /* XXX */
   const static mach_msg_size_t max_size = 4096;
   char buffer[max_size];
   mach_msg_header_t * const msg = reinterpret_cast<mach_msg_header_t *> (buffer);
 
-  void (netmsg::* handler)(networkMessage *);
-
-  std::mutex runstop;  // normally locked
-
-  void run(void)
-  {
-    while (1)
-      {
-        {
-          // This blocks us until parent unlocks our mutex by calling
-          // process_buffer() after writing data into our buffer.
-
-          std::unique_lock<std::mutex> lk(runstop);
-
-          // Now process buffer
-
-          ddprintf("%x processing\n", this);
-
-          (parent->*handler)(this);
-
-          /* for debugging purposes - audit our ports to make sure all of our invariants are still satisfied */
-          auditPorts();
-        }
-        // indicate that we're ready to process another buffer by
-        // putting ourselves into the parent's free_messages
-        runstop.lock();
-        {
-          std::unique_lock<std::mutex> lk(parent->free_messages);
-          parent->free_messages.push_back(this);
-        }
-
-      }
-  }
-
-  void process_buffer(void (netmsg::* new_handler)(networkMessage *))
-  {
-    handler = new_handler;
-    // XXX what if we're not waiting to start?
-    runstop.unlock();  // starts our thread running
-  }
-
-  networkMessage(netmsg * parent) : parent(parent)
-  {
-    // we start stopped, waiting for parent to write data into our buffer
-    runstop.lock();
-    // XXX nothing is done to reap this thread
-    new std::thread{&networkMessage::run, this};
-  }
 };
-
-networkMessage *
-netmsg::fetchMessage(void)
-{
-  std::unique_lock<std::mutex> lk(free_messages);
-  networkMessage * netmsg;
-
-  if (free_messages.empty())
-    {
-      netmsg = new networkMessage(this);
-    }
-  else
-    {
-      netmsg = free_messages.back();
-      free_messages.pop_back();
-    }
-
-  return netmsg;
-}
 
 /* class RunQueue
  */
+
+void
+RunQueue::run(mach_port_t port)
+{
+  bool empty = false;
+
+  do
+    {
+      networkMessage * netmsg;
+
+      {
+        std::unique_lock<std::mutex> lk;
+
+        assert(! at(port).empty());
+        netmsg = at(port).front();
+      }
+
+      ddprintf("%x processing\n", netmsg);
+
+      (parent->*handler)(netmsg);
+
+      /* for debugging purposes - audit our ports to make sure all of our invariants are still satisfied */
+      auditPorts();
+
+      {
+        std::unique_lock<std::mutex> lk;
+
+        at(port).pop_front();
+
+        delete netmsg;
+
+        empty = at(port).empty();
+      }
+    }
+  while (! empty);
+}
 
 void
 RunQueue::push_back(mach_port_t port, networkMessage * netmsg)
@@ -880,27 +849,11 @@ RunQueue::push_back(mach_port_t port, networkMessage * netmsg)
   (*this)[port].push_back(netmsg);
   if (empty)
     {
-      netmsg->process_buffer(handler);
+      // XXX nothing is done to reap this thread
+      new std::thread {&RunQueue::run, this, port};
     }
 }
 
-/* Put ourselves on the run queue and, if we're the only message there, start delivery. */
-networkMessage *
-RunQueue::pop_front(mach_port_t port)
-{
-  std::unique_lock<std::mutex> lk;
-
-  networkMessage * netmsg = at(port).front();
-
-  at(port).pop_front();
-
-  if (! at(port).empty())
-    {
-      at(port).front()->process_buffer(handler);
-    }
-
-  return netmsg;
-}
 
 
 // XXX should be const...
@@ -1444,11 +1397,6 @@ netmsg::ipcBufferHandler(networkMessage * netmsg)
   }
 
   ddprintf("sent network message\n");
-
-  if (multi_threaded)
-    {
-      assert(ipc_run_queue.pop_front(original_local_port) == netmsg);
-    }
 }
 
 void
@@ -1473,9 +1421,9 @@ netmsg::ipcHandler(void)
   /* Launch */
   while (1)
     {
-      /* Obtain a buffer to read into, with an associated thread to process it */
+      /* Obtain a buffer to read into */
 
-      networkMessage * netmsg = fetchMessage();
+      networkMessage * netmsg = new networkMessage;
 
       ddprintf("ipc recv netmsg is %x\n", netmsg);
 
@@ -2220,7 +2168,6 @@ void
 netmsg::tcpBufferHandler(networkMessage * netmsg)
 {
   mach_msg_header_t * const msg = netmsg->msg;
-  mach_port_t original_local_port = netmsg->msg->msgh_local_port;
 
   /* Bit of an odd ordering here, designed to make sure the debug
    * messages print sensibly.  We translate all the port numbers
@@ -2266,11 +2213,6 @@ netmsg::tcpBufferHandler(networkMessage * netmsg)
                           MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL),
                  MACH_SEND_INVALID_DEST);
     }
-
-  if (multi_threaded)
-    {
-      assert(tcp_run_queue.pop_front(original_local_port) == netmsg);
-    }
 }
 
 void
@@ -2280,9 +2222,9 @@ netmsg::tcpHandler(void)
 
   while (1)
     {
-      /* Obtain a buffer to read into, with an associated thread to process it */
+      /* Obtain a buffer to read into */
 
-      networkMessage * netmsg = fetchMessage();
+      networkMessage * netmsg = new networkMessage;
 
       ddprintf("tcp recv netmsg is %x\n", netmsg);
 
