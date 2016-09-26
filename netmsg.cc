@@ -1367,11 +1367,26 @@ netmsg::ipcBufferHandler(machMessage & msg)
 
       msg->msgh_local_port = remote_port;
     }
-  else
+  else if (local_port_type.count(msg->msgh_local_port) == 0)
+    {
+      /* It's a dead port.  Discard the message.
+       *
+       * This case is exercised by test 1 then test 11, or test 4 then
+       * test 11, which causes DEAD NAME to be processed first, then
+       * the NO SENDERS message lands us here.  Test 11 alone causes
+       * the messages to be processed in the opposite direction, i.e,
+       * NO SENDERS first, then DEAD NAME.
+       */
+      return;
+    }
+  else if (local_port_type[msg->msgh_local_port] == MACH_MSG_TYPE_PORT_RECEIVE)
     {
       /* it's a receive right we got via IPC.  Let the remote translate it. */
-      assert(local_port_type[msg->msgh_local_port] == MACH_MSG_TYPE_PORT_RECEIVE);
       msg->msgh_bits |= MACH_MSGH_BITS_REMOTE_TRANSLATE;
+    }
+  else
+    {
+      error (1, 0, "IPC message targeted at send port %ld!?", msg->msgh_local_port);
     }
 
   /* If it's a NO SENDERS notification, we deallocate the receive right
