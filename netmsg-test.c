@@ -1030,6 +1030,11 @@ main (int argc, char **argv)
     {
       mach_port_t node = file_name_lookup (targetPath, O_RDWR, 0);
 
+      if (node == MACH_PORT_NULL)
+        {
+          error (2, errno, "file_name_lookup: %s", targetPath);
+        }
+
       test1(node);
       test2(node);
       test3(node);
