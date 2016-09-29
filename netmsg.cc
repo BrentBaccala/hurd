@@ -1194,18 +1194,34 @@ netmsg::translateForTransmission(machMessage & msg, bool translatePortNames)
                      * destroy here is the send right.
                      */
 
-                    /* XXX the old send right had a DEAD PORT notification
-                     * that needs to be destroyed
-                     */
-
                     assert(local_port_type[ports[i]] == MACH_MSG_TYPE_PORT_SEND);
+
+                    /* destroy outstanding DEAD NAME request */
+
+                    mach_port_t old;
+                    mach_call (mach_port_request_notification (mach_task_self (), ports[i],
+                                                               MACH_NOTIFY_DEAD_NAME, 0,
+                                                               MACH_PORT_NULL,
+                                                               MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+                    /* this assert doesn't work because
+                     * notification_port is a RECEIVE right, but old
+                     * will give us back a SEND ONCE right
+                     */
+                    // assert(old == notification_port);
+
+                    /* now destroy the send right itself */
+
                     mach_call (mach_port_mod_refs (mach_task_self(), ports[i],
                                                    MACH_PORT_RIGHT_SEND, -1));
 
+                    local_port_type[ports[i]] = MACH_MSG_TYPE_PORT_RECEIVE;
+
                     ports[i] = (~ remote_ports_by_local[ports[i]]);
                   }
-
-                local_port_type[ports[i]] = MACH_MSG_TYPE_PORT_RECEIVE;
+                else
+                  {
+                    local_port_type[ports[i]] = MACH_MSG_TYPE_PORT_RECEIVE;
+                  }
               }
           }
 
@@ -1761,7 +1777,10 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
                                                      MACH_NOTIFY_NO_SENDERS, 0,
                                                      MACH_PORT_NULL,
                                                      MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
-          assert(old == newport);
+          /* this assert doesn't work because newport is a RECEIVE
+           * right, but old will give us back a SEND ONCE right
+           */
+          // assert(old == newport);
 
           // create a SEND right (we're relaying on the RECEIVE right)
           mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
@@ -1945,7 +1964,11 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
         }
       else
         {
-          error (1, 0, "unknown received PORT NAME %ld!?", port);
+          /* This can happen if we receive a network DEAD NAME
+           * notification for a port we've destroyed locally.
+           */
+          // error (1, 0, "unknown received PORT NAME %ld!?", port);
+          return MACH_PORT_NULL;
         }
 
     default:
@@ -2077,6 +2100,14 @@ netmsg::translateHeader(machMessage & msg)
        * relayed across netmsg
        */
 
+      if (local_port_type.count(local_port) == 0)
+        {
+          /* This happens when we've deallocated the port locally, but
+           * there's still a network NO SENDERS message in flight.
+           */
+          return false;
+        }
+
       assert(local_port_type[local_port] == MACH_MSG_TYPE_PORT_SEND);
 
       /* destroy outstanding DEAD NAME request */
@@ -2135,6 +2166,9 @@ netmsg::translateHeader(machMessage & msg)
            * destroyed the matching remote receive right, so we're
            * getting a DEAD NAME notification on a port we've
            * already deallocated.
+           *
+           * XXX what if we reuse the port number in the meantime?
+           * XXX then we might get a false DEAD NAME notification
            */
           return false;
         }
