@@ -412,15 +412,15 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
 
 /* server for tests 2 and 5
  *
- * Accepts a receive right in its arguments, requests a NO SENDERS
- * notification, waits for COUNT empty messages on it, then either
- * returns the receive right on a returnport provided in the
+ * Accepts a receive right in its arguments, optionally requests a NO
+ * SENDERS notification, waits for COUNT empty messages on it, then
+ * either returns the receive right on a returnport provided in the
  * arguments, or (if returnport is MACH_PORT_NULL) sits and waits for
  * the NO SENDERS notification before deallocating the receive right.
  */
 
 kern_return_t
-S_test2(mach_port_t server, mach_port_t testport, int count, mach_port_t returnport)
+S_test2(mach_port_t server, mach_port_t testport, int count, boolean_t request_no_senders, mach_port_t returnport)
 {
   const static mach_msg_size_t max_size = 4096;
   char buffer[max_size];
@@ -428,9 +428,9 @@ S_test2(mach_port_t server, mach_port_t testport, int count, mach_port_t returnp
   mach_msg_type_t * const msg_data = (mach_msg_type_t *) (msg + 1);
   mach_port_t * const msg_data_port = (mach_port_t *) (msg_data + 1);
 
-  /* request NO SENDERS notification be sent to same port */
+  /* optionally request a NO SENDERS notification be sent to the same port */
 
-  if (returnport == MACH_PORT_NULL)
+  if (request_no_senders)
     {
       mach_port_t old;
       mach_call (mach_port_request_notification (mach_task_self (), testport,
@@ -480,12 +480,15 @@ S_test2(mach_port_t server, mach_port_t testport, int count, mach_port_t returnp
     }
   else
     {
-      /* wait for a NO SENDERS notification */
+      /* (optionally) wait for a NO SENDERS notification */
 
-      mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
-                           0, max_size, testport,
-                           timeout, MACH_PORT_NULL));
-      wassert_equal(msg->msgh_id, MSGID_NO_SENDERS);
+      if (request_no_senders)
+        {
+          mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                               0, max_size, testport,
+                               timeout, MACH_PORT_NULL));
+          wassert_equal(msg->msgh_id, MSGID_NO_SENDERS);
+        }
 
       /* Deallocate the receive right */
 
@@ -610,9 +613,9 @@ test2(mach_port_t node)
   mach_call (mach_port_insert_right (mach_task_self (), testport, testport,
                                      MACH_MSG_TYPE_MAKE_SEND));
 
-  /* Pass the receive right to the server */
+  /* Pass the receive right to the server, telling it to deallocate when done */
 
-  mach_call(U_test2(node, testport, MACH_MSG_TYPE_MOVE_RECEIVE, count, MACH_PORT_NULL, MACH_MSG_TYPE_MAKE_SEND));
+  mach_call(U_test2(node, testport, MACH_MSG_TYPE_MOVE_RECEIVE, count, TRUE, MACH_PORT_NULL, MACH_MSG_TYPE_MAKE_SEND));
 
   /* Transmit COUNT empty messages, with msgh_id running from 0 to
    * COUNT-1.
@@ -797,9 +800,9 @@ test5(mach_port_t node)
 
   mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &returnport));
 
-  /* Pass the receive right to the server */
+  /* Pass the receive right to the server, asking it to be returned (without a NO SENDERS notification) */
 
-  mach_call(U_test2(node, testport, MACH_MSG_TYPE_MOVE_RECEIVE, count, returnport, MACH_MSG_TYPE_MAKE_SEND));
+  mach_call(U_test2(node, testport, MACH_MSG_TYPE_MOVE_RECEIVE, count, FALSE, returnport, MACH_MSG_TYPE_MAKE_SEND));
 
   /* Transmit COUNT empty messages, with msgh_id running from 0 to
    * COUNT-1.
