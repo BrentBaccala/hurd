@@ -296,12 +296,16 @@ printPortType(mach_port_t testport)
   fprintf(stderr, "port type = 0x%x\n", port_type);
 }
 
-/* test 1 - create a send/receive pair, transfer the send right,
- * transmit some messages to it, then destroy the send right and get a
- * NO SENDERS notification on the receive right
- */
 
-/* test 1/3/4 server */
+/***** SERVERS *****/
+
+/* server for tests 1, 3, and 4
+ *
+ * Accepts a send right in its arguments, transmits COUNT empty
+ * messages to it, requests a DEAD NAME notification on it, then
+ * either destroys it, transfers it back in a final message to the
+ * send right, or sits and waits for the DEAD NAME notification.
+ */
 
 kern_return_t
 S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, boolean_t transfer)
@@ -406,6 +410,91 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
   return ESUCCESS;
 }
 
+/* server for tests 2 and 5
+ *
+ * Accepts a receive right in its arguments, requests a NO SENDERS
+ * notification, waits for COUNT empty messages on it, then either
+ * returns the receive right on a returnport provided in the
+ * arguments, or (if returnport is MACH_PORT_NULL) sits and waits for
+ * the NO SENDERS notification before deallocating the receive right.
+ */
+
+kern_return_t
+S_test2(mach_port_t server, mach_port_t testport, int count, mach_port_t returnport)
+{
+  const static mach_msg_size_t max_size = 4096;
+  char buffer[max_size];
+  mach_msg_header_t * const msg = (mach_msg_header_t *) (buffer);
+
+  /* request NO SENDERS notification be sent to same port */
+
+  mach_port_t old;
+  mach_call (mach_port_request_notification (mach_task_self (), testport,
+                                             MACH_NOTIFY_NO_SENDERS, 0,
+                                             testport,
+                                             MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+  wassert_equal(old, MACH_PORT_NULL);
+
+  /* wait for COUNT empty messages, correctly numbered */
+
+  for (int i = 0; i < count; i ++)
+    {
+      mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                           0, max_size, testport,
+                           timeout, MACH_PORT_NULL));
+      wassert_equal(msg->msgh_size, sizeof(mach_msg_header_t));
+      wassert_equal(msg->msgh_id, i);
+    }
+
+  /* wait for a NO SENDERS notification */
+
+  mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                       0, max_size, testport,
+                       timeout, MACH_PORT_NULL));
+  wassert_equal(msg->msgh_id, MSGID_NO_SENDERS);
+
+  /* Deallocate the receive right */
+
+  mach_call (mach_port_mod_refs (mach_task_self(), testport,
+                                 MACH_PORT_RIGHT_RECEIVE, -1));
+
+  /* Verify that the port has completely gone away */
+
+  mach_port_type_t port_type;
+  wassert_equal (mach_port_type(mach_task_self(), testport, &port_type), KERN_INVALID_NAME);
+
+  return ESUCCESS;
+}
+
+/* server for test 11
+ *
+ * Accepts a receive right in its arguments and destroys it.
+ */
+
+kern_return_t
+S_test11(mach_port_t server, mach_port_t testport)
+{
+  /* Deallocate the receive right */
+
+  mach_call (mach_port_mod_refs (mach_task_self(), testport,
+                                 MACH_PORT_RIGHT_RECEIVE, -1));
+
+  /* Verify that the port has completely gone away */
+
+  mach_port_type_t port_type;
+  wassert_equal (mach_port_type(mach_task_self(), testport, &port_type), KERN_INVALID_NAME);
+
+  return ESUCCESS;
+}
+
+
+/***** CLIENTS *****/
+
+/* test 1 - create a send/receive pair, transfer the send right,
+ * transmit some messages to it, then destroy the send right and get a
+ * NO SENDERS notification on the receive right
+ */
+
 void
 test1(mach_port_t node)
 {
@@ -466,53 +555,6 @@ test1(mach_port_t node)
  *     transmit some messages on it, then destroy the send right and
  *     get a NO SENDERS notification on the receive right
  */
-
-kern_return_t
-S_test2(mach_port_t server, mach_port_t testport, int count, mach_port_t returnport)
-{
-  const static mach_msg_size_t max_size = 4096;
-  char buffer[max_size];
-  mach_msg_header_t * const msg = (mach_msg_header_t *) (buffer);
-
-  /* request NO SENDERS notification be sent to same port */
-
-  mach_port_t old;
-  mach_call (mach_port_request_notification (mach_task_self (), testport,
-                                             MACH_NOTIFY_NO_SENDERS, 0,
-                                             testport,
-                                             MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
-  wassert_equal(old, MACH_PORT_NULL);
-
-  /* wait for COUNT empty messages, correctly numbered */
-
-  for (int i = 0; i < count; i ++)
-    {
-      mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
-                           0, max_size, testport,
-                           timeout, MACH_PORT_NULL));
-      wassert_equal(msg->msgh_size, sizeof(mach_msg_header_t));
-      wassert_equal(msg->msgh_id, i);
-    }
-
-  /* wait for a NO SENDERS notification */
-
-  mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
-                       0, max_size, testport,
-                       timeout, MACH_PORT_NULL));
-  wassert_equal(msg->msgh_id, MSGID_NO_SENDERS);
-
-  /* Deallocate the receive right */
-
-  mach_call (mach_port_mod_refs (mach_task_self(), testport,
-                                 MACH_PORT_RIGHT_RECEIVE, -1));
-
-  /* Verify that the port has completely gone away */
-
-  mach_port_type_t port_type;
-  wassert_equal (mach_port_type(mach_task_self(), testport, &port_type), KERN_INVALID_NAME);
-
-  return ESUCCESS;
-}
 
 void
 test2(mach_port_t node)
@@ -708,22 +750,6 @@ test4(mach_port_t node)
  * Finally, the client gets the DEAD NAME message targeted at an
  * unknown port.
  */
-
-kern_return_t
-S_test11(mach_port_t server, mach_port_t testport)
-{
-  /* Deallocate the receive right */
-
-  mach_call (mach_port_mod_refs (mach_task_self(), testport,
-                                 MACH_PORT_RIGHT_RECEIVE, -1));
-
-  /* Verify that the port has completely gone away */
-
-  mach_port_type_t port_type;
-  wassert_equal (mach_port_type(mach_task_self(), testport, &port_type), KERN_INVALID_NAME);
-
-  return ESUCCESS;
-}
 
 void
 test11(mach_port_t node)
