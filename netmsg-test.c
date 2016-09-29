@@ -425,15 +425,20 @@ S_test2(mach_port_t server, mach_port_t testport, int count, mach_port_t returnp
   const static mach_msg_size_t max_size = 4096;
   char buffer[max_size];
   mach_msg_header_t * const msg = (mach_msg_header_t *) (buffer);
+  mach_msg_type_t * const msg_data = (mach_msg_type_t *) (msg + 1);
+  mach_port_t * const msg_data_port = (mach_port_t *) (msg_data + 1);
 
   /* request NO SENDERS notification be sent to same port */
 
-  mach_port_t old;
-  mach_call (mach_port_request_notification (mach_task_self (), testport,
-                                             MACH_NOTIFY_NO_SENDERS, 0,
-                                             testport,
-                                             MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
-  wassert_equal(old, MACH_PORT_NULL);
+  if (returnport == MACH_PORT_NULL)
+    {
+      mach_port_t old;
+      mach_call (mach_port_request_notification (mach_task_self (), testport,
+                                                 MACH_NOTIFY_NO_SENDERS, 0,
+                                                 testport,
+                                                 MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+      wassert_equal(old, MACH_PORT_NULL);
+    }
 
   /* wait for COUNT empty messages, correctly numbered */
 
@@ -446,22 +451,52 @@ S_test2(mach_port_t server, mach_port_t testport, int count, mach_port_t returnp
       wassert_equal(msg->msgh_id, i);
     }
 
-  /* wait for a NO SENDERS notification */
+  if (returnport != MACH_PORT_NULL)
+    {
+      /* return the receive right and drop the send right on returnport at the same time */
 
-  mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
-                       0, max_size, testport,
-                       timeout, MACH_PORT_NULL));
-  wassert_equal(msg->msgh_id, MSGID_NO_SENDERS);
+      bzero(msg, sizeof(mach_msg_header_t) + sizeof(mach_msg_type_t) + sizeof(mach_port_t));
+      msg->msgh_size = sizeof(mach_msg_header_t) + sizeof(mach_msg_type_t) + sizeof(mach_port_t);
+      msg->msgh_remote_port = returnport;
+      msg->msgh_bits = MACH_MSGH_BITS_COMPLEX | MACH_MSGH_BITS(MACH_MSG_TYPE_MOVE_SEND, 0);
+      msg->msgh_id = count+1;
 
-  /* Deallocate the receive right */
+      msg_data->msgt_name = MACH_MSG_TYPE_MOVE_RECEIVE;
+      msg_data->msgt_size = 32;
+      msg_data->msgt_number = 1;
+      msg_data->msgt_inline = TRUE;
 
-  mach_call (mach_port_mod_refs (mach_task_self(), testport,
-                                 MACH_PORT_RIGHT_RECEIVE, -1));
+      * msg_data_port = testport;
 
-  /* Verify that the port has completely gone away */
+      mach_call (mach_msg(msg, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msg->msgh_size,
+                          0, msg->msgh_remote_port,
+                          timeout, MACH_PORT_NULL));
 
-  mach_port_type_t port_type;
-  wassert_equal (mach_port_type(mach_task_self(), testport, &port_type), KERN_INVALID_NAME);
+      /* Verify that both ports have completely gone away */
+
+      mach_port_type_t port_type;
+      wassert_equal (mach_port_type(mach_task_self(), testport, &port_type), KERN_INVALID_NAME);
+      wassert_equal (mach_port_type(mach_task_self(), returnport, &port_type), KERN_INVALID_NAME);
+    }
+  else
+    {
+      /* wait for a NO SENDERS notification */
+
+      mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                           0, max_size, testport,
+                           timeout, MACH_PORT_NULL));
+      wassert_equal(msg->msgh_id, MSGID_NO_SENDERS);
+
+      /* Deallocate the receive right */
+
+      mach_call (mach_port_mod_refs (mach_task_self(), testport,
+                                     MACH_PORT_RIGHT_RECEIVE, -1));
+
+      /* Verify that the port has completely gone away */
+
+      mach_port_type_t port_type;
+      wassert_equal (mach_port_type(mach_task_self(), testport, &port_type), KERN_INVALID_NAME);
+    }
 
   return ESUCCESS;
 }
@@ -731,6 +766,88 @@ test4(mach_port_t node)
   assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
 }
 
+/* test 5 - create a send/receive pair, transfer the receive right,
+ *     transmit some messages on it, transfer it back, and
+ *     verify that it came back as the same name it went across as
+ */
+
+void
+test5(mach_port_t node)
+{
+  mach_port_t testport;
+  mach_port_t returnport;
+  const int count = 3;
+
+  const static mach_msg_size_t max_size = 4096;
+  char buffer[max_size];
+  mach_msg_header_t * const msg = (mach_msg_header_t *) (buffer);
+  mach_msg_type_t * const msg_data = (mach_msg_type_t *) (msg + 1);
+  mach_port_t * const msg_data_port = (mach_port_t *) (msg_data + 1);
+
+  /* Create a receive right */
+
+  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &testport));
+
+  /* Keep a send right for ourselves */
+
+  mach_call (mach_port_insert_right (mach_task_self (), testport, testport,
+                                     MACH_MSG_TYPE_MAKE_SEND));
+
+  /* Create a return port */
+
+  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &returnport));
+
+  /* Pass the receive right to the server */
+
+  mach_call(U_test2(node, testport, MACH_MSG_TYPE_MOVE_RECEIVE, count, returnport, MACH_MSG_TYPE_MAKE_SEND));
+
+  /* Transmit COUNT empty messages, with msgh_id running from 0 to
+   * COUNT-1.
+   */
+
+  for (int i = 0; i < count; i ++)
+    {
+      bzero(msg, sizeof(mach_msg_header_t));
+      msg->msgh_size = sizeof(mach_msg_header_t);
+      msg->msgh_remote_port = testport;
+      msg->msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
+      msg->msgh_id = i;
+
+      mach_call (mach_msg(msg, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msg->msgh_size,
+                          0, msg->msgh_remote_port,
+                          timeout, MACH_PORT_NULL));
+    }
+
+  /* wait for the receive right to come back */
+
+  mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                       0, max_size, returnport,
+                       timeout, MACH_PORT_NULL));
+  assert(msg->msgh_size == sizeof(mach_msg_header_t) + sizeof(mach_msg_type_t) + sizeof(mach_port_t));
+  assert(* msg_data_port == testport);
+
+  /* Deallocate the send and receive rights */
+
+  mach_call (mach_port_mod_refs (mach_task_self(), testport,
+                                 MACH_PORT_RIGHT_SEND, -1));
+  mach_call (mach_port_mod_refs (mach_task_self(), testport,
+                                 MACH_PORT_RIGHT_RECEIVE, -1));
+
+  /* Verify that the port has completely gone away */
+
+  mach_port_type_t port_type;
+  assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
+
+  /* Deallocate the return port */
+
+  mach_call (mach_port_mod_refs (mach_task_self(), returnport,
+                                 MACH_PORT_RIGHT_RECEIVE, -1));
+
+  /* Verify that the return port has completely gone away */
+
+  assert (mach_port_type(mach_task_self(), returnport, &port_type) == KERN_INVALID_NAME);
+}
+
 /* test 11 - create a send/receive pair, transfer the receive right
  *     and destroy it upon reception, transmit some messages on it,
  *     then destroy the send right
@@ -823,6 +940,7 @@ main (int argc, char **argv)
       test2(node);
       test3(node);
       test4(node);
+      test5(node);
       test11(node);
       //while (1) ;
     }
