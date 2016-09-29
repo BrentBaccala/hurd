@@ -171,6 +171,8 @@ const char * const defaultPort = "2345";
 const char * targetPort = defaultPort;
 const char * targetHost;   /* required argument */
 
+const char * exportedPath = "/";   /* server presents this path to its clients */
+
 bool serverMode = false;
 
 /* Normally, we run multi threaded, with each port given a separate
@@ -250,7 +252,14 @@ parse_opt (int key, char *arg, struct argp_state *state)
     case ARGP_KEY_ARG:
       if (state->arg_num == 0)
         {
-          targetHost = arg;
+          if (serverMode)
+            {
+              exportedPath = arg;
+            }
+          else
+            {
+              targetHost = arg;
+            }
         }
       else
         {
@@ -2681,7 +2690,7 @@ S_fsys_getroot (mach_port_t fsys_t,
 		mach_port_t *ret,
 		mach_msg_type_name_t *rettype)
 {
-  file_t node = file_name_lookup ("/", flags, 0);
+  file_t node = file_name_lookup (exportedPath, flags, 0);
 
   if (node == MACH_PORT_NULL)
     return errno;
