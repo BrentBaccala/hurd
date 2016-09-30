@@ -1185,7 +1185,27 @@ netmsg::translateForTransmission(machMessage & msg, bool translatePortNames)
                                                            MACH_NOTIFY_NO_SENDERS, 0,
                                                            ports[i],
                                                            MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
-                assert(old == MACH_PORT_NULL);
+
+                /* Mach 3 Kernel Interface, page 60:
+                 *
+                 * (Note: Currently, moving a receive right does not
+                 * affect any extant no-senders notifications. It is
+                 * currently planned to change this so that no-
+                 * senders notifications are canceled, with a
+                 * send-once notification sent to indicate the
+                 * cancelation.)
+                 *
+                 * We're moving a receive right.  To massively
+                 * simplify this code, we implement the proposed
+                 * change here, generating a send-once notification by
+                 * simply destroying the send-once right.
+                 */
+
+                if (old != MACH_PORT_NULL)
+                  {
+                    mach_call (mach_port_mod_refs (mach_task_self(), old,
+                                                   MACH_PORT_RIGHT_SEND_ONCE, -1));
+                  }
 
                 if (remote_ports_by_local.count(ports[i]) == 1)
                   {
