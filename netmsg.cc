@@ -2316,7 +2316,8 @@ netmsg::tcpBufferHandler(machMessage & msg)
     {
       swapHeader(msg);
 
-      ddprintf("sending IPC message to port %ld\n", msg->msgh_remote_port);
+      ddprintf("sending IPC message (msgid %d; len %d) to port %ld\n",
+               msg->msgh_id, msg->msgh_size, msg->msgh_remote_port);
 
       /* No timeout.  First of all, I've had problems with relaying a
        * vm_map message on a flaky memory manager.  It causes the
@@ -2338,6 +2339,8 @@ netmsg::tcpBufferHandler(machMessage & msg)
                           0, msg->msgh_remote_port,
                           MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL),
                  MACH_SEND_INVALID_DEST);
+
+      ddprintf("sent IPC message to port %ld\n", msg->msgh_remote_port);
     }
 }
 
