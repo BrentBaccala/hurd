@@ -957,6 +957,12 @@ test5a(mach_port_t node)
   assert(msg->msgh_size == sizeof(mach_msg_header_t) + sizeof(mach_msg_type_t) + sizeof(mach_port_t));
   assert(* msg_data_port == testport);
 
+  /* Verify that we have both send and receive rights on testport */
+
+  mach_port_type_t port_type;
+  mach_call (mach_port_type(mach_task_self(), testport, &port_type));
+  assert(port_type == (MACH_PORT_TYPE_RECEIVE | MACH_PORT_TYPE_SEND));
+
   /* wait for a NO SENDERS notification */
 
   mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
@@ -973,7 +979,6 @@ test5a(mach_port_t node)
 
   /* Verify that the port has completely gone away */
 
-  mach_port_type_t port_type;
   assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
 
   /* Deallocate the return port */
