@@ -122,6 +122,7 @@
 // XXX should look this up dynamically, though it's not likely to change
 #define MSGID_PORT_DELETED 65
 #define MSGID_NO_SENDERS 70
+#define MSGID_SEND_ONCE 71
 #define MSGID_DEAD_NAME 72
 
 /* trivfs stuff */
@@ -1142,6 +1143,69 @@ test11(mach_port_t node)
 
   mach_call (mach_port_mod_refs (mach_task_self(), testport,
                                  MACH_PORT_RIGHT_SEND, -1));
+
+  /* Verify that the port has completely gone away */
+
+  mach_port_type_t port_type;
+  assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
+}
+
+/* test13() - verify that we can send SEND_ONCE messages (they seem
+ * invisible to rpctrace)
+ */
+
+void
+test13(void)
+{
+  mach_port_t testport;
+  const int count = 3;
+
+  const static mach_msg_size_t max_size = 4096;
+  char buffer[max_size];
+  mach_msg_header_t * const msg = (mach_msg_header_t *) (buffer);
+
+  /* Create a receive right */
+
+  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &testport));
+
+  /* Keep a send right for ourselves */
+
+  mach_call (mach_port_insert_right (mach_task_self (), testport, testport,
+                                     MACH_MSG_TYPE_MAKE_SEND));
+
+  /* Transmit COUNT SEND_ONCE messages */
+
+  for (int i = 0; i < count; i ++)
+    {
+      bzero(msg, sizeof(mach_msg_header_t));
+      msg->msgh_size = sizeof(mach_msg_header_t);
+      msg->msgh_remote_port = testport;
+      msg->msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
+      msg->msgh_id = MSGID_SEND_ONCE;
+
+      mach_call (mach_msg(msg, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msg->msgh_size,
+                          0, msg->msgh_remote_port,
+                          timeout, MACH_PORT_NULL));
+    }
+
+  /* Receive them back */
+
+  for (int i = 0; i < count; i ++)
+    {
+      mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                           0, max_size, testport,
+                           timeout, MACH_PORT_NULL));
+      //fprintf(stderr, "%d %d\n", msg->msgh_size, msg->msgh_id);
+      assert(msg->msgh_size == sizeof(mach_msg_header_t));
+      assert(msg->msgh_id == MSGID_SEND_ONCE);
+    }
+
+  /* Deallocate both send and receive rights */
+
+  mach_call (mach_port_mod_refs (mach_task_self(), testport,
+                                 MACH_PORT_RIGHT_SEND, -1));
+  mach_call (mach_port_mod_refs (mach_task_self(), testport,
+                                 MACH_PORT_RIGHT_RECEIVE, -1));
 
   /* Verify that the port has completely gone away */
 
