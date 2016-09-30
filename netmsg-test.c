@@ -79,6 +79,15 @@
       and destroy it upon reception, transmit some messages on it,
       then destroy the send right
 
+   test 12 - create a send/receive pair, request a NO SENDERS
+      notification, transfer the receive right, create a send right on
+      the other side, wait one second, destroy the original send
+      right, then wait another second and destroy the second send
+      right.  The destruction of the first send right will trigger
+      netmsg's NO SENDERS notification, but this shouldn't be relayed
+      on until the second send right is destroyed.
+
+
    MORE TESTS
       send all the various data types across
       send OOL data
@@ -1040,7 +1049,7 @@ main (int argc, char **argv)
       test3(node);
       test4(node);
       test5(node);
-      test5a(node);
+      //test5a(node);
       test11(node);
       //while (1) ;
     }
