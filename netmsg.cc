@@ -1351,7 +1351,7 @@ netmsg::ipcBufferHandler(machMessage & msg)
 
             ddprintf("DEAD NAME notification for port %ld\n", dead_name);
 
-            assert(local_port_type[dead_name] == MACH_MSG_TYPE_PORT_SEND);
+            // assert(local_port_type[dead_name] == MACH_MSG_TYPE_PORT_SEND);
 
             /* The send right has turned into a dead name, plus the
              * dead name notification incremented the user ref, so we
@@ -1361,7 +1361,10 @@ netmsg::ipcBufferHandler(machMessage & msg)
             mach_call (mach_port_mod_refs (mach_task_self(), dead_name,
                                            MACH_PORT_RIGHT_DEAD_NAME, -2));
 
-            local_port_type.erase(dead_name);
+            if (local_port_type[dead_name] == MACH_MSG_TYPE_PORT_SEND)
+              {
+                local_port_type.erase(dead_name);
+              }
 
             /* We still have to erase any remote-local mapping, but
              * let's wait until later in this function, because we
@@ -2122,9 +2125,6 @@ netmsg::translateHeader(machMessage & msg)
        * local send rights.  All we know for sure is that there are no
        * more remote send rights.
        *
-       * We ignore KERN_INVALID_RIGHT because it will be generated
-       * if the receiver has died.
-       *
        * XXX this code prevents normal NO SENDERS messages from being
        * relayed across netmsg
        */
@@ -2139,23 +2139,34 @@ netmsg::translateHeader(machMessage & msg)
 
       assert(local_port_type[local_port] == MACH_MSG_TYPE_PORT_SEND);
 
-      /* destroy outstanding DEAD NAME request */
+      /* Destroy outstanding DEAD NAME request.
+       *
+       * KERN_INVALID_ARGUMENT will be returned if local_port is
+       * already dead.
+       */
 
       mach_port_t old;
       mach_call (mach_port_request_notification (mach_task_self (), local_port,
                                                  MACH_NOTIFY_DEAD_NAME, 0,
                                                  MACH_PORT_NULL,
-                                                 MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+                                                 MACH_MSG_TYPE_MAKE_SEND_ONCE, &old),
+                 KERN_INVALID_ARGUMENT);
+
       /* this assert doesn't work because notification_port is a
        * RECEIVE right, but old will give us back a SEND ONCE right
        */
       // assert(old == notification_port);
 
-      /* now destroy the send right itself */
+      /* Destroy the send right itself.
+       *
+       * KERN_INVALID_RIGHT will be returned if local_port is already
+       * dead.
+       */
 
       mach_call (mach_port_mod_refs (mach_task_self(), local_port,
                                      MACH_PORT_RIGHT_SEND, -1),
                  KERN_INVALID_RIGHT);
+
       local_port_type.erase(local_port);
 
       if (remote_ports_by_local.count(local_port) > 0)
