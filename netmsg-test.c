@@ -974,17 +974,26 @@ test5a(mach_port_t node)
   mach_call (mach_port_type(mach_task_self(), testport, &port_type));
   assert(port_type == (MACH_PORT_TYPE_RECEIVE | MACH_PORT_TYPE_SEND));
 
-  /* wait for a NO SENDERS notification */
+  /* Deallocate the last send right */
+
+  mach_call (mach_port_mod_refs (mach_task_self(), testport,
+                                 MACH_PORT_RIGHT_SEND, -1));
+
+  /* Wait for a NO SENDERS notification.  Standard Mach behavior is to
+   * preserve no-senders notifications when a receive port is moved.
+   * 'netmsg' currently destroys the notification, as envisioned on
+   * page 60 of the Mach 3 Kernel Interface document.  Therefore,
+   * accept either NO SENDERS or SEND ONCE at this point.
+   */
 
   mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                        0, max_size, testport,
                        timeout, MACH_PORT_NULL));
-  assert(msg->msgh_id == MSGID_NO_SENDERS);
 
-  /* Deallocate the send and receive rights */
+  assert((msg->msgh_id == MSGID_NO_SENDERS) || (msg->msgh_id == MSGID_SEND_ONCE));
 
-  mach_call (mach_port_mod_refs (mach_task_self(), testport,
-                                 MACH_PORT_RIGHT_SEND, -1));
+  /* Deallocate the receive right */
+
   mach_call (mach_port_mod_refs (mach_task_self(), testport,
                                  MACH_PORT_RIGHT_RECEIVE, -1));
 
