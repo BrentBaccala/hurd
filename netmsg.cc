@@ -846,18 +846,29 @@ void auditPorts(void)
 
               /* check to make sure we've got a NO SENDERS notification outstanding */
 
+#if 0
               mach_port_t old;
-              mach_call (mach_port_request_notification (mach_task_self (), ports[pair.first],
+              mach_call (mach_port_request_notification (mach_task_self (), pair.first,
                                                          MACH_NOTIFY_NO_SENDERS, 0,
-                                                         ports[pair.first],
+                                                         pair.first,
                                                          MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
-              assert(old == ports[pair.first]);
+              /* this assert doesn't work because pair.first is a
+               * RECEIVE right, but old will give us back a SEND ONCE
+               * right
+               */
+              // assert(old == pair.first);
+#endif
             }
           else
             {
-              if (ports[pair.first] != (MACH_PORT_TYPE_SEND | MACH_PORT_TYPE_DNREQUEST))
+              /* Two possibilities here, since a port recorded as SEND
+               * might have already died, but we haven't processed the
+               * dead name notification yet.
+               */
+              if ((ports[pair.first] != (MACH_PORT_TYPE_SEND | MACH_PORT_TYPE_DNREQUEST))
+                  && (ports[pair.first] != MACH_PORT_TYPE_DEAD_NAME))
                 {
-                  fprintf(stderr, "auditPorts: port %ld is %s, not SEND DNREQUEST\n",
+                  fprintf(stderr, "auditPorts: port %ld is %s, not SEND DNREQUEST (or DEADNAME)\n",
                           pair.first, porttype2str(ports[pair.first]).c_str());
                 }
             }
