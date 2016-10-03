@@ -1540,6 +1540,7 @@ netmsg::ipcHandler(void)
         {
           ipcBufferHandler(msg);
           delete &msg;
+          auditPorts();
         }
     }
 
@@ -2433,6 +2434,7 @@ netmsg::tcpHandler(void)
         {
           tcpBufferHandler(msg);
           delete &msg;
+          auditPorts();
         }
 
     }
