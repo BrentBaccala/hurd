@@ -2070,7 +2070,7 @@ netmsg::swapHeader(machMessage & msg)
    * instead of whatever the remote supplied.
    */
 
-  if (local_port_type[this_port] == MACH_MSG_TYPE_PORT_SEND)
+  if (local_port_type.count(this_port) > 0)
     {
       this_type = MACH_MSG_TYPE_COPY_SEND;
     }
