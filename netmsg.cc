@@ -1155,7 +1155,7 @@ netmsg::translateForTransmission(machMessage & msg, bool translatePortNames)
                      * we destroy here is the send right.
                      */
 
-                    assert(local_port_type[ports[i]] == MACH_MSG_TYPE_PORT_RECEIVE);
+                    assert(local_port_type.at(ports[i]) == MACH_MSG_TYPE_PORT_RECEIVE);
                     mach_call (mach_port_mod_refs (mach_task_self(), ports[i],
                                                    MACH_PORT_RIGHT_SEND, -1));
 
@@ -1244,7 +1244,7 @@ netmsg::translateForTransmission(machMessage & msg, bool translatePortNames)
                      * destroy here is the send right.
                      */
 
-                    assert(local_port_type[ports[i]] == MACH_MSG_TYPE_PORT_SEND);
+                    assert(local_port_type.at(ports[i]) == MACH_MSG_TYPE_PORT_SEND);
 
                     /* destroy outstanding DEAD NAME request */
 
@@ -1410,7 +1410,7 @@ netmsg::ipcBufferHandler(machMessage & msg)
   else if (remote_ports_by_local.count(msg->msgh_local_port) == 1)
     {
       /* it's a send right we got via the network.  translate it */
-      assert(local_port_type[msg->msgh_local_port] == MACH_MSG_TYPE_PORT_RECEIVE);
+      assert(local_port_type.at(msg->msgh_local_port) == MACH_MSG_TYPE_PORT_RECEIVE);
       msg->msgh_local_port = remote_ports_by_local[msg->msgh_local_port];
     }
   else if (send_once_ports_by_local.count(msg->msgh_local_port) == 1)
@@ -1442,7 +1442,7 @@ netmsg::ipcBufferHandler(machMessage & msg)
        */
       return;
     }
-  else if (local_port_type[msg->msgh_local_port] == MACH_MSG_TYPE_PORT_RECEIVE)
+  else if (local_port_type.at(msg->msgh_local_port) == MACH_MSG_TYPE_PORT_RECEIVE)
     {
       /* it's a receive right we got via IPC.  Let the remote translate it. */
       msg->msgh_bits |= MACH_MSGH_BITS_REMOTE_TRANSLATE;
@@ -1465,7 +1465,7 @@ netmsg::ipcBufferHandler(machMessage & msg)
 
   if (msg->msgh_id == MSGID_NO_SENDERS)
     {
-      assert(local_port_type[original_local_port] == MACH_MSG_TYPE_PORT_RECEIVE);
+      assert(local_port_type.at(original_local_port) == MACH_MSG_TYPE_PORT_RECEIVE);
       mach_call (mach_port_mod_refs (mach_task_self(), original_local_port,
                                      MACH_PORT_RIGHT_RECEIVE, -1));
       local_port_type.erase(original_local_port);
@@ -1823,7 +1823,7 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
         }
       else if (type == MACH_MSG_TYPE_MOVE_RECEIVE)
         {
-          assert(local_port_type[newport] == MACH_MSG_TYPE_PORT_RECEIVE);
+          assert(local_port_type.at(newport) == MACH_MSG_TYPE_PORT_RECEIVE);
 
           // cancel no-senders notification
           mach_port_t old;
@@ -1944,7 +1944,7 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
         {
           const mach_port_t newport = local_ports_by_remote[port];
 
-          assert(local_port_type[newport] == MACH_MSG_TYPE_PORT_SEND);
+          assert(local_port_type.at(newport) == MACH_MSG_TYPE_PORT_SEND);
 
           /* it already exists; create a new send right to relay on */
           mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
@@ -2134,7 +2134,7 @@ netmsg::translateHeader(machMessage & msg)
       else
         {
           local_port = local_ports_by_remote[local_port];
-          assert(local_port_type[local_port] == MACH_MSG_TYPE_PORT_SEND);
+          assert(local_port_type.at(local_port) == MACH_MSG_TYPE_PORT_SEND);
         }
 
       msg->msgh_bits &= ~MACH_MSGH_BITS_REMOTE_TRANSLATE;
@@ -2163,7 +2163,7 @@ netmsg::translateHeader(machMessage & msg)
           return false;
         }
 
-      assert(local_port_type[local_port] == MACH_MSG_TYPE_PORT_SEND);
+      assert(local_port_type.at(local_port) == MACH_MSG_TYPE_PORT_SEND);
 
       /* Destroy outstanding DEAD NAME request.
        *
@@ -2240,7 +2240,7 @@ netmsg::translateHeader(machMessage & msg)
         }
 
       //fprintf(stderr, "dead_name = %ld\n", dead_name);
-      assert(local_port_type[dead_name] == MACH_MSG_TYPE_PORT_RECEIVE);
+      assert(local_port_type.at(dead_name) == MACH_MSG_TYPE_PORT_RECEIVE);
       mach_call (mach_port_mod_refs (mach_task_self(), dead_name,
                                      MACH_PORT_RIGHT_RECEIVE, -1));
       local_port_type.erase(dead_name);
