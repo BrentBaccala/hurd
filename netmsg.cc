@@ -861,6 +861,14 @@ void auditPorts(void)
               // assert(old == pair.first);
 #endif
             }
+          else if (pair.first == netmsgptr->first_port)
+            {
+              if (ports[pair.first] != (MACH_PORT_TYPE_RECEIVE | MACH_PORT_TYPE_SEND))
+                {
+                  fprintf(stderr, "auditPorts: first_port %ld is %s, not RECEIVE SEND\n",
+                          pair.first, porttype2str(ports[pair.first]).c_str());
+                }
+            }
           else
             {
               /* Two possibilities here, since a port recorded as SEND
@@ -2494,6 +2502,8 @@ netmsg::netmsg(int networkSocket) :
 
       ddprintf("first_port is %ld\n", first_port);
 
+      /* As far as netmsg is concerned, this is a send port */
+      local_port_type[first_port] = MACH_MSG_TYPE_PORT_SEND;
     }
 
   /* Spawn threads to handle the new socket */
