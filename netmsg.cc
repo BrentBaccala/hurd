@@ -2321,7 +2321,7 @@ netmsg::tcpBufferHandler(machMessage & msg)
   translateMessage(msg, (msg->msgh_local_port == MACH_PORT_CONTROL) && (msg->msgh_id == MSGID_DEAD_NAME));
   bool transmit = translateHeader(msg);
 
-  dprintMessage("-->", msg);
+  dprintMessage(transmit ? "-->" : "XX>", msg);
 
   if (transmit)
     {
