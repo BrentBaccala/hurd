@@ -750,6 +750,7 @@ class netmsg
 
   mach_port_t translatePort2(const mach_port_t port, const unsigned int type);
   mach_port_t translatePort(const mach_port_t port, const unsigned int type);
+  void swapHeader(machMessage & msg);
   bool translateHeader(machMessage & msg);
   void translateMessage(machMessage & msg, bool translatePortNames);
   void tcpHandler(void);
@@ -823,6 +824,7 @@ void auditPorts(void)
   for (unsigned int i = 0; i < ncount; i ++)
     {
       ports[names[i]] = types[i];
+      // fprintf(stderr, "auditPorts: %ld %s\n", names[i], porttype2str(types[i]).c_str());
     }
 
   for (auto & netmsgptr: active_netmsg_classes)
@@ -2032,7 +2034,7 @@ netmsg::translatePort(const mach_port_t port, const unsigned int type)
 }
 
 void
-swapHeader(machMessage & msg)
+netmsg::swapHeader(machMessage & msg)
 {
   mach_msg_type_name_t this_type = MACH_MSGH_BITS_LOCAL (msg->msgh_bits);
   mach_msg_type_name_t reply_type = MACH_MSGH_BITS_REMOTE (msg->msgh_bits);
@@ -2042,21 +2044,25 @@ swapHeader(machMessage & msg)
   mach_port_t this_port = msg->msgh_local_port;
   mach_port_t reply_port = msg->msgh_remote_port;
 
-  /* Send right will be consumed unless we turn the MAKE_SEND into
-   * a COPY_SEND.  For first_port, this is exactly what we want.
+  /* The local destination type will be either MACH_MSG_TYPE_PORT_SEND
+   * or MACH_MSG_TYPE_PORT_SEND_ONCE.  Typically, the remote will have
+   * mirrored our port operations, so the local send right will be of
+   * the appropriate type.  However, if we've requested a notification
+   * be sent to a receive right, then moved the receive right across
+   * the network, we'll create a send right (not a send-once right) to
+   * transmit messages to the receive right, then when a notification
+   * comes in, it will labeled for a send-once right.  This would
+   * trigger MACH_SEND_INVALID_DEST when we attempted the send.
    *
-   * For a remote send right, we can't tell if its send right count
-   * has gone to zero, so we just keep it alive.
+   * Futhermore, our sole send right will be consumed unless we turn
+   * the MAKE_SEND into a COPY_SEND.
    *
-   * XXX this is a bug
-   *
-   * XXX the remote should track no-senders notifications, because
-   * we might have programs that count on getting them
-   *
-   * What about a local receive right?
+   * To deal with both cases, we use local_port_type to figure out if
+   * we've got a local send right and use MACH_MSG_TYPE_COPY_SEND
+   * instead of whatever the remote supplied.
    */
 
-  if (this_type == MACH_MSG_TYPE_PORT_SEND)
+  if (local_port_type[this_port] == MACH_MSG_TYPE_PORT_SEND)
     {
       this_type = MACH_MSG_TYPE_COPY_SEND;
     }
@@ -2360,8 +2366,8 @@ netmsg::tcpBufferHandler(machMessage & msg)
 
       mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
                           0, msg->msgh_remote_port,
-                          MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL),
-                 MACH_SEND_INVALID_DEST);
+                          MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
+//                 MACH_SEND_INVALID_DEST);
 
       ddprintf("sent IPC message to port %ld\n", msg->msgh_remote_port);
     }
