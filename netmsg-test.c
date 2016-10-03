@@ -1267,6 +1267,7 @@ main (int argc, char **argv)
       //test5a(node);
       test6(node);
       test11(node);
+      test13();
       //while (1) ;
     }
 }
