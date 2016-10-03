@@ -307,6 +307,17 @@ printPortType(mach_port_t testport)
 }
 
 
+void
+printPortStatus(mach_port_t testport)
+{
+  mach_port_status_t port_status;
+
+  mach_call (mach_port_get_receive_status (mach_task_self(), testport, &port_status));
+
+  fprintf(stderr, "port %ld: seqno %d msgcount %d\n", testport, port_status.mps_seqno, port_status.mps_msgcount);
+}
+
+
 /***** SERVERS *****/
 
 /* server for tests 1, 3, and 4
