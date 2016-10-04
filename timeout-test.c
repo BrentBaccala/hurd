@@ -74,8 +74,6 @@ __wassert_equal_fail(const char *expr, const int value, const int expected, cons
    : __wassert_equal_fail (#expr, expr, value, __FILE__, __LINE__, __ASSERT_FUNCTION))
 
 
-const int timeout = 1000;   /* 1 second timeout on almost all our operations */
-
 kern_return_t
 S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, boolean_t transfer, boolean_t copy)
 {
@@ -108,12 +106,13 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
    * wait for the notification
    */
 
+  const int timeout = 1001;   /* 1 second timeout */
+
   mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                        0, max_size, dead_name_port,
                        timeout, MACH_PORT_NULL));
-  wassert_equal (msg->msgh_id, (transfer || destroy ? MSGID_PORT_DELETED : MSGID_DEAD_NAME));
 
-  // fprintf(stderr, "got dead name\n");
+  wassert_equal (msg->msgh_id, MSGID_DEAD_NAME);
 
   return ESUCCESS;
 }
@@ -222,48 +221,10 @@ startAsTranslator(void)
 
 /* MAIN ROUTINE */
 
-#if 1
-int main1(mach_port_t node)
-{
-  mach_port_t testport;
-  const int count = 3;
-
-  const static mach_msg_size_t max_size = 4096;
-  char buffer[max_size];
-  mach_msg_header_t * const msg = (mach_msg_header_t *) (buffer);
-
-  /* Create a receive right */
-
-  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &testport));
-
-#if 0
-  mach_call (mach_port_insert_right (mach_task_self (), testport, testport,
-				     MACH_MSG_TYPE_MAKE_SEND));
-#endif
-
-  U_test1(node, testport, MACH_MSG_TYPE_MAKE_SEND, 3, FALSE, FALSE, FALSE);
-
-  /* wait for COUNT empty messages, correctly numbered */
-
-  for (int i = 0; i < count; i ++)
-    {
-      mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
-                           0, max_size, testport,
-                           timeout, MACH_PORT_NULL));
-      assert(msg->msgh_size == sizeof(mach_msg_header_t));
-      assert(msg->msgh_id == i);
-    }
-
-  while (1);
-}
-#endif
-
-const char * targetPath = NULL;
-
 int
 main (int argc, char **argv)
 {
-  targetPath = argv[1];
+  const char * targetPath = argv[1];
 
   if (targetPath == NULL)
     {
