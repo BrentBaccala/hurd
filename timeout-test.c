@@ -80,39 +80,21 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
   const static mach_msg_size_t max_size = 4096;
   char buffer[max_size];
   mach_msg_header_t * const msg = (mach_msg_header_t *) (buffer);
-  mach_msg_type_t * const msg_data = (mach_msg_type_t *) (msg + 1);
-  mach_port_t * const msg_data_port = (mach_port_t *) (msg_data + 1);
 
-  /* Create a new receive right for a dead name notification */
-  mach_port_t dead_name_port;
+  /* Create a new receive right */
+  mach_port_t testport2;
 
-  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &dead_name_port));
+  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &testport2));
 
-  /* request DEAD NAME notification */
-
-  mach_port_t old;
-  mach_call (mach_port_request_notification (mach_task_self (), testport,
-                                             MACH_NOTIFY_DEAD_NAME, 0,
-                                             dead_name_port,
-                                             MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
-  wassert_equal(old, MACH_PORT_NULL);
-
-  /* if we're holding the send right, we expect a DEAD NAME notification
-   * when the other side destroys the receive right
-   *
-   * if we transfered or destroyed the send right, we expect a PORT
-   * DELETED notification
-   *
-   * wait for the notification
-   */
+  /* This call should pause 1 second, then return MACH_RCV_TIMED_OUT */
 
   const int timeout = 1001;   /* 1 second timeout */
 
   mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
-                       0, max_size, dead_name_port,
+                       0, max_size, testport2,
                        timeout, MACH_PORT_NULL));
 
-  wassert_equal (msg->msgh_id, MSGID_DEAD_NAME);
+  fprintf(stderr, "S_test1: mach_msg returned\n");
 
   return ESUCCESS;
 }
@@ -137,27 +119,8 @@ S_test11(mach_port_t server, mach_port_t testport)
 void
 test3(mach_port_t node)
 {
-  mach_port_t testport;
-  const int count = 3;
 
-  const static mach_msg_size_t max_size = 4096;
-  char buffer[max_size];
-  mach_msg_header_t * const msg = (mach_msg_header_t *) (buffer);
-
-  /* Create a receive right */
-
-  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &testport));
-
-  /* Pass a send right on it to the server */
-
-#if 1
-  mach_call(U_test1(node, testport, MACH_MSG_TYPE_MAKE_SEND, count, FALSE, FALSE, FALSE));
-#else
-  mach_call (mach_port_insert_right (mach_task_self (), testport, testport,
-				     MACH_MSG_TYPE_MAKE_SEND));
-
-  mach_call(S_test1(node, testport, count, FALSE, FALSE));
-#endif
+  mach_call(U_test1(node, MACH_PORT_NULL, MACH_MSG_TYPE_MAKE_SEND, 3, FALSE, FALSE, FALSE));
 
 }
 
@@ -236,10 +199,5 @@ main (int argc, char **argv)
       mach_port_t node = file_name_lookup (targetPath, O_RDWR, 0);
 
       test3(node);
-
-      mach_call (mach_port_mod_refs (mach_task_self(), node,
-				     MACH_PORT_RIGHT_SEND, -1));
-
-      while (1) ;
     }
 }
