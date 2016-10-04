@@ -1,3 +1,15 @@
+/* -*- mode: C; indent-tabs-mode: nil -*-
+
+   fprintf-test
+
+   This is a test program that causes fprintf to return -1,
+   with errno EINTR.
+
+   Usage:
+
+   start translator:  settrans -ac fprintf-test-node fprintf-test
+   run test:          fprintf-test fprintf-test-node
+*/
 
 #define _GNU_SOURCE
 
@@ -41,7 +53,10 @@ _mach_call(int line, kern_return_t err)
 {
   if (err != KERN_SUCCESS)
     {
-      while (fprintf(stderr, "%s:%d %s\n", __FILE__, line, mach_error_string(err)) == -1);
+      while (fprintf(stderr, "%s:%d %s\n", __FILE__, line, mach_error_string(err)) == -1)
+	{
+	  fprintf(stderr, "fprintf returned -1 (%s)\n", strerror(errno));
+	}
     }
 }
 
@@ -88,21 +103,9 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
 
   /* This call should pause 1 second, then return MACH_RCV_TIMED_OUT */
 
-  const int timeout = 1001;   /* 1 second timeout */
-
-#if 1
   mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
 		       0, max_size, testport2,
-		       timeout, MACH_PORT_NULL));
-
-  fprintf(stderr, "S_test1: mach_msg returned\n");
-#endif
-
-  kern_return_t mr = mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
-			       0, max_size, testport2,
-			       timeout, MACH_PORT_NULL);
-
-  fprintf(stderr, "S_test1: mach_msg returned %lx\n", mr);
+		       1000, MACH_PORT_NULL));
 
   return ESUCCESS;
 }
