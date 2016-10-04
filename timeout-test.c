@@ -39,7 +39,7 @@
 void
 _mach_call(int line, kern_return_t err)
 {
-  if (err != KERN_SUCCESS)
+  //if (err != KERN_SUCCESS)
     {
       fprintf(stderr, "%s:%d %s\n", __FILE__, line, mach_error_string(err));
     }
@@ -90,11 +90,19 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
 
   const int timeout = 1001;   /* 1 second timeout */
 
+#if 1
   mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
-                       0, max_size, testport2,
-                       timeout, MACH_PORT_NULL));
+		       0, max_size, testport2,
+		       timeout, MACH_PORT_NULL));
 
   fprintf(stderr, "S_test1: mach_msg returned\n");
+#endif
+
+  kern_return_t mr = mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+			       0, max_size, testport2,
+			       timeout, MACH_PORT_NULL);
+
+  fprintf(stderr, "S_test1: mach_msg returned %lx\n", mr);
 
   return ESUCCESS;
 }
