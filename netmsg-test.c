@@ -178,7 +178,7 @@ _mach_call(int line, kern_return_t err)
 {
   if (err != KERN_SUCCESS)
     {
-      fprintf(stderr, "%s:%d %s\n", __FILE__, line, mach_error_string(err));
+      while (fprintf(stderr, "%s:%d %s\n", __FILE__, line, mach_error_string(err)) == -1);
     }
 }
 
@@ -191,7 +191,7 @@ _mach_call(int line, kern_return_t err)
 void
 __wassert_fail(const char *expr, const char *file, int line, const char *func)
 {
-  fprintf(stderr, "%s:%d: Assertion '%s' failed\n", file, line, expr);
+  while (fprintf(stderr, "%s:%d: Assertion '%s' failed\n", file, line, expr) == -1);
 }
 
 #define wassert(expr)                                                   \
@@ -202,7 +202,7 @@ __wassert_fail(const char *expr, const char *file, int line, const char *func)
 void
 __wassert_equal_fail(const char *expr, const int value, const int expected, const char *file, int line, const char *func)
 {
-  fprintf(stderr, "%s:%d: %s is %d not %d\n", file, line, expr, value, expected);
+  while (fprintf(stderr, "%s:%d: %s is %d not %d\n", file, line, expr, value, expected) == -1);
 }
 
 #define wassert_equal(expr, value)                                      \

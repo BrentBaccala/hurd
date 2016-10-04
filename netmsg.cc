@@ -188,13 +188,13 @@ unsigned int debugLevel = 0;
 template<typename... Args>
 void dprintf(Args... rest)
 {
-  if (debugLevel >= 1) fprintf(stderr, rest...);
+  if (debugLevel >= 1) while (fprintf(stderr, rest...) == -1);
 }
 
 template<typename... Args>
 void ddprintf(Args... rest)
 {
-  if (debugLevel >= 2) fprintf(stderr, rest...);
+  if (debugLevel >= 2) while (fprintf(stderr, rest...) == -1);
 }
 
 /* Java-like synchronized classes
@@ -299,7 +299,7 @@ _mach_call(int line, kern_return_t err, std::set<kern_return_t> ignores)
 {
   if ((err != KERN_SUCCESS) && (ignores.count(err) == 0))
     {
-      fprintf(stderr, "%s:%d %s\n", __FILE__, line, mach_error_string(err));
+      while (fprintf(stderr, "%s:%d %s\n", __FILE__, line, mach_error_string(err)) == -1);
     }
 }
 
