@@ -27,7 +27,7 @@ netmsg-test: netmsg-test.c netmsg-test-server.o netmsg-test-user.o
 		-user $*-user.c -header $*-user.h $<
 
 timeout-test: timeout-test.c
-	gcc -o timeout-test timeout-test.c netmsg-test-server.o netmsg-test-user.o -ltrivfs -lports
+	gcc -g -o timeout-test timeout-test.c netmsg-test-server.o netmsg-test-user.o -ltrivfs -lports
 
 looper: looper.c
 	gcc -g -Wall -D_GNU_SOURCE -o looper looper.c
