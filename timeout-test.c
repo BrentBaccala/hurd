@@ -39,9 +39,9 @@
 void
 _mach_call(int line, kern_return_t err)
 {
-  //if (err != KERN_SUCCESS)
+  if (err != KERN_SUCCESS)
     {
-      fprintf(stderr, "%s:%d %s\n", __FILE__, line, mach_error_string(err));
+      while (fprintf(stderr, "%s:%d %s\n", __FILE__, line, mach_error_string(err)) == -1);
     }
 }
 
