@@ -1467,7 +1467,14 @@ netmsg::ipcBufferHandler(machMessage & msg)
     }
   else
     {
-      error (1, 0, "IPC message targeted at send port %ld!?", msg->msgh_local_port);
+      /* IPC message targeted at a send port?
+       *
+       * This can happen if the remote had a receive right that moved
+       * to us while a message was in transit.
+       *
+       * XXX resend the message via IPC!
+       */
+      // error (1, 0, "IPC message targeted at send port %ld!?", msg->msgh_local_port);
     }
 
   /* If it's a NO SENDERS notification, we deallocate the receive right
