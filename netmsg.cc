@@ -1256,6 +1256,9 @@ netmsg::translateForTransmission(machMessage & msg, bool translatePortNames)
                                                                MACH_NOTIFY_DEAD_NAME, 0,
                                                                MACH_PORT_NULL,
                                                                MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+                    mach_call (mach_port_mod_refs (mach_task_self(), old,
+                                                   MACH_PORT_RIGHT_SEND_ONCE, -1));
+
                     /* this assert doesn't work because
                      * notification_port is a RECEIVE right, but old
                      * will give us back a SEND ONCE right
@@ -1834,6 +1837,9 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
                                                      MACH_NOTIFY_NO_SENDERS, 0,
                                                      MACH_PORT_NULL,
                                                      MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+          mach_call (mach_port_mod_refs (mach_task_self(), old,
+                                         MACH_PORT_RIGHT_SEND_ONCE, -1));
+
           /* this assert doesn't work because newport is a RECEIVE
            * right, but old will give us back a SEND ONCE right
            */
@@ -1888,6 +1894,8 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
                                                          MACH_NOTIFY_NO_SENDERS, 0,
                                                          MACH_PORT_NULL,
                                                          MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+              mach_call (mach_port_mod_refs (mach_task_self(), old,
+                                             MACH_PORT_RIGHT_SEND_ONCE, -1));
 
               // create a SEND right (we're relaying on a RECEIVE right)
               mach_call (mach_port_insert_right (mach_task_self (), localport, localport,
@@ -2174,12 +2182,17 @@ netmsg::translateHeader(machMessage & msg)
        * already dead.
        */
 
-      mach_port_t old;
+      mach_port_t old = MACH_PORT_NULL;
       mach_call (mach_port_request_notification (mach_task_self (), local_port,
                                                  MACH_NOTIFY_DEAD_NAME, 0,
                                                  MACH_PORT_NULL,
                                                  MACH_MSG_TYPE_MAKE_SEND_ONCE, &old),
                  KERN_INVALID_ARGUMENT);
+      if (old != MACH_PORT_NULL)
+        {
+          mach_call (mach_port_mod_refs (mach_task_self(), old,
+                                         MACH_PORT_RIGHT_SEND_ONCE, -1));
+        }
 
       /* this assert doesn't work because notification_port is a
        * RECEIVE right, but old will give us back a SEND ONCE right
