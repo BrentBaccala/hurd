@@ -2418,12 +2418,16 @@ netmsg::tcpBufferHandler(machMessage & msg)
        * and quietly ignore it.  The problem with that is that the
        * original send call (on the remote side) already returned
        * success, but there's not too much we can do about it now.
+       *
+       * XXX MACH_SEND_INVALID_DEST can also happen due to bugs in
+       * netmsg, so we should verify here that the destination has
+       * actually died
        */
 
       mach_call (mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
                           0, msg->msgh_remote_port,
-                          MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL));
-//                 MACH_SEND_INVALID_DEST);
+                          MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL),
+                 MACH_SEND_INVALID_DEST);
 
       ddprintf("sent IPC message to port %ld\n", msg->msgh_remote_port);
     }
