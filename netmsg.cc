@@ -316,6 +316,7 @@ _mach_call(int line, kern_return_t err, Args... rest)
 // XXX should look this up dynamically, though it's not likely to change
 #define MSGID_PORT_DELETED 65
 #define MSGID_NO_SENDERS 70
+#define MSGID_SEND_ONCE 71
 #define MSGID_DEAD_NAME 72
 
 static const char *
@@ -1406,6 +1407,12 @@ netmsg::ipcBufferHandler(machMessage & msg)
            * cancelling an outstanding DEAD NAME notification request
            *
            * XXX avoid these entirely by canceling all such requests
+           */
+          break;
+
+        case MSGID_SEND_ONCE:
+          /* this happens when we destroy an outstanding DEAD NAME
+           * notification request
            */
           break;
 
