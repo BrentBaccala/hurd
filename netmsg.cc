@@ -1379,6 +1379,10 @@ netmsg::ipcBufferHandler(machMessage & msg)
 
             ddprintf("DEAD NAME notification for port %ld\n", dead_name);
 
+            /* We could have already deallocated the port due to a
+             * network NO SENDERS notification.
+             */
+
             // assert(local_port_type[dead_name] == MACH_MSG_TYPE_PORT_SEND);
 
             /* The send right has turned into a dead name, plus the
@@ -2170,14 +2174,22 @@ netmsg::translateHeader(machMessage & msg)
        * local send rights.  All we know for sure is that there are no
        * more remote send rights.
        *
+       * The local client might also have destroyed its receive right
+       * near-simultaneously with the remote destroying the send
+       * rights.  That would trigger a DEAD NAME notification, which
+       * we might have already processed and deallocated the port, or
+       * not, in which case the send right has changed into a pair
+       * of dead name references.
+       *
        * XXX this code prevents normal NO SENDERS messages from being
        * relayed across netmsg
        */
 
       if (local_port_type.count(local_port) == 0)
         {
-          /* This happens when we've deallocated the port locally, but
-           * there's still a network NO SENDERS message in flight.
+          /* This happens when we've deallocated the port locally (due
+           * to a DEAD NAME notification), but there was a network NO
+           * SENDERS message in flight.  Discard the NO SENDERS.
            */
           return false;
         }
@@ -2210,12 +2222,17 @@ netmsg::translateHeader(machMessage & msg)
       /* Destroy the send right itself.
        *
        * KERN_INVALID_RIGHT will be returned if local_port is already
-       * dead.
+       * dead, in which case we expect to have at least one dead name
+       * ref (from the send right), along with a second dead name ref
+       * due to the DEAD NAME notification.  If the name died since
+       * the last block of code, we'll only have one dead name ref.
        */
 
       mach_call (mach_port_mod_refs (mach_task_self(), local_port,
                                      MACH_PORT_RIGHT_SEND, -1),
                  KERN_INVALID_RIGHT);
+
+      /* XXX destroy the dead name refs if that last mach_call failed */
 
       local_port_type.erase(local_port);
 
