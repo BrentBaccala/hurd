@@ -836,7 +836,10 @@ void auditPorts(void)
           if (ports.count(pair.first) == 0)
             {
               fprintf(stderr, "auditPorts: port %ld doesn't exist, but is recorded as %s\n",
-                      pair.first, pair.second == MACH_MSG_TYPE_PORT_RECEIVE ? "RECEIVE" : "SEND");
+                      pair.first,
+                      pair.second == MACH_MSG_TYPE_PORT_RECEIVE ? "RECEIVE" :
+                      pair.second == MACH_MSG_TYPE_PORT_SEND ? "SEND" :
+                      std::to_string(pair.second).c_str());
             }
           else if (pair.second == MACH_MSG_TYPE_PORT_RECEIVE)
             {
