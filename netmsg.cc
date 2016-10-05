@@ -1389,8 +1389,9 @@ netmsg::ipcBufferHandler(machMessage & msg)
             mach_call (mach_port_mod_refs (mach_task_self(), dead_name,
                                            MACH_PORT_RIGHT_DEAD_NAME, -2));
 
-            if (local_port_type[dead_name] == MACH_MSG_TYPE_PORT_SEND)
+            if (local_port_type.count(dead_name) > 0)
               {
+                assert(local_port_type[dead_name] == MACH_MSG_TYPE_PORT_SEND);
                 local_port_type.erase(dead_name);
               }
 
