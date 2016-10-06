@@ -36,59 +36,6 @@
 
 #include <hurd.h>
 
-// XXX should look this up dynamically, though it's not likely to change
-#define MSGID_PORT_DELETED 65
-#define MSGID_NO_SENDERS 70
-#define MSGID_DEAD_NAME 72
-
-/* mach_call - a combination preprocessor / template trick designed to
- * call an RPC, print a warning message if anything is returned other
- * than KERN_SUCCESS or a list of values to be ignored (that's the
- * template trick), and include the line number in the error message
- * (that's the preprocessor trick).
- */
-
-void
-_mach_call(int line, kern_return_t err)
-{
-  if (err != KERN_SUCCESS)
-    {
-      while (fprintf(stderr, "%s:%d %s\n", __FILE__, line, mach_error_string(err)) == -1)
-	{
-	  fprintf(stderr, "fprintf returned -1 (%s)\n", strerror(errno));
-	}
-    }
-}
-
-#define mach_call(...) _mach_call(__LINE__, __VA_ARGS__)
-
-/* wassert - like assert, but only print a warning.  Used in server code
- * where we don't want to terminate the process.
- */
-
-void
-__wassert_fail(const char *expr, const char *file, int line, const char *func)
-{
-  fprintf(stderr, "%s:%d: Assertion '%s' failed\n", file, line, expr);
-}
-
-#define wassert(expr)                                                   \
-  ((expr)                                                               \
-   ? __ASSERT_VOID_CAST (0)                                             \
-   : __wassert_fail (#expr, __FILE__, __LINE__, __ASSERT_FUNCTION))
-
-void
-__wassert_equal_fail(const char *expr, const int value, const int expected, const char *file, int line, const char *func)
-{
-  fprintf(stderr, "%s:%d: %s is %d not %d\n", file, line, expr, value, expected);
-}
-
-#define wassert_equal(expr, value)                                      \
-  ((expr == value)                                                      \
-   ? __ASSERT_VOID_CAST (0)                                             \
-   : __wassert_equal_fail (#expr, expr, value, __FILE__, __LINE__, __ASSERT_FUNCTION))
-
-
 kern_return_t
 S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, boolean_t transfer, boolean_t copy)
 {
@@ -99,13 +46,18 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
   /* Create a new receive right */
   mach_port_t testport2;
 
-  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &testport2));
+  mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &testport2);
 
   /* This call should pause 1 second, then return MACH_RCV_TIMED_OUT */
 
-  mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
-		       0, max_size, testport2,
-		       1000, MACH_PORT_NULL));
+  kern_return_t kr = mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                               0, max_size, testport2,
+                               1000, MACH_PORT_NULL);
+
+  while (fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, mach_error_string(kr)) == -1)
+    {
+      fprintf(stderr, "fprintf returned -1 (%s)\n", strerror(errno));
+    }
 
   return ESUCCESS;
 }
@@ -131,7 +83,7 @@ void
 test3(mach_port_t node)
 {
 
-  mach_call(U_test1(node, MACH_PORT_NULL, MACH_MSG_TYPE_MAKE_SEND, 3, FALSE, FALSE, FALSE));
+  U_test1(node, MACH_PORT_NULL, MACH_MSG_TYPE_MAKE_SEND, 3, FALSE, FALSE, FALSE);
 
 }
 
@@ -184,11 +136,7 @@ startAsTranslator(void)
   if (bootstrap == MACH_PORT_NULL)
     error (1, 0, "Must be started as a translator");
 
-  // mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &server));
-
-  mach_call (trivfs_startup(bootstrap, O_RDWR,
-                            NULL, NULL, NULL, NULL,
-                            &fsys));
+  trivfs_startup(bootstrap, O_RDWR, NULL, NULL, NULL, NULL, &fsys);
 
   ports_manage_port_operations_multithread (fsys->pi.bucket, netmsg_test_demuxer, 0, 0, NULL);
 }
@@ -203,7 +151,6 @@ main (int argc, char **argv)
   if (targetPath == NULL)
     {
       startAsTranslator();
-      //test3(MACH_PORT_NULL);
     }
   else
     {
