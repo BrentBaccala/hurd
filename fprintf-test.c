@@ -2,57 +2,51 @@
 
    fprintf-test
 
-   This is a test program that causes fprintf to return -1,
-   with errno EINTR.
+   This is a test program that causes fprintf to return -1, with errno
+   EINTR.  It listens as a translator, then runs as a client that
+   sends a very simple message to the translator causing it to timeout
+   waiting for a non-existent Mach message.  Attempting to fprintf an
+   error message after the timeout triggers the bug.
 
    Usage:
 
+   compile:           gcc -g -o fprintf-test fprintf-test.c -ltrivfs -lports
    start translator:  settrans -ac fprintf-test-node fprintf-test
    run test:          fprintf-test fprintf-test-node
+
 */
 
 #define _GNU_SOURCE
 
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <fcntl.h>
-#include <errno.h>
 #include <error.h>
-#include <argp.h>
-#include <assert.h>
 
-#include <mach/message.h>
-#include <mach/mach_port.h>
-
-#include <mach/notify.h>
 #include <mach_error.h>
 
 #include <hurd/trivfs.h>
-#include <hurd/hurd_types.h>
 
-#include "netmsg-test-server.h"
-#include "netmsg-test-user.h"
-
-#include <hurd.h>
+const static mach_msg_size_t max_size = 4096;
 
 kern_return_t
-S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, boolean_t transfer, boolean_t copy)
+server(void)
 {
-  const static mach_msg_size_t max_size = 4096;
   char buffer[max_size];
   mach_msg_header_t * const msg = (mach_msg_header_t *) (buffer);
 
-  /* Create a new receive right */
-  mach_port_t testport2;
+  /* Create a new receive right with no send rights*/
 
-  mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &testport2);
+  mach_port_t testport;
+
+  mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &testport);
 
   /* This call should pause 1 second, then return MACH_RCV_TIMED_OUT */
 
   kern_return_t kr = mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
-                               0, max_size, testport2,
+                               0, max_size, testport,
                                1000, MACH_PORT_NULL);
+
+  /* Attempting to print an error message, though, doesn't work the first time... */
 
   while (fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, mach_error_string(kr)) == -1)
     {
@@ -62,29 +56,21 @@ S_test1(mach_port_t server, mach_port_t testport, int count, boolean_t destroy, 
   return ESUCCESS;
 }
 
-kern_return_t
-S_test2(mach_port_t server, mach_port_t testport, int count, boolean_t request_no_senders, mach_port_t returnport)
-{
-  return ESUCCESS;
-}
-
-kern_return_t
-S_test11(mach_port_t server, mach_port_t testport)
-{
-  return ESUCCESS;
-}
-
-/* test3 - create a send/receive pair, transfer the send right,
- *   transmit some messages to it, then destroy the receive right and
- *   get a DEAD NAME notification on the send right
- */
-
 void
-test3(mach_port_t node)
+client(mach_port_t node)
 {
+  char buffer[max_size];
+  mach_msg_header_t * const msg = (mach_msg_header_t *) (buffer);
 
-  U_test1(node, MACH_PORT_NULL, MACH_MSG_TYPE_MAKE_SEND, 3, FALSE, FALSE, FALSE);
+  bzero(msg, sizeof(mach_msg_header_t));
+  msg->msgh_size = sizeof(mach_msg_header_t);
+  msg->msgh_remote_port = node;
+  msg->msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
+  msg->msgh_id = 1;
 
+  mach_msg(msg, MACH_SEND_MSG, msg->msgh_size,
+           0, msg->msgh_remote_port,
+           MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
 }
 
 /* trivfs stuff */
@@ -104,18 +90,18 @@ void trivfs_modify_stat (struct trivfs_protid *CRED, io_statbuf_t *STBUF)
 error_t trivfs_goaway (struct trivfs_control *CNTL, int FLAGS)
 {
   exit(0);
-  // return ESUCCESS;
 }
 
-
-/* XXX why isn't netmsg_test_server() declared in netmsg-test-server.h? */
-
-boolean_t netmsg_test_server (mach_msg_header_t *InHeadP, mach_msg_header_t *OutHeadP);
 
 int netmsg_test_demuxer (mach_msg_header_t *in, mach_msg_header_t *out)
 {
 
-  if (trivfs_demuxer (in, out) || netmsg_test_server(in, out))
+  if (in->msgh_id == 1)
+    {
+      server();
+      return TRUE;
+    }
+  else if (trivfs_demuxer (in, out))
     {
       return TRUE;
     }
@@ -156,6 +142,6 @@ main (int argc, char **argv)
     {
       mach_port_t node = file_name_lookup (targetPath, O_RDWR, 0);
 
-      test3(node);
+      client(node);
     }
 }

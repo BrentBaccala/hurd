@@ -27,7 +27,7 @@ netmsg-test: netmsg-test.c netmsg-test-server.o netmsg-test-user.o
 		-user $*-user.c -header $*-user.h $<
 
 fprintf-test: fprintf-test.c
-	gcc -g -o fprintf-test fprintf-test.c netmsg-test-server.o netmsg-test-user.o -ltrivfs -lports
+	gcc -g -o fprintf-test fprintf-test.c -ltrivfs -lports
 
 looper: looper.c
 	gcc -g -Wall -D_GNU_SOURCE -o looper looper.c
