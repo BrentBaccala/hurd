@@ -1,0 +1,22 @@
+
+translateForTransmission()
+
+if we get a send right that we've already got a copy of, will this try
+to register a new dead name notification and fail an assert?
+
+if we get a receive right that we've already got a send right for,
+will this leave a dead name notification hanging?
+
+
+
+instead of remote_ports_by_local, local_ports_by_remote, and local_port_type,
+how about...
+
+ports_by_local_name
+ports_by_network_name
+
+struct {
+   mach_port_t local;
+   mach_port_t network;
+   int type (SEND or RECEIVE)
+};
