@@ -14,3 +14,9 @@ netmsg
 looper
 grab-memory-objects
 mapper
+
+netmsg-test-server.[cho]
+netmsg-test-user.[cho]
+netmsg-test
+
+*~
