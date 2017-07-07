@@ -1,0 +1,36 @@
+#!/bin/sh
+#
+# This script demonstrates the vm_map problem with running a program
+# over a netmsg connection, when the exec server is trying to map a
+# page over netmsg, but the libpager in ext2fs server can't handle a
+# second client.
+
+# Create the ramdisk, but don't mount it yet
+
+settrans --create --active ramdisk /hurd/storeio -T copy zero:32M
+mkfs.ext2 -F -b 4096 ramdisk
+
+# We need our original exec server, that does mmaps, unlike the one I
+# run currently, that doesn't
+
+settrans -a exec /hurd/exec.dist
+
+# Now mount the ramdisk
+
+# We need a ext2fs that uses the original exec server, and
+# (optionally) uses a patched libpager that send memory_object_destroy
+# (even though this doesn't help us).  Use a statically linked ext2fs
+# to avoid getting the system shared libpager.so
+
+remap /servers/exec /root/netmsg/exec -- settrans -a mnt ~/hurd-0.8.git20160809/build-deb/ext2fs/ext2fs.static ramdisk
+
+# Now setup netmsg
+
+#./netmsg -sd  (in a different window)
+#settrans -a node ./netmsg -d localhost
+
+# copy /hurd/ext2fs.static to the ramdisk (use a statically linked
+# executable to avoid the exec server trying to map shared libraries,
+# and try to run it via netmsg
+
+#./node/root/netmsg/mnt/ext2fs.static
