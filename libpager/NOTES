@@ -1,0 +1,169 @@
+
+To support a multi-node Hurd cluster, the libpager used by filesystem
+translators needs to support multiple clients (i.e, multiple kernels
+mmap'ing files).
+
+
+
+ON REMOVING pager_offer_page()
+
+I've reviewed the existing code, and I have a problem with the
+function pager_offer_page().
+
+First, the API is problematic, since pager_offer_page() is a call from
+the memory server (i.e, ext2fs) into the libpager library, instructing
+the library to offer a page to the client (i.e, the kernel) that
+hasn't been solicited by the client.  The problem is that the function
+parameters don't indicate which client to offer the page to.
+
+Second, I can't find anywhere in the hurd source tree where this
+function is actually used.
+
+Third, why would we want this feature?  Why would a memory server ever
+want to send an unsolicited page to a client?
+
+So, I propose deprecating pager_offer_pager() by simply removing it
+from the library.
+
+Any objections?
+
+Kalle Olavi Niemitalo <kon@iki.fi> wrote:
+
+> Commit 84cf9c0f312637b670cc87224ff7e7c4da659e36 on 2013-09-17
+> removed the ufs directory, in which the offer_data function used
+> to call pager_offer_page.  The last argument of pager_offer_page
+> always pointed to a page that was part of the global zeroblock,
+> which was the size of a filesystem block and filled with zeroes.
+
+> One of the offer_data calls was preceded by a comment:
+
+>   /* Make sure that any pages of this block which just became allocated
+>      don't get paged in from disk. */
+
+> I don't know how ext2fs makes sure of that, or whether
+> pager_offer_page might again be needed for the same purpose in
+> the future.
+
+
+
+THE PAGEMAP
+
+How to maintain the pagemap for a large number of clients?  More than
+32 clients, actually, so that a pointer becomes more efficient than a
+bitmap.  So, each page has a pointer to a structure indicating which
+clients currently hold copies of the page.  We anticipate that many
+pages (say, all the pages in a single shared library) will have the
+same set of clients, so there's one structure for each combination of
+clients, with multiple pages pointing to it.
+
+Each file corresponds to a separate memory object, and separate memory
+objects get separate control ports in the kernel.  A future
+enhancement could be for the kernel to use a single control port for
+all of its memory objects, allowing libpager to reduce the number of
+these combination structures, if different files have the same usage
+pattern (a program and some of its shared libraries, for example).
+
+What happens when a page gets a new client (or loses one)?  We have to
+search in the structures for the new combination, and create a new
+structure if the desired combination doesn't exist yet.
+
+[[ To speed this process, each structure can maintain pointers to
+accelerate this mapping.  Each structure would have an "add table"
+would maintain mappings like "add client 123 -> structure 0x80fadde0".
+If the "add table" doesn't have an entry, then we need to search all
+the structures to find one.  The problem with this is the need to
+invalidate those pointers when a structure is deallocated.  Keep this
+idea for a future enhancement. ]]
+
+How can we organize the structures?  First, by the number of clients.
+We'll always know how many clients are in the structure we're
+searching for, so if we've got six clients and are adding one, we'll
+search in the seven-client tables.  We can use a hash table or a tree.
+
+The pagemap structures should contain a count of the number of pages
+pointing to them, to facilitate deallocation when the count drops to
+zero.  That interferes with the "add table" mapping described above.
+
+The current kernel implementation seems to be to request pages one at
+a time, as the process attempts to access them.
+
+For writable pages, there can be a queue of clients waiting for a
+page.  A client can be waiting for multiple pages, if separate threads
+(or processes) on a single node are accessing different parts of the
+same file.
+
+Pagemaps can be potentially large, so a pagemap entry should be a
+single pointer.
+
+Putting a client on an empty queue triggers lock requests to all
+clients in the working set, with the exception of the requesting
+client itself, if it's already got read access and is requesting write
+access.  Once the working set size drops to zero (or one), then the
+original request can be satisfied.
+
+In the meantime, additional clients can be added to the queue.  Each
+client should be allowed access to a page for a period of time before
+a lock request is sent.  Is the easiest way to do this to use the
+timeout parameter on mach_msg?
+
+Current implementation waits until the kernel returns a page, then
+writes it to disk.  If a request for the page comes in before the
+write completes, we wait for the write to finish, then send it right
+back out without needing a read.
+
+The new implementation will be handling pages as they're passed from
+one client to another.  Should they be written out each time they are
+handled?  Not write them at all until they're finally released?  Have
+some kind of timer or counter to write them at a controlled pace?
+Initially, we'll not write them at all until they're finally released,
+which mimics the current behavior.
+
+So when the last client returns a page, we look to see if anything is
+in the wait queue.  If so, the first client(s) in the queue get the
+pages.  If not, we flag that a write is in progress and start it.
+When it completes, we check the queue again to see if anything is now
+waiting.  If so, we service it.  If not, we discard the data and
+notify the user that the page has been evicted.
+
+
+
+C++ PAGEMAP (probably not)
+
+What's not so clear is how to code the pagemap itself.  A straight-up
+array of pointers?  Easy enough to understand, but then we have to
+code reference counting to know when those dynamic structures can be
+deallocated.  An array of shared_ptr's?  Simplifies the code, because
+it does all the reference counting for us, but at the cost of making
+the array four times bigger than it needs to be.  A custom class with
+a clever copy constructor?  Then we just assign into the array and the
+copy constructor takes care of either finding an existing pagemap
+structure or creating a new one, at the cost of obscuring the fact
+that "pagemap[i] = new_client_list;" is far more complex than a simple
+assignment.
+
+Right now, I'm thinking to go with the clever copy constructor with a
+(mandatory, really) paragraph-long comment explaining its function.
+Use shared_ptr's for now, maybe re-coding them later if we decide that
+the library's memory footprint is out of hand.
+
+What I want to avoid is to start looking at that code, saying "coping
+all these queues and lists is inefficient" (it is), and start adding
+all kinds of C++ tricks to speed it up.  Just write it so that it's
+simple and clear, and if performance becomes an issue, revisit it
+later.  Or make all those queues and lists private, and add all kinds
+of member functions to abstract access to them.  Just leave them
+public and access them directly; we're not hiding anything from anyone
+but ourselves.
+
+
+Richard Braun <rbraun@sceen.net>:
+
+> From my fifteen years or so experience working in various projects with
+> C++ and other languages, my opinion is that C++ is never the best
+> choice. It makes you trade lines of code for increased complexity in
+> understanding and following the code. You should either go with C for
+> excellent control, or another higher level langguage for e.g. user
+> interfaces and tasks that don't require the highest performance.
+
+> I really don't think the problem you describe would be so hard to solve
+> in C.
