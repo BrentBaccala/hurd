@@ -48,6 +48,15 @@ Kalle Olavi Niemitalo <kon@iki.fi> wrote:
 
 THE PAGEMAP
 
+struct pagemap_entry {
+   port_t client_with_write_access;
+   port_t clients_with_read_access[];
+
+   /* A list of the clients waiting for access, and what kind of access they are waiting for */
+   port_t clients_waiting[];
+   boolean clients_waiting_for_write[];
+}
+
 How to maintain the pagemap for a large number of clients?  More than
 32 clients, actually, so that a pointer becomes more efficient than a
 bitmap.  So, each page has a pointer to a structure indicating which
@@ -167,3 +176,92 @@ Richard Braun <rbraun@sceen.net>:
 
 > I really don't think the problem you describe would be so hard to solve
 > in C.
+
+
+OLD PAGETABLE
+
+PAGINGOUT - set this flag when we get a data return, clear it after the write is finished
+PAGEINWAIT - if we get a data request on a page whose's PAGINGOUT, flag it PAGEINWAIT
+   kernel has requested them, but the flag doesn't indiciate _which_ kernel requested them
+WRITEWAIT - if we get a data return on a page whose's PAGINGOUT, flag it WRITEWAIT
+INCORE flag - never used
+INVALID - set if we got an error writing the page back to the filesystem (actual error code is discarded)
+   Future requests for this page will get an m_o_data_error (EIO)
+TWO 2 BIT ERROR CODES - ERROR and NEXTERROR
+   NEXTERROR - only set if m_o_data_unlock gets an error from pager_unlock_page(), in which
+      case libpager answers the unlock with a m_o_lock_request (the flush varient) and expects
+      an upcoming m_o_data_request (for write access) to be answered with m_o_data_error
+   ERROR - set to EIO as a result of a read error (actual error code is discarded)
+      an unlock error will get propagated from NEXTERROR to ERROR
+      pager_get_error() will report error back to filesystem
+
+ERRORS
+
+read error on m_o_data_request - reply with m_o_data_error (EIO) and mark
+write error on m_o_data_return - flag page INVALID unless we can page it right back out again (error code dropped)
+unlock error on m_o_data_unlock - evict the page and report error back on next m_o_data_request
+
+misaligned requests / bad length - request is dropped and error logged
+pagemap resize error - data request is ignored
+
+THE PSEUDOCODE
+
+if filesystem creates libpager with notify_on_evict TRUE, then all the pages supplied to
+the kernel are flagged "precious" and are returned to libpager on eviction.  The data itself
+is discarded.  ext2fs uses this feature.
+
+m_o_data_request: (kernel requesting a single page)
+  REQUESTED access IS LARGELY IGNORED; FILESYSTEM GRANTS WRITE ACCESS EVEN IF READ WAS REQUESTED
+     FILESYSTEM GRANTS READ ACCESS EVEN IF WRITE WAS REQUESTED (unless a NEXTERROR is pending)
+
+  if the page is PAGINGOUT, flag it PAGEINWAIT
+  flag the page INCORE
+  if the page is flagged with a NEXTERROR and WRITE ACCESS WAS REQUESTED, send a m_o_data_error message,
+        move NEXTERROR to ERROR, and clear NEXTERROR
+     if write access was not requested, ignore NEXTERROR
+  unlock pager
+  read the page (unless PAGINGOUT or an error) with pager_read_page()
+  if pager_read_page() returned an error, mark page with ERROR=EIO and return m_o_data_error
+  if no error, send it to kernel with m_o_data_supply and read/write status supplied by filesystem and clear ERROR
+
+m_o_data_return: (kernel returning pages)
+  npages = length / __vm_page_size;
+  pm_entries points to 'npages' entries in pagemap
+  if filesystem requested notify_on_evict, and the kernel didn't keep a copy,
+     then for each page that not flagged PM_PAGEINWAIT call pager_notify_evict() and clear any error flagged in pagemap
+     Don't actually do this until we're done writing everything out
+  if any of the pages are flagged PAGINGOUT, flag them WRITEWAIT and wait to be signaled that they're paged out
+  flag all these pages PAGINGOUT
+  if any locks are pending on these pages, increment pending_writes in the lock request
+  unlock the pager
+  call pager_write_page() on all the pages
+  if pager_write_page() returns an error
+  XXX omitdata is only an int, but there could be more than 32 pages
+  reaquire the pager lock
+  if any of the pages are now flagged WRITEWAIT, signal the condition variable
+  if any of the pager_write_page() calls returned error, mark those pages INVALID
+  if any of the pages are flagged PAGEINWAIT, transmit them in a m_o_data_supply message
+  for the lock requests we incremented pending_writes on, decrement pending_writes, and signal wakeup
+    if there's no more pending_writes or locks_pending
+
+m_o_data_unlock: (kernel requesting write access)
+  routine itself never locks pager (but lock_object does)
+  call pager_unlock_page()
+  no error -> answer with m_o_data_lock (lock_object; not synchronous)
+  error -> answer with m_o_data_lock (lock_object; flush variant; not synchronous)
+
+lock_object: (several types: flush, sync, return, response to an unlock request)
+  wrapper around m_o_data_lock message
+  if sync requested, add to lock_requests list with locks_pending++ and threads_waiting++
+     after m_o_lock_request message sent, wait for locks_pending and pending_writes to drop to zero,
+     then decrement threads_waiting and remove lock_requests if zero
+     if should_flush, clear PM_INCORE flag in pagemap
+  PM_INCORE flags don't get cleared if sync wasn't requested
+
+  lock_object() called by pager_ calls to flush, sync, and return data from kernel,
+    as well as m_o_data_unlock
+
+  if a m_o_data_return comes in while waiting for a synchronous lock to complete,
+    we wait for the write to finish before returning from the lock
+    the data return could be triggered by the lock request (i.e, a sync or a return)
+  if a lock request comes in while a write is happening, we don't do anything to synchronize them
