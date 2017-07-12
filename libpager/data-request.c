@@ -90,8 +90,6 @@ _pager_S_memory_object_data_request (struct pager *p,
   else
     doerror = 0;
 
-  *pm_entry |= PM_INCORE;
-
   if (PM_NEXTERROR (*pm_entry) != PAGE_NOERR && (access & VM_PROT_WRITE))
     {
       memory_object_data_error (control, offset, length,

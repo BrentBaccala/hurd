@@ -208,8 +208,6 @@ _pager_do_write_request (struct pager *p,
 	  munmap ((void *) (data + (vm_page_size * i)),
 		  vm_page_size);
 	  notified[i] = (! kcopy && p->notify_on_evict);
-	  if (! kcopy)
-	    pm_entries[i] &= ~PM_INCORE;
 	}
 
       pm_entries[i] &= ~(PM_PAGINGOUT | PM_PAGEINWAIT | PM_WRITEWAIT);

@@ -83,24 +83,6 @@ _pager_lock_object (struct pager *p,
 	    lr->next->prevp = lr->prevp;
 	  free (lr);
 	}
-
-      if (should_flush)
-	{
-	  vm_offset_t pm_offs = offset / __vm_page_size;
-
-	  _pager_pagemap_resize (p, offset + size);
-	  if (p->pagemapsize > pm_offs)
-	    {
-	      short *pm_entries = &p->pagemap[pm_offs];
-	      vm_offset_t bound = size / vm_page_size;
-
-	      if (bound > p->pagemapsize)
-		bound = p->pagemapsize;
-
-	      for (i = 0; i < bound; i++)
-		pm_entries[i] &= ~PM_INCORE;
-	    }
-	}
     }
 
   pthread_mutex_unlock (&p->interlock);
