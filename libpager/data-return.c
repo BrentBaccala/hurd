@@ -21,19 +21,15 @@
 #include <string.h>
 #include <assert.h>
 
-/* Worker function used by _pager_S_memory_object_data_return
-   and _pager_S_memory_object_data_initialize.  All args are
-   as for _pager_S_memory_object_data_return; the additional
-   INITIALIZING arg identifies which function is calling us. */
+/* Implement pageout call back as described by <mach/memory_object.defs>. */
 kern_return_t
-_pager_do_write_request (struct pager *p,
-			 mach_port_t control,
-			 vm_offset_t offset,
-			 pointer_t data,
-			 vm_size_t length,
-			 int dirty,
-			 int kcopy,
-			 int initializing)
+_pager_S_memory_object_data_return (struct pager *p,
+					 mach_port_t control,
+					 vm_offset_t offset,
+					 pointer_t data,
+					 vm_size_t length,
+					 int dirty,
+					 int kcopy)
 {
   short *pm_entries;
   int npages, i;
@@ -123,20 +119,8 @@ _pager_do_write_request (struct pager *p,
       }
 
   /* Mark these pages as being paged out.  */
-  if (initializing)
-    {
-      assert (npages <= 32);
-      for (i = 0; i < npages; i++)
-	{
-	  if (pm_entries[i] & PM_INIT)
-	    omitdata |= 1 << i;
-	  else
-	    pm_entries[i] |= PM_PAGINGOUT | PM_INIT;
-	}
-    }
-  else
-    for (i = 0; i < npages; i++)
-      pm_entries[i] |= PM_PAGINGOUT | PM_INIT;
+  for (i = 0; i < npages; i++)
+    pm_entries[i] |= PM_PAGINGOUT;
 
   /* If this write occurs while a lock is pending, record
      it.  We have to keep this list because a lock request
@@ -248,18 +232,4 @@ _pager_do_write_request (struct pager *p,
  release_out:
   pthread_mutex_unlock (&p->interlock);
   return 0;
-}
-
-/* Implement pageout call back as described by <mach/memory_object.defs>. */
-kern_return_t
-_pager_S_memory_object_data_return (struct pager *p,
-					 mach_port_t control,
-					 vm_offset_t offset,
-					 pointer_t data,
-					 vm_size_t length,
-					 int dirty,
-					 int kcopy)
-{
-  return _pager_do_write_request (p, control, offset, data,
-				  length, dirty, kcopy, 0);
 }

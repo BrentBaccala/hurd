@@ -109,7 +109,6 @@ extern int _pager_page_errors[];
 /* Pagemap format */
 /* These are binary state bits */
 #define PM_WRITEWAIT  0x0200	/* queue wakeup once write is done */
-#define PM_INIT       0x0100    /* data has been written */
 #define PM_PAGINGOUT  0x0040	/* being written to disk */
 #define PM_PAGEINWAIT 0x0020	/* provide data back when write done */
 #define PM_INVALID    0x0010	/* data on disk is irrevocably wrong */
