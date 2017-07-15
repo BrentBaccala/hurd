@@ -33,6 +33,7 @@ _pager_S_memory_object_data_request (struct pager *p,
   error_t err;
   vm_address_t page;
   int write_lock;
+  boolean_t write_requested = (access & VM_PROT_WRITE);
 
   if (!p
       || p->port.class != _pager_class)
@@ -90,7 +91,7 @@ _pager_S_memory_object_data_request (struct pager *p,
   else
     doerror = 0;
 
-  if (PM_NEXTERROR (*pm_entry) != PAGE_NOERR && (access & VM_PROT_WRITE))
+  if (PM_NEXTERROR (*pm_entry) != PAGE_NOERR && write_requested)
     {
       memory_object_data_error (control, offset, length,
 				_pager_page_errors[PM_NEXTERROR (*pm_entry)]);
@@ -113,7 +114,7 @@ _pager_S_memory_object_data_request (struct pager *p,
     goto error_read;
 
   memory_object_data_supply (p->memobjcntl, offset, page, length, 1,
-			     write_lock ? VM_PROT_WRITE : VM_PROT_NONE,
+			     (write_lock || ! write_requested) ? VM_PROT_WRITE : VM_PROT_NONE,
 			     p->notify_on_evict ? 1 : 0,
 			     MACH_PORT_NULL);
   pthread_mutex_lock (&p->interlock);
