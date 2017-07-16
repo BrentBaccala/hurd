@@ -161,7 +161,7 @@ main (int argc, char **argv)
   /* Parse our options...  */
   argp_parse (&argp, argc, argv, 0, 0, 0);
 
-  mach_port_t node = file_name_lookup (targetPath, O_RDONLY, 0);
+  mach_port_t node = file_name_lookup (targetPath, O_RDWR, 0);
 
   if (node == MACH_PORT_NULL)
     {
@@ -175,6 +175,8 @@ main (int argc, char **argv)
 
   printf("%d %d\n", memobjrd, memobjwt);
 
+  mach_port_t memobj = memobjwt;
+
   /* Create two receive rights */
 
   mach_port_t memory_control;
@@ -185,12 +187,12 @@ main (int argc, char **argv)
 
   /* send memory_object_init */
 
-  mach_call (memory_object_init (memobjrd, memory_control, memory_object_name, __vm_page_size));
+  mach_call (memory_object_init (memobj, memory_control, memory_object_name, __vm_page_size));
 
   /* wait for the memory_object_ready (2094) in reply, but we'll get
    * no reply from the old libpager if the kernel has already
    * requested a memory object from this file, and even just a simple
-   * 'cat' will trigger that
+   * 'cat' on the file will trigger that
    */
 
   const static mach_msg_size_t max_size = 4096;
@@ -209,7 +211,7 @@ main (int argc, char **argv)
 
   /* old libpager mostly ignores these permissions, so you can request WRITE access to a read object */
 
-  mach_call (memory_object_data_request (memobjrd, memory_control, 0, __vm_page_size, VM_PROT_READ | VM_PROT_WRITE));
+  mach_call (memory_object_data_request (memobj, memory_control, 0, __vm_page_size, VM_PROT_READ | VM_PROT_WRITE));
 
   /* wait for the m_o_data_error (2090) or m_o_data_supply (2093) in reply */
 
@@ -219,5 +221,40 @@ main (int argc, char **argv)
 
   printf("%d %d\n", msg->msgh_size, msg->msgh_id);
 
-  assert(msg->msgh_id == 2093); /* memory_object_data_supply */
+  assert((msg->msgh_id == 2090) || (msg->msgh_id == 2093)); /* memory_object_data_supply (2093) */
+
+  /* send another memory_object_data_request */
+
+  /* the old libpager will answer with another m_o_data_supply, even though the page has already
+   * been handed out with WRITE access.
+   */
+
+  mach_call (memory_object_data_request (memobj, memory_control, 0, __vm_page_size, VM_PROT_READ | VM_PROT_WRITE));
+
+  /* wait for the m_o_data_error (2090) or m_o_data_supply (2093) in reply */
+
+  mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                       0, max_size, memory_control,
+                       timeout, MACH_PORT_NULL));
+
+  printf("%d %d\n", msg->msgh_size, msg->msgh_id);
+
+  assert((msg->msgh_id == 2090) || (msg->msgh_id == 2093)); /* memory_object_data_supply (2093) */
+
+  if (msg->msgh_id == 2093) {
+
+    /* send an unlock request */
+
+    mach_call (memory_object_data_unlock (memobj, memory_control, 0, __vm_page_size, VM_PROT_READ | VM_PROT_WRITE));
+
+    /* wait for the m_o_data_error (2090) or m_o_data_request (2044) in reply */
+
+    mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                         0, max_size, memory_control,
+                       timeout, MACH_PORT_NULL));
+
+    printf("%d %d\n", msg->msgh_size, msg->msgh_id);
+
+  }
+
 }
