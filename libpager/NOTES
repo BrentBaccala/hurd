@@ -305,9 +305,9 @@ m_o_data_request: (kernel requesting a single page)
      if write access was not requested, ignore NEXTERROR
   if this client is already on ACCESSLIST, print error message and do nothing
   if another client has WRITE access (WAITLIST is empty), add requesting client to WAITLIST,
-     and send lock request (asynchronous; reply requested)
-     if we want read access, this can just be a lock to remove WRITE permission and return the data
-     if we want write access, the lock has to be a flush and return dirty pages
+     and send lock request (return data; no reply)
+     if we want read access, this is a lock to remove WRITE permission
+     if we want write access, the lock has to be a flush
   if WRITE access is requested and other clients have any access, add requesting client to WAITLIST,
      and send lock requests (asynchronous; reply requested)
   if ACCESSLIST is empty or READ access is requested and only READ clients are on ACCESSLIST,
@@ -318,24 +318,32 @@ m_o_data_request: (kernel requesting a single page)
   if no error, send it to kernel with m_o_data_supply and read/write status requested and supplied by filesystem,
      and clear ERROR
 
+ISSUE:
+  this logic could cause multiple overlapping calls to pager_read_page() if a bunch of clients
+    request READ access near simultaneously
+
 RACE CONDITION:
   client requests access
-  client is put on ACCESSLIST and pager_read_page() begins
-  another client requests contradictory access
-  we send a lock request to original client, even though it hasn't gotten the data yet!
-  then pager_read_page() completes, and we send the data to the original client!
+  client is put on WAITLIST and pager_read_page() begins
+  another client requests contradictory access via m_o_data_request
+  NOT [ we send a lock request to original client, even though it hasn't gotten the data yet! ]
+  NOT [ then pager_read_page() completes, and we send the data to the original client! ]
+  YES [ no messages are sent since WAITLIST is not empty ]
+  YES [ new client is put on the end of WAITLIST ]
+
+RACE CONDITION:
+  client B has READ access
+  client A requests WRITE access (m_o_data_request)
+  lock (flush) request is sent to client B and client A is added to WAITLIST
+  nearly simultaneously, client B requests WRITE access (unlock)
+  do nothing, since client B wouldn't have sent unlock request if it had already received lock request,
+    so it will interpret the lock request as an answer to the unlock request
 
 m_o_lock_completed:
   find lock in list of lock requests, decrement locks_pending, wake up waiter if no more locks_pending or pending_writes
   if lock corresponds to a single page, find it in the pagetable
     m_o_lock_completed could have been sent in response to a LOCKWAIT, or a fs flush, sync, return (can't tell which)
-    if this client had WRITE access, and first client on WAITLIST is requesting READ access,
-      then the lock request was only to revoke WRITE access (there is no other way to tell)
-      (MOVE THIS CODE TO m_o_data_return - RUN IT AFTER THE PAGE IS WRITTEN, NOT AFTER THE LOCK COMPLETES)
-      re-flag this client on ACCESSLIST with READ access
-      use m_o_data_supply to supply first set of WAITLIST clients (all requesting READ access)
-      move those clients to ACCESSLIST
-      if WAITLIST still has clients on it, send lock requests out to everyone on ACCESSLIST
+    if this client had WRITE access, print error (should have used m_o_data_return instead of m_o_lock_completed)
     otherwise, remove client from ACCESSLIST
       if ACCESSLIST is empty, use m_o_data_supply to supply first set of WAITLIST clients
         and move those clients to ACCESSLIST
@@ -356,10 +364,14 @@ m_o_lock_completed:
 m_o_data_unlock: (kernel requesting write access when it's already got read access)
   ASSERT: this client already on ACCESSLIST with read access
   routine itself never locks pager (but lock_object does)
+  if WAITLIST is not empty, do nothing (we're already trying to flush everything on ACCESSLIST)
   if there's other clients on ACCESSLIST, send lock requests to other clients (flush; async; reply requested)
   otherwise, call pager_unlock_page()
     no error -> answer with m_o_data_lock (lock_object; not synchronous)
     error -> answer with m_o_data_lock (lock_object; flush variant; not synchronous)
+
+ISSUE: if multiple clients with READ access attempt to unlock near simultaneously, this
+  logic will trigger multiple lock requests (a set for each client attempting to unlock)
 
 lock_object: (several types: flush, sync, return, response to an unlock request)
   NEW MODE NEEDED: asynchronous, but reply requested
@@ -380,19 +392,63 @@ m_o_data_return: (kernel returning pages)
   (this can be used in liu of a lock completed message for a WRITE, because we have to wait for the data to page out)
   npages = length / __vm_page_size;
   pm_entries points to 'npages' entries in pagemap
-  if filesystem requested notify_on_evict, and the kernel didn't keep a copy,
-     then for each page that not flagged PM_PAGEINWAIT call pager_notify_evict() and clear any error flagged in pagemap
-     Don't actually do this until we're done writing everything out
   if any of the pages are flagged PAGINGOUT, flag them WRITEWAIT and wait to be signaled that they're paged out
+     (kernel can sync pages at will; multiple syncs could be concurrent)
   flag all these pages PAGINGOUT
   if any locks are pending on these pages, increment pending_writes in the lock request
   unlock the pager
   call pager_write_page() on all the pages
-  if pager_write_page() returns an error
-  XXX omitdata is only an int, but there could be more than 32 pages
   reaquire the pager lock
   if any of the pages are now flagged WRITEWAIT, signal the condition variable
-  if any of the pager_write_page() calls returned error, mark those pages INVALID
+  if any of the pager_write_page() calls returned error and are not flagged PAGEINWAIT, mark those pages INVALID
   if any of the pages are flagged PAGEINWAIT, transmit them in a m_o_data_supply message
   for the lock requests we incremented pending_writes on, decrement pending_writes, and signal wakeup
     if there's no more pending_writes or locks_pending
+  if client requested notify_on_evict, call pager_notify_evict() for any pages that were evicted and
+    didn't get shipped back out in an m_o_data_supply message, and clear their ERRORs and NEXTERRORs
+
+
+  if the first client on WAITLIST is requesting READ access,
+    then the lock request was only to revoke WRITE access
+    re-flag this client on ACCESSLIST with READ access
+    use m_o_data_supply to supply first set of WAITLIST clients (all requesting READ access)
+    remove those clients from WAITLIST and move them to ACCESSLIST
+  otherwise, the first client on WAITLIST is requesting WRITE access
+    ASSERT: kernel_copy is false
+    remove this client from ACCESSLIST (ASSERT: ACCESSLIST should now be empty)
+    use m_o_data_supply to supply first WAITLIST client (requesting WRITE access)
+    move that client from WAITLIST to ACCESSLIST
+  if WAITLIST still has clients on it, send lock requests out to everyone on ACCESSLIST
+
+
+ISSUES:
+  before pager_write_page() returns, we can't call pager_read_page() or pager_write_page()
+  after pager_write_page() returns, we might have added additional clients to WAITLIST,
+    but did we add them while waiting for pager_write_page() or were they there before?
+    if ACCESSLIST clients have READ access, and first WAITLIST clients are requested READ access, they are new
+    if ACCESSLIST clients have READ access, and first WAITLIST client is requesting WRITE access,
+      they may or may not be new
+    if ACCESSLIST client has WRITE access, and WAITLIST isn't empty,
+      they may or may not be new
+    if we wait until pager_write_page() returns to send lock requests, we avoid having to figure out
+      if we've already sent lock requests, and introduce some delay to let clients use the data
+
+HOW ABOUT:
+  before calling pager_write_page(), service the first batch of clients on WAITLIST
+     and move them to ACCESSLIST, but send no lock requests
+  after pager_write_page(), service any compatible WAITLIST clients and move them to ACCESSLIST
+  if there are still outstanding WAITLIST clients, send lock requests to everyone on ACCESSLIST
+
+RACE CONDITION:
+  client A has WRITE access
+  pager_sync() is called asynchronously
+  client A syncs with a m_o_data_return, but keeps a copy of the data
+  near simultaneously, client B requests access and libpager requests a flush
+  client A answers with a new m_o_data_return containing data different from the first
+  libpager sees the first m_o_data_return and hands it out to client B
+  RESULT: client B does not have the most recent changes to the data
+  [ ] SOLUTION 1: if m_o_data_return indicates kernal_copy=true, we can't hand it out to other clients
+         PROBLEM: m_o_data_return doesn't indicate if the kernel has released WRITE access,
+                  so this doesn't work if client B is requesting READ access and the lock
+                  request is only to revoke WRITE access
+  [X] SOLUTION 2: when we request a flush, wait for a lock_completed message
