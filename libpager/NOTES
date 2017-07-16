@@ -225,22 +225,19 @@ m_o_data_request: (kernel requesting a single page)
 m_o_data_return: (kernel returning pages)
   npages = length / __vm_page_size;
   pm_entries points to 'npages' entries in pagemap
-  if filesystem requested notify_on_evict, and the kernel didn't keep a copy,
-     then for each page that not flagged PM_PAGEINWAIT call pager_notify_evict() and clear any error flagged in pagemap
-     Don't actually do this until we're done writing everything out
   if any of the pages are flagged PAGINGOUT, flag them WRITEWAIT and wait to be signaled that they're paged out
   flag all these pages PAGINGOUT
   if any locks are pending on these pages, increment pending_writes in the lock request
   unlock the pager
   call pager_write_page() on all the pages
-  if pager_write_page() returns an error
-  XXX omitdata is only an int, but there could be more than 32 pages
   reaquire the pager lock
   if any of the pages are now flagged WRITEWAIT, signal the condition variable
-  if any of the pager_write_page() calls returned error, mark those pages INVALID
+  if any of the pager_write_page() calls returned error and are not flagged PAGEINWAIT, mark those pages INVALID
   if any of the pages are flagged PAGEINWAIT, transmit them in a m_o_data_supply message
   for the lock requests we incremented pending_writes on, decrement pending_writes, and signal wakeup
     if there's no more pending_writes or locks_pending
+  if client requested notify_on_evict, call pager_notify_evict() for any pages that were evicted and
+    didn't get shipped back out in an m_o_data_supply message, and clear their ERRORs and NEXTERRORs
 
 m_o_data_unlock: (kernel requesting write access)
   routine itself never locks pager (but lock_object does)

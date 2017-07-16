@@ -39,7 +39,6 @@ _pager_S_memory_object_data_return (struct pager *p,
   struct lock_list {struct lock_request *lr;
 		    struct lock_list *next;} *lock_list, *ll;
   int wakeup;
-  int omitdata = 0;
 
   if (!p
       || p->port.class != _pager_class)
@@ -146,10 +145,9 @@ _pager_S_memory_object_data_return (struct pager *p,
      but until the pager library interface is changed, this will have to do. */
 
   for (i = 0; i < npages; i++)
-    if (!(omitdata & (1 << i)))
-      pagerrs[i] = pager_write_page (p->upi,
-				     offset + (vm_page_size * i),
-				     data + (vm_page_size * i));
+    pagerrs[i] = pager_write_page (p->upi,
+				   offset + (vm_page_size * i),
+				   data + (vm_page_size * i));
 
   /* Acquire the right to meddle with the pagemap */
   pthread_mutex_lock (&p->interlock);
@@ -159,12 +157,6 @@ _pager_S_memory_object_data_return (struct pager *p,
   wakeup = 0;
   for (i = 0; i < npages; i++)
     {
-      if (omitdata & (1 << i))
-	{
-	  notified[i] = 0;
-	  continue;
-	}
-
       if (pm_entries[i] & PM_WRITEWAIT)
 	wakeup = 1;
 
