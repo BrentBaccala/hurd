@@ -33,4 +33,12 @@ OBJS = $(SRCS:.c=.o) memory_objectServer.o
 MIGSFLAGS = -imacros $(srcdir)/mig-mutate.h
 MIGCOMSFLAGS = -prefix _pager_
 
+LDLIBS = -L . -lpager -lports
+
+# This is broken.  $(progtarg) is an internal target used by Makeconf,
+# and shouldn't be referenced here.  Unfortunately, Makeconf provides
+# no supported way to specify binaries to be built with libraries.
+
+progtarg: libpager-test
+
 include ../Makeconf
