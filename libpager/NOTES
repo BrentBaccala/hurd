@@ -3,29 +3,59 @@ To support a multi-node Hurd cluster, the libpager used by filesystem
 translators needs to support multiple clients (i.e, multiple kernels
 mmap'ing files).
 
+GENERAL NOTES
+
+pager_read_page() is expected to allocate memory (unless it returns an
+error) and pass it to libpager, which is responsible for deallocating
+it (actually by passing it to the kernel).
+
+pager_write_page() does no memory allocation or deallocation.  It
+receives allocated memory and leaves it allocated, with libpager
+responsible for dellocation (or passing it to the kernel).
+
+If we're servicing a page read-only to multiple clients, where do we
+get the data from?  If our local kernel has a copy, we almost
+certainly want to get it there, since it's just a manner of flipping
+bits in a hardware page table to obtain a new "copy" of the data.
+Otherwise, we probably want to get the data from the local disk, but
+if the disk is very busy and we've got fast network connections, we
+might want to get that data from another node in the cluster.
+
+How do we figure out which client is the local kernel?
+
+DISTRIBUTED LIBPAGER.  We could use a shim process on remote nodes, to
+allow requests for an existing page go to a node that holds a copy of
+that page, instead of to the node with the disk.  Two ways I can
+imagine this.  Either ext2fs forks off multiple processes on different
+nodes, or a mechanism is developed to detect when a port is remote,
+figure out which node it (currently) resides on, and then libpager can
+fork a process and push it to the other node, invisible to ext2fs
+proper.
 
 
 ON REMOVING pager_offer_page()
 
-I've reviewed the existing code, and I have a problem with the
-function pager_offer_page().
+Brent Baccala wrote:
 
-First, the API is problematic, since pager_offer_page() is a call from
-the memory server (i.e, ext2fs) into the libpager library, instructing
-the library to offer a page to the client (i.e, the kernel) that
-hasn't been solicited by the client.  The problem is that the function
-parameters don't indicate which client to offer the page to.
+> I've reviewed the existing code, and I have a problem with the
+> function pager_offer_page().
 
-Second, I can't find anywhere in the hurd source tree where this
-function is actually used.
+> First, the API is problematic, since pager_offer_page() is a call from
+> the memory server (i.e, ext2fs) into the libpager library, instructing
+> the library to offer a page to the client (i.e, the kernel) that
+> hasn't been solicited by the client.  The problem is that the function
+> parameters don't indicate which client to offer the page to.
 
-Third, why would we want this feature?  Why would a memory server ever
-want to send an unsolicited page to a client?
+> Second, I can't find anywhere in the hurd source tree where this
+> function is actually used.
 
-So, I propose deprecating pager_offer_pager() by simply removing it
-from the library.
+> Third, why would we want this feature?  Why would a memory server ever
+> want to send an unsolicited page to a client?
 
-Any objections?
+> So, I propose deprecating pager_offer_pager() by simply removing it
+> from the library.
+
+> Any objections?
 
 Kalle Olavi Niemitalo <kon@iki.fi> wrote:
 
@@ -389,7 +419,8 @@ lock_object: (several types: flush, sync, return, response to an unlock request)
   if a lock request comes in while a write is happening, we don't do anything to synchronize them
 
 m_o_data_return: (kernel returning pages)
-  (this can be used in liu of a lock completed message for a WRITE, because we have to wait for the data to page out)
+  (this can not be used in liu of a lock completed message for a WRITE,
+     because it doesn't indicate if the kernel still maintains WRITE access)
   npages = length / __vm_page_size;
   pm_entries points to 'npages' entries in pagemap
   if any of the pages are flagged PAGINGOUT, flag them WRITEWAIT and wait to be signaled that they're paged out
@@ -398,7 +429,7 @@ m_o_data_return: (kernel returning pages)
   if any locks are pending on these pages, increment pending_writes in the lock request
   unlock the pager
   call pager_write_page() on all the pages
-  reaquire the pager lock
+  reacquire the pager lock
   if any of the pages are now flagged WRITEWAIT, signal the condition variable
   if any of the pager_write_page() calls returned error and are not flagged PAGEINWAIT, mark those pages INVALID
   if any of the pages are flagged PAGEINWAIT, transmit them in a m_o_data_supply message
