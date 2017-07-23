@@ -1,14 +1,10 @@
-/* -*- mode: C; indent-tabs-mode: nil -*-
+/* -*- mode: C++; indent-tabs-mode: nil -*-
 
    libpager-test - a test program for netmsg
 
    Copyright (C) 2017 Brent Baccala <cosine@freesoft.org>
 
    GNU General Public License version 2 or later (your option)
-
-   Compile with:
-
-   gcc -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -o libpager-test libpager-test.c
 
    Basic usage (to test the built-in libpager):
 
@@ -28,15 +24,33 @@
 #include <argp.h>
 #include <assert.h>
 
+/* XXX For parse_opt(), we want constants from the error_t enum, and
+ * not preprocessor defines for ARGP_ERR_UNKNOWN (E2BIG) and EINVAL.
+ */
+
+#undef E2BIG
+#undef EIO
+
+extern "C" {
 #include <mach/notify.h>
 #include <mach_error.h>
 
+/* Yes, these C++ keywords are used as variable names in Hurd headers */
+
+#define new New
+#define class Class
+
+#include <hurd.h>
 #include <hurd/trivfs.h>
 #include <hurd/hurd_types.h>
 
 #include <mach/memory_object_user.h>
 
 #include "./pager.h"
+
+#undef new
+#undef class
+};
 
 /***** DEBUGGING *****/
 
@@ -171,7 +185,7 @@ error_t pager_read_page (struct user_pager_info *PAGER,
      'EDQUOT', and 'ENOSPC'.
   */
   /* return EIO; */
-  char * buf = malloc(__vm_page_size);
+  void * buf = malloc(__vm_page_size);
   memcpy(buf, buffer + PAGE, __vm_page_size);
   *BUF = (vm_address_t) buf;
   *WRITE_LOCK = TRUE;
