@@ -21,7 +21,15 @@ Otherwise, we probably want to get the data from the local disk, but
 if the disk is very busy and we've got fast network connections, we
 might want to get that data from another node in the cluster.
 
-How do we figure out which client is the local kernel?
+How do we figure out which client is the local kernel?  One possible
+solution is for netmsg to listen on /servers/netmsg for an RPC that
+accepts a send right and identifies which node currently hosts the
+corresponding receive right.  If the kernel uses the same control port
+for all of its pager operations, then we wouldn't have to make this
+query for every memory object; a single ext2fs translator, for
+example, could globally identify the location of all of the control
+ports, one for each node, and this information could be shared amongst
+all of that translator's pager objects.
 
 DISTRIBUTED LIBPAGER.  We could use a shim process on remote nodes, to
 allow requests for an existing page go to a node that holds a copy of
@@ -483,3 +491,17 @@ RACE CONDITION:
                   so this doesn't work if client B is requesting READ access and the lock
                   request is only to revoke WRITE access
   [X] SOLUTION 2: when we request a flush, wait for a lock_completed message
+
+BUG IN CURRENT CODE:
+  client has WRITE access and page is being actively changed
+  pager_write() is relatively slow
+  pager_sync() is called asynchronously three times in rapid succession
+  client returns data three times
+  first m_o_return_data starts a pager_write and sets PAGINGOUT
+  next two m_o_return_data's both see PAGINGOUT and set WRITEWAIT
+  first pager_write finishes, sees WRITEWAIT, and wakes other two threads
+  which one goes first?  coin flip
+  thus, there's a chance that the second and third m_o_return_data's will be processed in reverse order
+
+BUG IN CURRENT CODE:
+  m_o_data_supply is called in data-return.c with precious = 0, instead of notify_on_evict
