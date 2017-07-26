@@ -21,7 +21,22 @@ Otherwise, we probably want to get the data from the local disk, but
 if the disk is very busy and we've got fast network connections, we
 might want to get that data from another node in the cluster.
 
-How do we figure out which client is the local kernel?
+Mach's current memory object API makes this a lot more difficult.  You
+can't just request that the kernel hand you back an unmodified page,
+except by flagging it "precious".  That's not too bad if the kernel
+and the memory manager are both local on one node, but if you do this
+over the network, you're sending unnecessary copies of the memory
+pages around.
+
+How do we figure out which client is the local kernel?  One possible
+solution is for netmsg to listen on /servers/netmsg for an RPC that
+accepts a send right and identifies which node currently hosts the
+corresponding receive right.  If the kernel uses the same control port
+for all of its pager operations, then we wouldn't have to make this
+query for every memory object; a single ext2fs translator, for
+example, could globally identify the location of all of the control
+ports, one for each node, and this information could be shared amongst
+all of that translator's pager objects.
 
 DISTRIBUTED LIBPAGER.  We could use a shim process on remote nodes, to
 allow requests for an existing page go to a node that holds a copy of
@@ -75,16 +90,136 @@ Kalle Olavi Niemitalo <kon@iki.fi> wrote:
 > the future.
 
 
+OLD PAGETABLE
 
-THE PAGEMAP
+PAGINGOUT - set this flag when we get a data return, clear it after the write is finished
+PAGEINWAIT - if we get a data request on a page whose's PAGINGOUT, flag it PAGEINWAIT
+   kernel has requested them, but the flag doesn't indiciate _which_ kernel requested them
+WRITEWAIT - if we get a data return on a page whose's PAGINGOUT, flag it WRITEWAIT
+INVALID - set if we got an error writing the page back to the filesystem (actual error code is discarded)
+   Future requests for this page will get an m_o_data_error (EIO)
+TWO 2 BIT ERROR CODES - ERROR and NEXTERROR
+   NEXTERROR - only set if m_o_data_unlock gets an error from pager_unlock_page(), in which
+      case libpager answers the unlock with a m_o_lock_request (the flush varient) and expects
+      an upcoming m_o_data_request (for write access) to be answered with m_o_data_error
+   ERROR - set to EIO as a result of a read error (actual error code is discarded)
+      an unlock error will get propagated from NEXTERROR to ERROR
+      pager_get_error() will report error back to filesystem
+      NEVER ACTUALLY USED BY libpager PROTOCOL ROUTINES
+
+ERRORS
+
+read error on m_o_data_request - reply with m_o_data_error (EIO) and mark
+write error on m_o_data_return - flag page INVALID unless we can page it right back out again (error code dropped)
+unlock error on m_o_data_unlock - evict the page and report error back on next m_o_data_request
+
+misaligned requests / bad length - request is dropped and error logged
+pagemap resize error - data request is ignored
+
+OLD PSEUDOCODE
+
+if filesystem creates libpager with notify_on_evict TRUE, then all the pages supplied to
+the kernel are flagged "precious" and are returned to libpager on eviction.  The data itself
+is discarded.  ext2fs uses this feature.
+
+m_o_data_request: (kernel requesting a single page)
+  REQUESTED access IS LARGELY IGNORED; FILESYSTEM GRANTS WRITE ACCESS EVEN IF READ WAS REQUESTED
+     FILESYSTEM GRANTS READ ACCESS EVEN IF WRITE WAS REQUESTED (unless a NEXTERROR is pending)
+
+  if the page is PAGINGOUT, flag it PAGEINWAIT and do nothing except NEXTERROR handling
+  if the page is flagged with a NEXTERROR and WRITE ACCESS WAS REQUESTED, send a m_o_data_error message,
+        move NEXTERROR to ERROR, and clear NEXTERROR
+     if write access was not requested, ignore NEXTERROR
+  unlock pager
+  read the page (unless PAGINGOUT or an error) with pager_read_page()
+  if pager_read_page() returned an error, mark page with ERROR=EIO and return m_o_data_error
+  if no error, send it to kernel with m_o_data_supply and read/write status supplied by filesystem and clear ERROR
+
+m_o_data_return: (kernel returning pages)
+  npages = length / __vm_page_size;
+  pm_entries points to 'npages' entries in pagemap
+  if any of the pages are flagged PAGINGOUT, flag them WRITEWAIT and wait to be signaled that they're paged out
+  flag all these pages PAGINGOUT
+  if any locks are pending on these pages, increment pending_writes in the lock request
+  unlock the pager
+  call pager_write_page() on all the pages
+  reaquire the pager lock
+  if any of the pages are now flagged WRITEWAIT, signal the condition variable
+  if any of the pager_write_page() calls returned error and are not flagged PAGEINWAIT, mark those pages INVALID
+  if any of the pages are flagged PAGEINWAIT, transmit them in a m_o_data_supply message
+  for the lock requests we incremented pending_writes on, decrement pending_writes, and signal wakeup
+    if there's no more pending_writes or locks_pending
+  if client requested notify_on_evict, call pager_notify_evict() for any pages that were evicted and
+    didn't get shipped back out in an m_o_data_supply message, and clear their ERRORs and NEXTERRORs
+
+m_o_data_unlock: (kernel requesting write access)
+  routine itself never locks pager (but lock_object does)
+  call pager_unlock_page()
+  no error -> answer with m_o_data_lock (lock_object; not synchronous)
+  error -> answer with m_o_data_lock (lock_object; flush variant; not synchronous) and mark NEXTERROR
+
+lock_object: (several types: flush, sync, return, response to an unlock request)
+  wrapper around m_o_data_lock message
+  if sync requested, add to lock_requests list with locks_pending++ and threads_waiting++
+     after m_o_lock_request message sent, wait for locks_pending and pending_writes to drop to zero,
+     then decrement threads_waiting and remove lock_requests if zero
+     if should_flush, clear PM_INCORE flag in pagemap
+  PM_INCORE flags don't get cleared if sync wasn't requested
+
+  lock_object() called by pager_ calls to flush, sync, and return data from kernel,
+    as well as m_o_data_unlock
+
+  if a m_o_data_return comes in while waiting for a synchronous lock to complete,
+    we wait for the write to finish before returning from the lock
+    the data return could be triggered by the lock request (i.e, a sync or a return)
+  if a lock request comes in while a write is happening, we don't do anything to synchronize them
+
+m_o_lock_completed:
+  find lock in list of lock requests, decrement locks_pending, wake up waiter if no more locks_pending or pending_writes
+
+BUG IN CURRENT CODE:
+  client has WRITE access and page is being actively changed
+  pager_write() is relatively slow
+  pager_sync() is called asynchronously three times in rapid succession
+  client returns data three times
+  first m_o_return_data starts a pager_write and sets PAGINGOUT
+  next two m_o_return_data's both see PAGINGOUT and set WRITEWAIT
+  first pager_write finishes, sees WRITEWAIT, and wakes other two threads
+  which one goes first?  coin flip
+  thus, there's a chance that the second and third m_o_return_data's will be processed in reverse order
+
+BUG IN CURRENT CODE:
+  m_o_data_supply is called in data-return.c with precious = 0, instead of notify_on_evict
+
+
+NEW PAGETABLE
 
 struct pagemap_entry {
+   /* ACCESSLIST */
    port_t client_with_write_access;
    port_t clients_with_read_access[];
 
-   /* A list of the clients waiting for access, and what kind of access they are waiting for */
+   /* WAITLIST */
+   /* A list of the clients waiting for access, in order of arrival, and what kind of access they are waiting for */
    port_t clients_waiting[];
    boolean clients_waiting_for_write[];
+
+   /* NEXTERROR list */
+   /* A list of outstanding error codes, paired with clients, returned during unlock requests. */
+   /* They'll be transmitted to the client that requested them. */
+
+   /* WRITEWAIT list */
+   /* A list of pages waiting to be written out to disk */
+
+   /* Flags */
+   PAGINGOUT - set this flag when we get a data return, clear it after the write is finished
+   INVALID - set if we got an error writing the page back to the filesystem (actual error code is discarded)
+      Future requests for this page will get an m_o_data_error (EIO)
+   2 BIT ERROR CODE - ERROR
+      ERROR - set to EIO as a result of a read error (actual error code is discarded)
+         an unlock error will get propagated from NEXTERROR to ERROR
+         pager_get_error() will report error back to filesystem
+         NEVER ACTUALLY USED BY libpager PROTOCOL ROUTINES
 }
 
 How to maintain the pagemap for a large number of clients?  More than
@@ -208,147 +343,34 @@ Richard Braun <rbraun@sceen.net>:
 > in C.
 
 
-OLD PAGETABLE
-
-PAGINGOUT - set this flag when we get a data return, clear it after the write is finished
-PAGEINWAIT - if we get a data request on a page whose's PAGINGOUT, flag it PAGEINWAIT
-   kernel has requested them, but the flag doesn't indiciate _which_ kernel requested them
-WRITEWAIT - if we get a data return on a page whose's PAGINGOUT, flag it WRITEWAIT
-INVALID - set if we got an error writing the page back to the filesystem (actual error code is discarded)
-   Future requests for this page will get an m_o_data_error (EIO)
-TWO 2 BIT ERROR CODES - ERROR and NEXTERROR
-   NEXTERROR - only set if m_o_data_unlock gets an error from pager_unlock_page(), in which
-      case libpager answers the unlock with a m_o_lock_request (the flush varient) and expects
-      an upcoming m_o_data_request (for write access) to be answered with m_o_data_error
-   ERROR - set to EIO as a result of a read error (actual error code is discarded)
-      an unlock error will get propagated from NEXTERROR to ERROR
-      pager_get_error() will report error back to filesystem
-
-ERRORS
-
-read error on m_o_data_request - reply with m_o_data_error (EIO) and mark
-write error on m_o_data_return - flag page INVALID unless we can page it right back out again (error code dropped)
-unlock error on m_o_data_unlock - evict the page and report error back on next m_o_data_request
-
-misaligned requests / bad length - request is dropped and error logged
-pagemap resize error - data request is ignored
-
-THE PSEUDOCODE
-
-if filesystem creates libpager with notify_on_evict TRUE, then all the pages supplied to
-the kernel are flagged "precious" and are returned to libpager on eviction.  The data itself
-is discarded.  ext2fs uses this feature.
-
-m_o_data_request: (kernel requesting a single page)
-  REQUESTED access IS LARGELY IGNORED; FILESYSTEM GRANTS WRITE ACCESS EVEN IF READ WAS REQUESTED
-     FILESYSTEM GRANTS READ ACCESS EVEN IF WRITE WAS REQUESTED (unless a NEXTERROR is pending)
-
-  if the page is PAGINGOUT, flag it PAGEINWAIT and do nothing except NEXTERROR handling
-  if the page is flagged with a NEXTERROR and WRITE ACCESS WAS REQUESTED, send a m_o_data_error message,
-        move NEXTERROR to ERROR, and clear NEXTERROR
-     if write access was not requested, ignore NEXTERROR
-  unlock pager
-  read the page (unless PAGINGOUT or an error) with pager_read_page()
-  if pager_read_page() returned an error, mark page with ERROR=EIO and return m_o_data_error
-  if no error, send it to kernel with m_o_data_supply and read/write status supplied by filesystem and clear ERROR
-
-m_o_data_return: (kernel returning pages)
-  npages = length / __vm_page_size;
-  pm_entries points to 'npages' entries in pagemap
-  if any of the pages are flagged PAGINGOUT, flag them WRITEWAIT and wait to be signaled that they're paged out
-  flag all these pages PAGINGOUT
-  if any locks are pending on these pages, increment pending_writes in the lock request
-  unlock the pager
-  call pager_write_page() on all the pages
-  reaquire the pager lock
-  if any of the pages are now flagged WRITEWAIT, signal the condition variable
-  if any of the pager_write_page() calls returned error and are not flagged PAGEINWAIT, mark those pages INVALID
-  if any of the pages are flagged PAGEINWAIT, transmit them in a m_o_data_supply message
-  for the lock requests we incremented pending_writes on, decrement pending_writes, and signal wakeup
-    if there's no more pending_writes or locks_pending
-  if client requested notify_on_evict, call pager_notify_evict() for any pages that were evicted and
-    didn't get shipped back out in an m_o_data_supply message, and clear their ERRORs and NEXTERRORs
-
-m_o_data_unlock: (kernel requesting write access)
-  routine itself never locks pager (but lock_object does)
-  call pager_unlock_page()
-  no error -> answer with m_o_data_lock (lock_object; not synchronous)
-  error -> answer with m_o_data_lock (lock_object; flush variant; not synchronous)
-
-lock_object: (several types: flush, sync, return, response to an unlock request)
-  wrapper around m_o_data_lock message
-  if sync requested, add to lock_requests list with locks_pending++ and threads_waiting++
-     after m_o_lock_request message sent, wait for locks_pending and pending_writes to drop to zero,
-     then decrement threads_waiting and remove lock_requests if zero
-     if should_flush, clear PM_INCORE flag in pagemap
-  PM_INCORE flags don't get cleared if sync wasn't requested
-
-  lock_object() called by pager_ calls to flush, sync, and return data from kernel,
-    as well as m_o_data_unlock
-
-  if a m_o_data_return comes in while waiting for a synchronous lock to complete,
-    we wait for the write to finish before returning from the lock
-    the data return could be triggered by the lock request (i.e, a sync or a return)
-  if a lock request comes in while a write is happening, we don't do anything to synchronize them
-
-m_o_lock_completed:
-  find lock in list of lock requests, decrement locks_pending, wake up waiter if no more locks_pending or pending_writes
-
-
-NEW PAGETABLE
-
-struct pagemap_entry {
-   /* ACCESSLIST */
-   port_t client_with_write_access;
-   port_t clients_with_read_access[];
-
-   /* WAITLIST */
-   /* A list of the clients waiting for access, in order of arrival, and what kind of access they are waiting for */
-   port_t clients_waiting[];
-   boolean clients_waiting_for_write[];
-
-   /* Flags */
-   PAGINGOUT - set this flag when we get a data return, clear it after the write is finished
-   PAGEINWAIT - if we get a data request on a page whose's PAGINGOUT, flag it PAGEINWAIT
-      kernel has requested them, but the flag doesn't indiciate _which_ kernel requested them
-   WRITEWAIT - if we get a data return on a page whose's PAGINGOUT, flag it WRITEWAIT
-   INVALID - set if we got an error writing the page back to the filesystem (actual error code is discarded)
-      Future requests for this page will get an m_o_data_error (EIO)
-   TWO 2 BIT ERROR CODES - ERROR and NEXTERROR
-      NEXTERROR - only set if m_o_data_unlock gets an error from pager_unlock_page(), in which
-         case libpager answers the unlock with a m_o_lock_request (the flush varient) and expects
-         an upcoming m_o_data_request (for write access) to be answered with m_o_data_error
-      ERROR - set to EIO as a result of a read error (actual error code is discarded)
-         an unlock error will get propagated from NEXTERROR to ERROR
-         pager_get_error() will report error back to filesystem
-}
-
 NEW PSEUDOCODE
 
 m_o_data_request: (kernel requesting a single page)
 
-  if the page is PAGINGOUT, add requesting client to WAITLIST and do nothing except NEXTERROR handling
-  if WAITLIST is not empty, add requesting client to WAITLIST and do nothing except NEXTERROR handling
-  if the page is flagged with a NEXTERROR and WRITE ACCESS WAS REQUESTED, send a m_o_data_error message,
-        move NEXTERROR to ERROR, and clear NEXTERROR
-     NEXTERROR needs be a list of errors and clients to send them to (or does it?)
-     if write access was not requested, ignore NEXTERROR
-  if this client is already on ACCESSLIST, print error message and do nothing
+  if this client is on NEXTERROR list and WRITE ACCESS WAS REQUESTED, send a m_o_data_error message,
+        move NEXTERROR to ERROR, remove the NEXTERROR list entry, and return
+  if the page is PAGINGOUT, add requesting client to WAITLIST and return
+  if WAITLIST is not empty, add requesting client to WAITLIST and return
+  if this client is already on ACCESSLIST, print error message and return
   if another client has WRITE access (WAITLIST is empty), add requesting client to WAITLIST,
-     and send lock request (return data; no reply)
-     if we want read access, this is a lock to remove WRITE permission
-     if we want write access, the lock has to be a flush
-  if WRITE access is requested and other clients have any access, add requesting client to WAITLIST,
-     and send lock requests (asynchronous; reply requested)
-  if ACCESSLIST is empty or READ access is requested and only READ clients are on ACCESSLIST,
-     add this client to ACCESSLIST
-  unlock pager
-  read the page (if we just put this client on ACCESSLIST) with pager_read_page()
-  if pager_read_page() returned an error, mark page with ERROR=EIO and return m_o_data_error
-  if no error, send it to kernel with m_o_data_supply and read/write status requested and supplied by filesystem,
-     and clear ERROR
+     send lock request (return data; flush; no reply) and return
+  if WRITE access is requested and ACCESSLIST is not empty (other clients have access),
+     add requesting client to WAITLIST (it's empty),
+     send lock requests (return data; flush; no reply) and return
+  else assert ACCESSLIST is empty or READ access is requested and only READ clients are on ACCESSLIST,
+     add this client to WAITLIST (it's empty)
+     unlock pager
+     read the page with pager_read_page()
+     relock pager
+     if pager_read_page() returned an error, mark page with ERROR=EIO,
+        send m_o_data_error's to everything on WAITLIST and clear WAITLIST
+     if no error, send it to first set on WAITLIST with m_o_data_supply,
+        read/write status requested and supplied by filesystem, and clear ERROR
+        remove those clients from WAITLIST and move them to ACCESSLIST
+        if WAITLIST still has clients on it, send lock requests out to everyone on ACCESSLIST
 
-ISSUE:
+
+RESOLVED ISSUE:
   this logic could cause multiple overlapping calls to pager_read_page() if a bunch of clients
     request READ access near simultaneously
 
@@ -369,38 +391,69 @@ RACE CONDITION:
   do nothing, since client B wouldn't have sent unlock request if it had already received lock request,
     so it will interpret the lock request as an answer to the unlock request
 
-m_o_lock_completed:
+m_o_lock_completed: (external variant)
+  m_o_lock_completed could have been sent in response to a fs flush, sync, return
   find lock in list of lock requests, decrement locks_pending, wake up waiter if no more locks_pending or pending_writes
-  if lock corresponds to a single page, find it in the pagetable
-    m_o_lock_completed could have been sent in response to a LOCKWAIT, or a fs flush, sync, return (can't tell which)
-    if this client had WRITE access, print error (should have used m_o_data_return instead of m_o_lock_completed)
-    otherwise, remove client from ACCESSLIST
-      if ACCESSLIST is empty, use m_o_data_supply to supply first set of WAITLIST clients
-        and move those clients to ACCESSLIST
-        (a client with no access requested WRITE access and had to wait for other clients to flush)
-      if ACCESSLIST has a single client with READ access and it's also the first client on WAITLIST requesting WRITE access,
-        call pager_unlock_page()
-        no error -> send m_o_lock_object (no reply), remove it from WAITLIST,
-           and upgrade its ACCESSLIST entry to reflect WRITE access
-        error -> send m_o_data_lock (flush variant, no reply)
-        (a client with READ access requested WRITE access and had to wait for other clients with READ access to flush)
-      otherwise, if ACCESSLIST has multiple clients, or a single client that's not first on WAITLIST,
-        then we're still waiting for them to answer their locks, so do nothing
-      what if WAITLIST still has clients on it after sending messages?
-         [ ] use a timeout before sending more lock requests?
-         [X] send them right away to let the kernel know we want these pages right back?
+
+m_o_lock_completed: (internal flush variant)
+  ... do all this for each page ...
+  [ if this client had WRITE access, print error (should have used m_o_data_return instead of m_o_lock_completed) ]
+  if this client isn't on ACCESSLIST, return (m_o_data_return already processed the data)
+  remove client from ACCESSLIST
+  if ACCESSLIST is empty but WAITLIST is not, prepare to read page
+    unlock pager
+    read the page with pager_read_page()
+    relock pager
+    if pager_read_page() returned an error, mark page with ERROR=EIO and send m_o_data_error to everything on WAITLIST
+       (XXX then do what with them?)
+    if no error, send it to first set on WAITLIST with m_o_data_supply,
+       read/write status requested and supplied by filesystem,
+       and clear ERROR
+    use m_o_data_supply to supply first set of WAITLIST clients
+    and move those clients to ACCESSLIST
+    (a client with no access requested WRITE access and had to wait for other clients to flush)
+  if ACCESSLIST has a single client with READ access and it's also the first client on WAITLIST requesting WRITE access,
+    call pager_unlock_page()
+    no error -> send m_o_lock_object (no reply), remove it from WAITLIST,
+       and upgrade its ACCESSLIST entry to reflect WRITE access
+    error -> send m_o_data_lock (flush variant, no reply), remove this client from WAITLIST and ACCESSLIST,
+       and put this client and error on NEXTERROR list
+    (a client with READ access requested WRITE access and had to wait for other clients with READ access to flush)
+  otherwise, if ACCESSLIST has multiple clients, or a single client that's not first on WAITLIST,
+    then we're still waiting for them to answer their locks, so do nothing
+  what if WAITLIST still has clients on it after sending messages?
+     [ ] use a timeout before sending more lock requests?
+     [X] send them right away to let the kernel know we want these pages right back?
+
+RACE CONDITION: (not sure about this - idea is to trigger something very similar to what is matched in above code)
+  client A has WRITE access
+  client B requests READ access
+  lock request is sent to client A
+  client A returns page with data_return, and client B gets the data and goes on ACCESSLIST
+  client B returns the data and is removed from ACCESSLIST
+  client C requests READ access, goes on WAITLIST and a pager_read_page() starts
+  client A's lock completed message is processed, triggering a second pager_read_page(), since ACCESSLIST is empty
 
 
 m_o_data_unlock: (kernel requesting write access when it's already got read access)
+  lock pager
   ASSERT: this client already on ACCESSLIST with read access
-  routine itself never locks pager (but lock_object does)
-  if WAITLIST is not empty, do nothing (we're already trying to flush everything on ACCESSLIST)
-  if there's other clients on ACCESSLIST, send lock requests to other clients (flush; async; reply requested)
-  otherwise, call pager_unlock_page()
+  if WAITLIST is not empty, add client to WAITLIST for WRITE and return
+    (we're already trying to flush everything on ACCESSLIST)
+  otherwise, if there's other clients on ACCESSLIST, add client to WAITLIST for WRITE (it's empty)
+    and send lock requests to other clients (flush; async; reply requested) and return
+  otherwise, we're the only client on ACCESSLIST and WAITLIST is empty:
+    add client to WAITLIST for WRITE
+    unlock pager
+    call pager_unlock_page()
+    relock pager
     no error -> answer with m_o_data_lock (lock_object; not synchronous)
-    error -> answer with m_o_data_lock (lock_object; flush variant; not synchronous)
+       remove this client from WAITLIST and update its ACCESSLIST entry to WRITE access
+    error -> answer with m_o_data_lock (lock_object; flush variant; not synchronous),
+       remove this client from WAITLIST and ACCESSLIST
+       add this client and error to NEXTERROR list
 
-ISSUE: if multiple clients with READ access attempt to unlock near simultaneously, this
+RESOLVED ISSUE: if multiple clients with READ access attempt to unlock near simultaneously, this
   logic will trigger multiple lock requests (a set for each client attempting to unlock)
 
 lock_object: (several types: flush, sync, return, response to an unlock request)
@@ -423,33 +476,34 @@ m_o_data_return: (kernel returning pages)
      because it doesn't indicate if the kernel still maintains WRITE access)
   npages = length / __vm_page_size;
   pm_entries points to 'npages' entries in pagemap
-  if any of the pages are flagged PAGINGOUT, flag them WRITEWAIT and wait to be signaled that they're paged out
+  if kernel_copy is false:
+    remove this client from ACCESSLIST (ASSERT: ACCESSLIST should now be empty)
+    ASSERT: this client is not on WAITLIST (it had WRITE access, so there's nothing for it to wait for)
+    if WAITLIST is not empty:
+      use m_o_data_supply to supply first set of WAITLIST clients
+      remove those clients from WAITLIST and move them to ACCESSLIST
+      if WAITLIST still has clients on it, send lock requests out to everyone on ACCESSLIST
+      return
+  if any of the pages are flagged PAGINGOUT, put this message's data on WRITEWAIT list and return
      (kernel can sync pages at will; multiple syncs could be concurrent)
   flag all these pages PAGINGOUT
   if any locks are pending on these pages, increment pending_writes in the lock request
   unlock the pager
   call pager_write_page() on all the pages
   reacquire the pager lock
-  if any of the pages are now flagged WRITEWAIT, signal the condition variable
-  if any of the pager_write_page() calls returned error and are not flagged PAGEINWAIT, mark those pages INVALID
-  if any of the pages are flagged PAGEINWAIT, transmit them in a m_o_data_supply message
+  if any of the pages have data on WRITEWAIT list, go back to pager_write_page() with that data
+  clear PAGINGOUT flags
+  if any of the pager_write_page() calls returned error and WAITLIST is empty, mark those pages INVALID
+  if WAITLIST is not empty:
+    use m_o_data_supply to supply first set of WAITLIST clients
+    remove those clients from WAITLIST and move them to ACCESSLIST
+    if WAITLIST still has clients on it, send lock requests out to everyone on ACCESSLIST
   for the lock requests we incremented pending_writes on, decrement pending_writes, and signal wakeup
     if there's no more pending_writes or locks_pending
   if client requested notify_on_evict, call pager_notify_evict() for any pages that were evicted and
     didn't get shipped back out in an m_o_data_supply message, and clear their ERRORs and NEXTERRORs
 
 
-  if the first client on WAITLIST is requesting READ access,
-    then the lock request was only to revoke WRITE access
-    re-flag this client on ACCESSLIST with READ access
-    use m_o_data_supply to supply first set of WAITLIST clients (all requesting READ access)
-    remove those clients from WAITLIST and move them to ACCESSLIST
-  otherwise, the first client on WAITLIST is requesting WRITE access
-    ASSERT: kernel_copy is false
-    remove this client from ACCESSLIST (ASSERT: ACCESSLIST should now be empty)
-    use m_o_data_supply to supply first WAITLIST client (requesting WRITE access)
-    move that client from WAITLIST to ACCESSLIST
-  if WAITLIST still has clients on it, send lock requests out to everyone on ACCESSLIST
 
 
 ISSUES:
@@ -483,3 +537,37 @@ RACE CONDITION:
                   so this doesn't work if client B is requesting READ access and the lock
                   request is only to revoke WRITE access
   [X] SOLUTION 2: when we request a flush, wait for a lock_completed message
+
+USEFUL CHANGES TO THE KERNEL:
+  - m_o_data_return could specify what permissions the kernel still holds on the page.  Then
+    we could easily downgrade from WRITE to READ access without waiting for a lock completed
+    message, or (like the current code), never downgrading from WRITE to READ.
+  - m_o_lock_completed message could specify what kind of lock was completed, avoiding the
+    need to match reply ports to lock messages unless (like the current code), we just
+    wait for all outstanding locks to complete before continuing with any of them.
+  - libpager could use the ability to request a copy of a unmodified, un-precious page from the kernel,
+    so it can serve out the page to other nodes without reading again from the disk
+  - ability to notify memory manager when a non-precious page has been evicted
+    (over the network, precious is heavy weight just to get notification that a page has been evicted)
+
+
+PRECIOUS PAGES
+
+Flagging a page precious (so the kernel always returns it to us) isn't that big a deal
+for a local client, because "returning the page" just means flipping bits in the VM tables,
+but it's a lot heavy operation for a remote client, since the page will be transmitted
+across the network unnecessarily.
+
+Flagging all of our pages "precious" is tempting.  It provides us with a mechanism
+for retrieving a local, in-memory page that we want to serve out over the network
+without having to read it again from disk.  It also simplifies the lock completed
+logic, since we don't have to worry about whether the page got returned or not
+when we get the lock completed message - precious pages always get returned.
+
+NOTE!
+
+pager_flush() and pager_flush_some() discard dirty pages!
+
+pager_return() and pager_return_some() flush and return dirty (and precious) pages.
+
+pager_sync() and pager_sync_some() return dirty (and precious) pages but don't flush.
