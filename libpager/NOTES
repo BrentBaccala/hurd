@@ -538,6 +538,7 @@ RACE CONDITION:
                   request is only to revoke WRITE access
   [X] SOLUTION 2: when we request a flush, wait for a lock_completed message
 
+
 USEFUL CHANGES TO THE KERNEL:
   - m_o_data_return could specify what permissions the kernel still holds on the page.  Then
     we could easily downgrade from WRITE to READ access without waiting for a lock completed
