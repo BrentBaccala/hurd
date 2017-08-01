@@ -180,7 +180,8 @@ public:
     switch (name)
       {
       case MACH_MSG_TYPE_BIT:
-        assert(0);
+        /* used for boolean arguments */
+        return *ptr & 1;
 
       case MACH_MSG_TYPE_CHAR:
       case MACH_MSG_TYPE_INTEGER_8:
@@ -238,6 +239,8 @@ public:
     : hdr(hdr), ptr(reinterpret_cast<int8_t *>(hdr + 1))
   {
   }
+
+  /* return true if it points to valid message data; ++ incrementing past end of message turns it false */
 
   operator bool()
   {
@@ -298,6 +301,8 @@ public:
       }
   }
 
+  /* This operator[] accesses elements within a data item */
+
   unsigned int operator[] (int i)
   {
     assert(elemsize_bits() % 8 == 0);
@@ -328,7 +333,7 @@ public:
       }
   }
 
-  const mach_msg_iterator & operator++()
+  mach_msg_iterator & operator++()
   {
     ptr += header_size() + (is_inline() ? data_size() : sizeof(void *));
     return *this;
@@ -365,6 +370,15 @@ public:
   mach_msg_header_t * operator-> () { return msg; }
 
   mach_msg_iterator data(void) { return mach_msg_iterator(msg); }
+
+  mach_msg_iterator operator[] (int i)
+  {
+    mach_msg_iterator result = data();
+    while (i--) {
+      ++ result;
+    }
+    return result;
+  }
 };
 
 /***** TEST ROUTINES *****/
@@ -630,6 +644,9 @@ main (int argc, char **argv)
   assert((msg->msgh_id == 2090) || (msg->msgh_id == 2093)); /* memory_object_data_supply (2093) */
 
   if (msg->msgh_id == 2093) {
+
+    printf("m_o_data_supply: offset = %d, length = %d, lock_value = %d; precious = %d\n",
+           msg[0][0], msg[1].data_size(), msg[2][0], msg[3][0]);
 
     /* send an unlock request */
 

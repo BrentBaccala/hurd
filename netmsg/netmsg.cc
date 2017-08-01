@@ -403,7 +403,7 @@ public:
     switch (name)
       {
       case MACH_MSG_TYPE_BIT:
-        assert(0);
+        return *ptr & 1;
 
       case MACH_MSG_TYPE_CHAR:
       case MACH_MSG_TYPE_INTEGER_8:
@@ -551,7 +551,7 @@ public:
       }
   }
 
-  const mach_msg_iterator & operator++()
+  mach_msg_iterator & operator++()
   {
     ptr += header_size() + (is_inline() ? data_size() : sizeof(void *));
     return *this;
@@ -588,6 +588,15 @@ public:
   mach_msg_header_t * operator-> () { return msg; }
 
   mach_msg_iterator data(void) { return mach_msg_iterator(msg); }
+
+  mach_msg_iterator operator[] (int i)
+  {
+    mach_msg_iterator result = data();
+    while (i--) {
+      ++ result;
+    }
+    return result;
+  }
 };
 
 /* We use this unused bit in the Mach message header to indicate that
