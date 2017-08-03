@@ -68,21 +68,22 @@ extern "C" {
  * (that's the preprocessor trick).
  */
 
-void
+kern_return_t
 _mach_call(int line, kern_return_t err, std::set<kern_return_t> ignores)
 {
   if ((err != KERN_SUCCESS) && (ignores.count(err) == 0))
     {
       while (fprintf(stderr, "%s:%d %s\n", __FILE__, line, mach_error_string(err)) == -1);
     }
+  return err;
 }
 
 template<typename... Args>
-void
+kern_return_t
 _mach_call(int line, kern_return_t err, Args... rest)
 {
   std::set<kern_return_t> ignores{rest...};
-  _mach_call(line, err, ignores);
+  return _mach_call(line, err, ignores);
 }
 
 #define mach_call(...) _mach_call(__LINE__, __VA_ARGS__)
