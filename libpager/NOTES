@@ -737,7 +737,8 @@ translator operations:
 1 2 3 can be synchronous or asynchronous
 
 Test for BUG 1:
-  A2 T4 (the read completes) T3 T3 T3 A5 A5 A5 (the syncs are processed) T4 T4 T4 (the writes complete)
+  A2 T4 (the read completes) A5 (the data_supply is processed)
+    T3 T3 T3 (the syncs) A5 A5 A5 (the syncs are processed) T4 T4 T4 (the writes complete)
 
 client_request_read_access(client, start_page, end_page)
   ASSERT: page absent in client
