@@ -645,8 +645,8 @@ main (int argc, char **argv)
 
   if (msg->msgh_id == 2093) {
 
-    printf("m_o_data_supply: offset = %d, length = %d, lock_value = %d; precious = %d\n",
-           msg[0][0], msg[1].data_size(), msg[2][0], msg[3][0]);
+    printf("m_o_data_supply: offset = %d, data @ 0x%08x, length = %d, lock_value = %d; precious = %d\n",
+           msg[0][0], msg[1].data(), msg[1].data_size(), msg[2][0], msg[3][0]);
 
     /* send an unlock request */
 
