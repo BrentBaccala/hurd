@@ -739,6 +739,25 @@ translator operations:
 Test for BUG 1:
   A2 T4 (the read completes) T3 T3 T3 A5 A5 A5 (the syncs are processed) T4 T4 T4 (the writes complete)
 
+client_request_read_access(client, start_page, end_page)
+  ASSERT: page absent in client
+  sends m_o_data_request
+client_request_write_access(client, start_page, end_page)
+  ASSERT: page absent in client
+  sends m_o_data_request
+client_request_unlock(client, start_page, end_page)
+  ASSERT: page present in client with read access
+  sends m_o_data_unlock
+client_flush(client, start_page, end_page)
+  ASSERT: pages present
+  if pages have WRITE access, modify data and data_return
+  if pages have READ access and are precious, data_return
+client_service_message(client)
+  read message
+  data_supply - save pointers, read/write and precious (reply if requested)
+  data_lock - send messages, update pointers, reply if requested
+  data_error - ??
+
 Test for BUG 3: (one client, two pages A and B)
   AB2 T4 (the read completes) TA3 A5 (the sync is processed) TAB2 A5 (the sync is processed)
     B2 (page request) T4 (the read completes)
