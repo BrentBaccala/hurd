@@ -247,7 +247,21 @@ public:
       break;
 
     case 2044: /* memory_object_lock_request */
+      printf("m_o_lock_request: offset = %d, size = %d, should_return = %d, should_flush = %d, lock_value = %d, reply = %d\n",
+             msg[0][0], msg[1][0], msg[2][0], msg[3][0], msg[4][0], msg[5][0]);
+
       /* data_lock - send messages, update pointers, reply if requested */
+      assert(msg[0][0] % page_size == 0);
+      assert(msg[1][0] % page_size == 0);
+      if (msg[2][0]) { /* should_return */
+        int page = msg[0][0] / page_size;
+        int dirty = 1;
+        int kcopy = 1;
+        printf("returning data\n");
+        (*((int *) (pageptrs[page].ptr))) ++;
+        mach_call(memory_object_data_return(memobj, memory_control, msg[0][0], (vm_offset_t) pageptrs[page].ptr, msg[1][0], dirty, kcopy));
+      }
+      break;
 
     case 2090: /* memory_object_data_error */
       /* data_error - ?? */
@@ -265,7 +279,7 @@ void test_bug1(void)
   cl.request_write_access(0, 0);
   translator_complete_operation();
   cl.service_message();
-#if 0
+
   pager_sync(pager, 0);
   pager_sync(pager, 0);
   pager_sync(pager, 0);
@@ -275,7 +289,10 @@ void test_bug1(void)
   translator_complete_operation();
   translator_complete_operation();
   translator_complete_operation();
-#endif
+
+  /* pager_shutdown() will trigger a sync and a flush, synchronous, that we can't handle */
+  /* pager_shutdown(pager); */
+  sleep(1);
 }
 
 
@@ -361,14 +378,24 @@ error_t pager_write_page (struct user_pager_info *PAGER,
      PAGE.  In addition, 'vm_deallocate' (or equivalent) BUF.  The only
      permissible error returns are 'EIO', 'EDQUOT', and 'ENOSPC'.
   */
-  return EIO;
+  printf("pager_write_page() buf[0]=%d\n", *(int *)BUF);
+  assert (*(int *)BUF >= *(int *)buffer);
+  memcpy(buffer, (void *) BUF, __vm_page_size);
+
+  translator_suspend_operation();
+
+  return ESUCCESS;
+  /* return EIO; */
 }
 
 error_t pager_unlock_page (struct user_pager_info *PAGER,
           vm_offset_t ADDRESS)
 {
-     /* A page should be made writable. */
-  return EIO;
+  /* A page should be made writable. */
+
+  translator_suspend_operation();
+
+  return ESUCCESS;
 }
 
 error_t pager_report_extent

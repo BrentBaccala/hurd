@@ -188,7 +188,7 @@ lock_object: (several types: flush, sync, return, response to an unlock request)
 m_o_lock_completed:
   find lock in list of lock requests, decrement locks_pending, wake up waiter if no more locks_pending or pending_writes
 
-BUG IN CURRENT CODE:
+BUG IN CURRENT CODE (NOT):
   client has WRITE access and page is being actively changed
   pager_write() is relatively slow
   pager_sync() is called asynchronously three times in rapid succession
@@ -198,6 +198,9 @@ BUG IN CURRENT CODE:
   first pager_write finishes, sees WRITEWAIT, and wakes other two threads
   which one goes first?  coin flip
   thus, there's a chance that the second and third m_o_return_data's will be processed in reverse order
+  actually, current implementation avoids this problem
+    The second and third m_o_return_data's are both queued by the demuxer and don't
+    get serviced until the first one finishes.  Then they are processed in order.
 
 BUG IN CURRENT CODE:
   m_o_data_supply is called in data-return.c with precious = 0, instead of notify_on_evict
