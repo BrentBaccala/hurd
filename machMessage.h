@@ -69,24 +69,24 @@ extern "C" {
  */
 
 kern_return_t
-_mach_call(int line, kern_return_t err, std::set<kern_return_t> ignores)
+_mach_call(const char * file, int line, kern_return_t err, std::set<kern_return_t> ignores)
 {
   if ((err != KERN_SUCCESS) && (ignores.count(err) == 0))
     {
-      while (fprintf(stderr, "%s:%d %s\n", __FILE__, line, mach_error_string(err)) == -1);
+      while (fprintf(stderr, "%s:%d %s\n", file, line, mach_error_string(err)) == -1);
     }
   return err;
 }
 
 template<typename... Args>
 kern_return_t
-_mach_call(int line, kern_return_t err, Args... rest)
+_mach_call(const char *file, int line, kern_return_t err, Args... rest)
 {
   std::set<kern_return_t> ignores{rest...};
-  return _mach_call(line, err, ignores);
+  return _mach_call(file, line, err, ignores);
 }
 
-#define mach_call(...) _mach_call(__LINE__, __VA_ARGS__)
+#define mach_call(...) _mach_call(__FILE__, __LINE__, __VA_ARGS__)
 
 /* class mach_msg_iterator
  *
