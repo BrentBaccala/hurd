@@ -109,7 +109,7 @@ void translator_complete_operation(void)
 void translator_suspend_operation(void)
 {
   pthread_mutex_lock (&mutex);
-  if (operations == 0) {
+  while (operations == 0) {
     pthread_cond_wait (&cond, &mutex);
   }
   operations --;
@@ -166,9 +166,9 @@ public:
       assert(page >= pageptrs.size() || pageptrs[page].ptr == nullptr);
     }
     /* sends m_o_data_request */
-    memory_object_data_request(memobj, memory_control,
-                               start_page * page_size, (end_page - start_page + 1) * page_size,
-                               VM_PROT_READ);
+    mach_call(memory_object_data_request(memobj, memory_control,
+                                         start_page * page_size, (end_page - start_page + 1) * page_size,
+                                         VM_PROT_READ));
   }
 
   void request_write_access(int start_page, int end_page)
@@ -185,44 +185,66 @@ public:
 
   void request_unlock(int start_page, int end_page)
   {
-    /* ASSERT: page present in client with read access */
+    /* ASSERT: page present in client without write access */
     for (int page = start_page; page <= end_page; page ++) {
-      assert(pageptrs[page].ptr == nullptr);
+      assert(page < pageptrs.size() && pageptrs[page].ptr != nullptr && !(pageptrs[page].access & VM_PROT_WRITE));
     }
     /* sends m_o_data_unlock */
-    memory_object_data_request(memobj, memory_control,
-                               start_page * page_size, (end_page - start_page + 1) * page_size,
-                               VM_PROT_READ | VM_PROT_WRITE);
+    mach_call(memory_object_data_unlock(memobj, memory_control,
+                                        start_page * page_size, (end_page - start_page + 1) * page_size,
+                                        VM_PROT_READ | VM_PROT_WRITE));
   }
 
   void flush(int start_page, int end_page)
   {
-    /* ASSERT: pages present in client */
-    for (int page = start_page; page <= end_page; page ++) {
-      assert(pageptrs[page].ptr != nullptr);
-    }
     /* if pages have WRITE access, modify data and data_return */
     /* if pages have READ access and are precious, data_return */
-    memory_object_data_request(memobj, memory_control,
-                               start_page * page_size, (end_page - start_page + 1) * page_size,
-                               VM_PROT_READ | VM_PROT_WRITE);
+
+    int dirty = (pageptrs[start_page].access & VM_PROT_WRITE);
+    int kcopy = 0;
+
+    /* ASSERT: pages present in client */
+    for (int page = start_page; page <= end_page; page ++) {
+      assert(page < pageptrs.size() && pageptrs[page].ptr != nullptr);
+      if ((pageptrs[start_page].access != pageptrs[page].access)
+          || (pageptrs[start_page].precious != pageptrs[page].precious)) {
+        /* not all pages in the range might have the same permissions, so use recursion to break them up */
+        flush(start_page, page-1);
+        start_page = page;
+      }
+      /* increment integer at beginning of each page to track out-of-sequence writes */
+      if (dirty) {
+        (*((int *) (pageptrs[page].ptr))) ++;
+      }
+    }
+
+    if (dirty || pageptrs[start_page].precious)
+      mach_call(memory_object_data_return(memobj, memory_control,
+                                          start_page * page_size, (vm_offset_t) pageptrs[start_page].ptr,
+                                          (end_page - start_page + 1) * page_size,
+                                          dirty, kcopy));
+    for (int page = start_page; page <= end_page; page ++) {
+      /* XXX leaks memory; should deallocate here */
+      pageptrs[page].ptr = nullptr;
+    }
   }
 
   void service_message(void)
   {
     machMessage msg;
 
-    printf("client service_message\n");
+    printf("client service_message %x\n", &msg);
     /* read message */
 
-    if (mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+    kern_return_t err;
+    if ((err = mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                              0, msg.max_size, memory_control,
-                             timeout, MACH_PORT_NULL))
-        == (err_ipc | KERN_TIMEDOUT)) {
+                             timeout, MACH_PORT_NULL)))
+        == 0x10004003 /* ipc/rcv timed out */ ) {
       return;
     }
 
-    printf("%d %d\n", msg->msgh_size, msg->msgh_id);
+    printf("%d %d %x\n", msg->msgh_size, msg->msgh_id, err);
 
     switch (msg->msgh_id) {
     case 2094: /* memory_object_ready */
@@ -236,7 +258,8 @@ public:
 
       /* data_supply - save pointers, read/write and precious (reply if requested) */
 
-      for (int page = 0; page < msg[1].data_size() / page_size; page ++) {
+      for (int i = 0; i < msg[1].data_size() / page_size; i ++) {
+        int page = msg[0][0] / page_size + i;
         /* ASSERT: page absent in client */
         assert(page >= pageptrs.size() || pageptrs[page].ptr == nullptr);
         if (page >= pageptrs.size()) pageptrs.resize(page+1);
@@ -256,15 +279,32 @@ public:
       if (msg[2][0]) { /* should_return */
         int page = msg[0][0] / page_size;
         int dirty = 1;
-        int kcopy = 1;
-        printf("returning data\n");
-        (*((int *) (pageptrs[page].ptr))) ++;
-        mach_call(memory_object_data_return(memobj, memory_control, msg[0][0], (vm_offset_t) pageptrs[page].ptr, msg[1][0], dirty, kcopy));
+        int kcopy = msg[3][0];
+        if (page < pageptrs.size() && pageptrs[page].ptr != nullptr) {
+          // XXX only increments first page
+          (*((int *) (pageptrs[page].ptr))) ++;
+          mach_call(memory_object_data_return(memobj, memory_control, msg[0][0], (vm_offset_t) pageptrs[page].ptr, msg[1][0], dirty, kcopy));
+        }
       }
+      if (msg[3][0]) {
+        // flush();
+        for (int i = 0; i < msg[1][0] / page_size; i ++) {
+          int page = msg[0][0] / page_size + i;
+          if (page < pageptrs.size() && pageptrs[page].ptr != nullptr) {
+            // XXX seems to generate seg faults
+            // mach_call(vm_deallocate(mach_task_self(), (vm_address_t) pageptrs[page].ptr, page_size));
+            pageptrs[page].ptr = nullptr;
+          }
+        }
+      }
+      /* XXX reply */
       break;
 
     case 2090: /* memory_object_data_error */
+      printf("m_o_data_error: offset = %d, size = %d, reason = 0x%x\n",
+             msg[0][0], msg[1][0], msg[2][0]);
       /* data_error - ?? */
+      break;
 
     default:
       printf("unknown message\n");
@@ -295,6 +335,113 @@ void test_bug1(void)
   sleep(1);
 }
 
+void test_bug3(void)
+{
+  client cl;  /* creating the client does the m_o_init / m_o_ready exchange */
+
+  cl.request_write_access(0, 1);   /* old code: error here, as it doesn't support multi-page operations */
+  //translator_complete_operation();   /* old code: never attempts the read that would be completed here */
+  //cl.service_message();            /* old code: no m_o_data_supply, so timeout */
+
+  /* sync page 0 */
+  pager_sync_some(pager, 0, __vm_page_size, 0);  /* old code: sends lock request even though no pages outstanding */
+  /* service the lock request message; send the data return (old code: no data return) */
+  cl.service_message();
+  /* libpager gets the data return and starts the page write (old code: doesn't happen) */
+
+  /* return both pages and service the lock request */
+  pager_return(pager, 0);
+  cl.service_message();
+
+  /* request page 1 back (starts a page_read_page) */
+  cl.request_write_access(1, 1);
+
+  //translator_complete_operation();  /* complete the page 0 write */
+  //translator_complete_operation();  /* complete the page 0/1 write */
+  translator_complete_operation();  /* complete the page 1 read */
+
+  cl.service_message();  /* service the page 1 data supply */
+}
+
+void test_bug3a(void)
+{
+  /* "Test" bug 3 in a way compatible with the old code */
+
+  client cl;  /* creating the client does the m_o_init / m_o_ready exchange */
+
+  cl.request_write_access(0, 0);   /* old code: doesn't support multi-page operations */
+  cl.request_write_access(1, 1);
+  translator_complete_operation(); /* complete the reads */
+  translator_complete_operation();
+  cl.service_message();            /* service m_o_data_supply */
+  cl.service_message();            /* service m_o_data_supply */
+
+  /* sync page 0 */
+  pager_sync_some(pager, 0, __vm_page_size, 0);
+  /* service the lock request message; send the data return */
+  cl.service_message();
+  /* libpager gets the data return and pager_write_page starts */
+
+  /* return both pages and service the lock request */
+  pager_return(pager, 0);
+  cl.service_message();
+
+  /* request page 1 back (demux blocks) */
+  cl.request_write_access(1, 1);
+
+  translator_complete_operation();  /* complete the page 0 write */
+  translator_complete_operation();  /* complete the page 0/1 writes */
+  translator_complete_operation();
+  translator_complete_operation();  /* complete the page 1 read */
+
+  cl.service_message();   /* service the page 1 data supply */
+}
+
+/* test_bug3a would segfault if pager_read_page() didn't return
+ * page-aligned memory.  From the gnumach info file:
+ *
+ *   Out-of-line memory has a deallocate option, controlled by the
+ *   'msgt_deallocate' bit.  If it is 'TRUE' and the out-of-line memory
+ *   region is not null, then the region is implicitly deallocated from the
+ *   sender, as if by 'vm_deallocate'.  In particular, the start and end
+ *   addresses are rounded so that every page overlapped by the memory region
+ *   is deallocated.
+ *
+ * Looks like two requests are needed.  The m_o_data_supply deallocates too
+ * much memory (according to the docs above) if the memory isn't page-aligned.
+ */
+
+void test_bug3b(void)
+{
+  mach_port_t port;
+
+  mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &port));
+
+  mach_call (mach_port_insert_right (mach_task_self (), port, port,
+                                     MACH_MSG_TYPE_MAKE_SEND));
+
+  vm_address_t page1;
+  vm_address_t page2;
+
+  // using posix_memalign instead of malloc fixed the problem
+  //page1 = (vm_address_t) malloc(__vm_page_size);
+  //page2 = (vm_address_t) malloc(__vm_page_size);
+  posix_memalign((void **) &page1, __vm_page_size, __vm_page_size);
+  posix_memalign((void **) &page2, __vm_page_size, __vm_page_size);
+
+  //fprintf(stderr, "page1=0x%x page2=0x%x\n", page1, page2);
+  mach_call(memory_object_data_supply (port, 0, page1, __vm_page_size, 1, VM_PROT_NONE, 0, MACH_PORT_NULL));
+  mach_call(memory_object_data_supply (port, 0, page2, __vm_page_size, 1, VM_PROT_NONE, 0, MACH_PORT_NULL));
+
+  machMessage msg1;
+  mach_call (mach_msg (msg1, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                       0, msg1.max_size, port,
+                       timeout, MACH_PORT_NULL));
+  machMessage msg2;
+  mach_call (mach_msg (msg2, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                       0, msg1.max_size, port,
+                       timeout, MACH_PORT_NULL));
+}
 
 /***** COMMAND-LINE OPTIONS *****/
 
@@ -346,7 +493,7 @@ static struct argp argp = { options, parse_opt, args_doc, doc, children };
  * memory-backed object that can be used as a testing target.
  */
 
-#define BUFFER_SIZE 4096
+#define BUFFER_SIZE (2*4096)
 
 char buffer[BUFFER_SIZE];
 
@@ -359,13 +506,27 @@ error_t pager_read_page (struct user_pager_info *PAGER,
      provided read-only.  The only permissible error returns are 'EIO',
      'EDQUOT', and 'ENOSPC'.
   */
-  /* return EIO; */
-  void * buf = malloc(__vm_page_size);
+
+  translator_suspend_operation();
+
+  /* libpager only calls pager_report_extent() from pager_flush(),
+   * pager_return(), and pager_sync().  It doesn't check the extent
+   * prior to pager_read_page(), so we must check for overflow here
+   * and return an error.
+   */
+
+  if (PAGE + __vm_page_size > BUFFER_SIZE) {
+    return EIO;
+  }
+
+  //void * buf = malloc(__vm_page_size);
+
+  void * buf;
+  posix_memalign(&buf, __vm_page_size, __vm_page_size);
+
   memcpy(buf, buffer + PAGE, __vm_page_size);
   *BUF = (vm_address_t) buf;
   *WRITE_LOCK = TRUE;
-
-  translator_suspend_operation();
 
   return ESUCCESS;
 }
@@ -378,14 +539,19 @@ error_t pager_write_page (struct user_pager_info *PAGER,
      PAGE.  In addition, 'vm_deallocate' (or equivalent) BUF.  The only
      permissible error returns are 'EIO', 'EDQUOT', and 'ENOSPC'.
   */
-  printf("pager_write_page() buf[0]=%d\n", *(int *)BUF);
-  assert (*(int *)BUF >= *(int *)buffer);
-  memcpy(buffer, (void *) BUF, __vm_page_size);
 
   translator_suspend_operation();
 
+  if (PAGE + __vm_page_size > BUFFER_SIZE) {
+    return EIO;
+  }
+
+  int page = PAGE / __vm_page_size;
+  printf("pager_write_page() page%d[0]=%d\n", page, *(int *)BUF);
+  assert (*(int *)BUF >= *(int *)(buffer + PAGE));
+  memcpy(buffer + PAGE, (void *) BUF, __vm_page_size);
+
   return ESUCCESS;
-  /* return EIO; */
 }
 
 error_t pager_unlock_page (struct user_pager_info *PAGER,
@@ -407,7 +573,7 @@ error_t pager_report_extent
      valid address the pager will accept and the size of the object.
   */
   *OFFSET = 0;
-  *SIZE = __vm_page_size;
+  *SIZE = BUFFER_SIZE;
 
   return ESUCCESS;
 }
@@ -498,7 +664,7 @@ main (int argc, char **argv)
     mach_call (mach_port_insert_right (mach_task_self (), memobj, memobj,
                                        MACH_MSG_TYPE_MAKE_SEND));
 
-    test_bug1();
+    test_bug3a();
   }
 
 #if 0
