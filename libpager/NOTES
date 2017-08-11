@@ -205,7 +205,7 @@ BUG IN CURRENT CODE (NOT):
 BUG IN CURRENT CODE:
   m_o_data_supply is called in data-return.c with precious = 0, instead of notify_on_evict
 
-BUG IN CURRENT CODE:
+BUG IN CURRENT CODE (NOT):
   page 1 is dirty
   pager_sync() is called
   page 1 is returned and begins PAGINGOUT
@@ -214,6 +214,8 @@ BUG IN CURRENT CODE:
   pages 1 and 2 are returned; m_o_data_return sees that page 1 is PAGINGOUT, flags it WRITEWAIT and sleeps
   page 2 is requested by the kernel
   page 2 has no flags set, so a pager_read_page() is started, even though more recent data is waiting to be written
+  currently, serialization in demux prevents this problem, too, as the page 2 data_request won't start
+    processing until the earlier data_return's complete
 
 MISTAKES AND OMISSIONS IN CURRENT INFO DOCUMENTATION:
   - pager_notify() undocumented
