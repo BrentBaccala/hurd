@@ -73,7 +73,7 @@ _mach_call(const char * file, int line, kern_return_t err, std::set<kern_return_
 {
   if ((err != KERN_SUCCESS) && (ignores.count(err) == 0))
     {
-      while (fprintf(stderr, "%s:%d %s\n", file, line, mach_error_string(err)) == -1);
+      while (fprintf(stderr, "%s:%d %x %s\n", file, line, err, mach_error_string(err)) == -1);
     }
   return err;
 }
