@@ -277,29 +277,30 @@ public:
       /* data_lock - send messages, update pointers, reply if requested */
       assert(msg[0][0] % page_size == 0);
       assert(msg[1][0] % page_size == 0);
-      if (msg[2][0]) { /* should_return */
+
+      {
         int dirty = 1;
-        int kcopy = msg[3][0];
+        int should_return = msg[2][0];
+        int should_flush = msg[3][0];
+        int kcopy = ~ should_flush;
         for (int i = 0; i < msg[1][0] / page_size; i ++) {
           int page = msg[0][0] / page_size + i;
           if (page < pageptrs.size() && pageptrs[page].ptr != nullptr) {
-            // XXX returns multiple pages individually, never in a multi-page operation
-            (*((int *) (pageptrs[page].ptr))) ++;
-            mach_call(memory_object_data_return(memobj, memory_control, msg[0][0], (vm_offset_t) pageptrs[page].ptr, page_size, dirty, kcopy));
+            if (should_return) {
+              // XXX returns multiple pages individually, never in a multi-page operation
+              (*((int *) (pageptrs[page].ptr))) ++;
+              mach_call(memory_object_data_return(memobj, memory_control, page * page_size,
+                                                  (vm_offset_t) pageptrs[page].ptr, page_size, dirty, kcopy));
+            }
+            if (should_flush) {
+              // XXX seems to generate seg faults
+              // mach_call(vm_deallocate(mach_task_self(), (vm_address_t) pageptrs[page].ptr, page_size));
+              pageptrs[page].ptr = nullptr;
+            }
           }
         }
       }
-      if (msg[3][0]) {
-        // flush();
-        for (int i = 0; i < msg[1][0] / page_size; i ++) {
-          int page = msg[0][0] / page_size + i;
-          if (page < pageptrs.size() && pageptrs[page].ptr != nullptr) {
-            // XXX seems to generate seg faults
-            // mach_call(vm_deallocate(mach_task_self(), (vm_address_t) pageptrs[page].ptr, page_size));
-            pageptrs[page].ptr = nullptr;
-          }
-        }
-      }
+
       if (msg[5][0] != 0) {
         /* send reply message */
         mach_call(memory_object_lock_completed(msg[5][0], MACH_MSG_TYPE_MOVE_SEND_ONCE, memory_control, msg[0][0], msg[1][0]));
