@@ -26,6 +26,7 @@
 #include <assert.h>
 
 #include <vector>
+#include <thread>
 
 #include "machMessage.h"
 
@@ -277,13 +278,15 @@ public:
       assert(msg[0][0] % page_size == 0);
       assert(msg[1][0] % page_size == 0);
       if (msg[2][0]) { /* should_return */
-        int page = msg[0][0] / page_size;
         int dirty = 1;
         int kcopy = msg[3][0];
-        if (page < pageptrs.size() && pageptrs[page].ptr != nullptr) {
-          // XXX only increments first page
-          (*((int *) (pageptrs[page].ptr))) ++;
-          mach_call(memory_object_data_return(memobj, memory_control, msg[0][0], (vm_offset_t) pageptrs[page].ptr, msg[1][0], dirty, kcopy));
+        for (int i = 0; i < msg[1][0] / page_size; i ++) {
+          int page = msg[0][0] / page_size + i;
+          if (page < pageptrs.size() && pageptrs[page].ptr != nullptr) {
+            // XXX returns multiple pages individually, never in a multi-page operation
+            (*((int *) (pageptrs[page].ptr))) ++;
+            mach_call(memory_object_data_return(memobj, memory_control, msg[0][0], (vm_offset_t) pageptrs[page].ptr, page_size, dirty, kcopy));
+          }
         }
       }
       if (msg[3][0]) {
@@ -297,7 +300,10 @@ public:
           }
         }
       }
-      /* XXX reply */
+      if (msg[5][0] != 0) {
+        /* send reply message */
+        mach_call(memory_object_lock_completed(msg[5][0], MACH_MSG_TYPE_MOVE_SEND_ONCE, memory_control, msg[0][0], msg[1][0]));
+      }
       break;
 
     case 2090: /* memory_object_data_error */
@@ -330,9 +336,21 @@ void test_bug1(void)
   translator_complete_operation();
   translator_complete_operation();
 
-  /* pager_shutdown() will trigger a sync and a flush, synchronous, that we can't handle */
-  /* pager_shutdown(pager); */
-  sleep(1);
+  /* pager_shutdown() will trigger two synchronous locks (a sync and a flush),
+   * so run it on a separate thread
+   */
+  std::thread t([](){
+      pager_shutdown(pager);
+    });
+
+  /* pager_shutdown will first sync.  Service the sync and complete the resulting write */
+  cl.service_message();
+  translator_complete_operation();
+  /* pager_shutdown will then flush (no return).  Service the sync. */
+  cl.service_message();
+
+  /* now wait for the pager_shutdown() */
+  t.join();
 }
 
 void test_bug3(void)
@@ -664,7 +682,7 @@ main (int argc, char **argv)
     mach_call (mach_port_insert_right (mach_task_self (), memobj, memobj,
                                        MACH_MSG_TYPE_MAKE_SEND));
 
-    test_bug3a();
+    test_bug1();
   }
 
 #if 0
