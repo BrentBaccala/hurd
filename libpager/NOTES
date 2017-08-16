@@ -509,9 +509,11 @@ m_o_data_unlock: (kernel requesting write access when it's already got read acce
   alloca() an array of UNLOCK and ERROR flags, one pair for each page in message
   for all pages:
     ASSERT: this client already on ACCESSLIST with read access
-    if WAITLIST is not empty, add client to WAITLIST for WRITE and return
-      (we're already trying to flush everything on ACCESSLIST)
-      XXX: we're trying to flush the client that sent the unlock request!
+    if WAITLIST is not empty, do nothing and return
+      (we're already trying to flush everything on ACCESSLIST, including this client)
+      XXX: are we trying to flush?  always?
+      (if it saw the flush request before sending the unlock, it would never have sent the unlock)
+      (so it hasn't processed the flush yet, and will interpret it as a response to the unlock)
     otherwise, if there's other clients on ACCESSLIST, add client to WAITLIST for WRITE (it's empty)
       and send lock requests to other clients (flush; async; reply requested) and return
     otherwise, we're the only client on ACCESSLIST and WAITLIST is empty:
@@ -770,3 +772,20 @@ Test for BUG 3: (one client, two pages A and B)
     (now we need to close things out and see that data got discarded)
 
 data should always be modified if possible (whenever a client's got WRITE access)
+
+
+WAITLIST is not empty only under one of these conditions:
+
+initial client goes on WRITELIST only when:
+1. page is PAGINGOUT, or
+2. a client has requested any access and another client has WRITE access
+3. a client has requested WRITE access (data request or unlock) and another client has any access
+4. a client is waiting for the page to page in
+
+
+client A has READ access
+client B requests WRITE access, so a flush request gets sent to client A and client B goes on WAITLIST
+   ACCESSLIST: A(read)   WAITLIST: B(for write)
+client A requests WRITE access (unlock request) and goes on WAITLIST
+client A processes flush and requests WRITE access, so goes on WAITLIST again with a data request
+client A is now on WAITLIST twice
