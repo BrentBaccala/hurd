@@ -374,6 +374,16 @@ Richard Braun <rbraun@sceen.net>:
 > in C.
 
 
+CONFIGURATION OPTIONS
+
+- do we write a page back every time we handle it?
+  perhaps always call write_page, and add a flag to write_page indicating that we still have a copy?
+- how long do we let clients hold a page if other clients are waiting for it?
+  currently: 0 (immediately send lock requests)
+  could create deadlock if the kernel returns pages without making any forward progress
+- how do we obtain pages when we can read them from multiple sources?
+  only applies to READ access; local kernel should be preferred
+
 NEW PSEUDOCODE
 
 service_waitlist: (pass in a pagetable pointer, a data pointer/length, a read/write flag, a deallocate flage)
@@ -397,6 +407,7 @@ m_o_data_request: (kernel requesting a single page)
   if WRITE access is requested and ACCESSLIST is not empty (other clients have access),
      add requesting client to WAITLIST (it's empty),
      send lock requests (return data; flush; no reply) and return
+     (we could give out the page with READ access and wait for a unlock request, but I think not)
   else
      (ACCESSLIST is empty or READ access is requested and only READ clients are on ACCESSLIST)
      add this client to WAITLIST (it's empty)
@@ -407,6 +418,11 @@ m_o_data_request: (kernel requesting a single page)
         send m_o_data_error's to everything on WAITLIST and clear WAITLIST
         XXX: client on WAITLIST could have sent an unlock request and be waiting for a lock, not data_error
      if no error, service_waitlist(deallocate=true) (read/write status supplied by filesystem), clear ERROR
+
+ISSUE:
+  client on WAITLIST could have sent an unlock request and be waiting for a lock, not data_error
+  a unlock request will come from a client on ACCESSLIST (for READ) and will have it put on WAITLIST (for WRITE)
+  there could be an outstanding flush if something is already on WAITLIST for WRITE
 
 
 RESOLVED ISSUE:
@@ -509,11 +525,13 @@ m_o_data_unlock: (kernel requesting write access when it's already got read acce
   alloca() an array of UNLOCK and ERROR flags, one pair for each page in message
   for all pages:
     ASSERT: this client already on ACCESSLIST with read access
-    if WAITLIST is not empty, do nothing and return
-      (we're already trying to flush everything on ACCESSLIST, including this client)
-      XXX: are we trying to flush?  always?
+    if WAITLIST contains at least one client waiting for WRITE access, do nothing and return
+      (we're either already trying to flush everything on ACCESSLIST, or will, including this client)
       (if it saw the flush request before sending the unlock, it would never have sent the unlock)
       (so it hasn't processed the flush yet, and will interpret it as a response to the unlock)
+    else if WAITLIST contains only clients waiting for READ access, add client to WAITLIST for WRITE and return
+      (ACCESSLIST contains only READ clients and WAITLIST contains only READ clients)
+      (so we're waiting for a page in to finish, as it will trigger a flush that will answer this unlock)
     otherwise, if there's other clients on ACCESSLIST, add client to WAITLIST for WRITE (it's empty)
       and send lock requests to other clients (flush; async; reply requested) and return
     otherwise, we're the only client on ACCESSLIST and WAITLIST is empty:
@@ -527,10 +545,14 @@ m_o_data_unlock: (kernel requesting write access when it's already got read acce
     if ERROR flag not set:
        answer with m_o_data_lock (lock_object; not synchronous)
        remove this client from WAITLIST and update its ACCESSLIST entry to WRITE access
+       if there are additional clients on WAITLIST:
+          [ ] use a timeout before sending a lock request to this client
+          [X] send a lock request right away to this client
     else (ERROR flag set):
        answer with m_o_data_lock (lock_object; flush variant; not synchronous),
        remove this client from WAITLIST and ACCESSLIST
        add this client and error to NEXTERROR list
+       XXX: deal with other clients on WAITLIST
 
 RESOLVED ISSUE: if multiple clients with READ access attempt to unlock near simultaneously, this
   logic will trigger multiple lock requests (a set for each client attempting to unlock)
@@ -722,7 +744,97 @@ logic, since we don't have to worry about whether the page got returned or not
 when we get the lock completed message - precious pages always get returned.
 
 
-TEST CODE
+initial client goes on WAITLIST only when:
+1. client has requested any access and page is PAGINGOUT, or
+2. client has requested any access and another client has WRITE access
+3. client has requested WRITE access (data request or unlock) and another client has any access
+4. client has requested any access and is waiting for the page to page in
+     READ access requested - only READ clients on ACCESSLIST
+     WRITE access requested - ACCESSLIST empty
+
+additional clients go on WAITLIST when they request almost any access
+additional clients DON'T go on WAITLIST when:
+1. we're sending an immediate m_o_data_error
+2. they're trying to unlock and we anticipate that they'll get a flush soon by virtue of being on ACCESSLIST
+
+Theorem: if WAITLIST is not empty, and both ACCESSLIST and WAITLIST contain only READ clients,
+         then we're waiting for a page in to complete
+Proof: ???
+
+PROBLEM CONDITION:
+client A has READ access
+client B requests READ access
+page in starts; client A on ACCESSLIST; client B goes on WAITLIST (for READ)
+client A requests WRITE access via unlock request
+WAITLIST is not empty, but we're not trying to flush
+--- what should happen? ---
+add client A to WAITLIST for WRITE
+wait for page in to finish; client B gets data and moves to ACCESSLIST
+now A and B are on ACCESSLIST with READ access, and A is on WAITLIST for WRITE
+client B is sent a flush request, after an optional delay
+once client B flushes, client A is unlocked and is sent a lock message
+now A is on ACCESSLIST with WRITE access
+
+...vs...
+
+client A has READ access
+client B requests WRITE access
+flush sent to client A; client A on ACCESSLIST; client B goes on WAITLIST (for WRITE)
+client A requests WRITE access via unlock request
+--- what should happen? ---
+nothing - client A will process the flush as an answer to its unlock request
+after flush is acknowledged, page in starts
+after page in finishes, client B gets data and moves from WAITLIST to ACCESSLIST
+
+if a client is requesting unlock, then it's already on ACCESSLIST for READ
+if anything is on WAITLIST for WRITE, then we're trying to flush  (right?)
+if the only things on WAITLIST are for READ, then we're waiting for a page in
+
+client A has READ access
+client B requests READ access
+page in starts; client A on ACCESSLIST; client B goes on WAITLIST (for READ)
+client C requests WRITE access via data request
+cleint C gets added to WAITLIST (for WRITE)
+client A requests WRITE access via unlock request
+WAITLIST is not empty, and there's a client on it waiting for WRITE, but we're not trying to flush
+--- what should happen? ---
+add client A to WAITLIST for WRITE
+wait for page in to finish; client B gets data and moves to ACCESSLIST
+now A and B are on ACCESSLIST with READ access, and C and A are on WAITLIST for WRITE
+clients A and B are sent a flush request, after an optional delay
+the flush requests answers A's unlock, so it comes off the WAITLIST
+once clients A and B flush, client C gets the data
+client A should re-request WRITE access via data request
+
+... or ...
+
+client A has READ access
+client B requests READ access
+page in starts; client A on ACCESSLIST; client B goes on WAITLIST (for READ)
+client C requests WRITE access via data request
+cleint C gets added to WAITLIST (for WRITE)
+client A requests WRITE access via unlock request
+WAITLIST is not empty, and there's a client on it waiting for WRITE, but we're not trying to flush
+--- what should happen? ---
+nothing - client A will soon get a flush
+wait for page in to finish; client B gets data and moves to ACCESSLIST
+now A and B are on ACCESSLIST with READ access, and C and A are on WAITLIST for WRITE
+clients A and B are sent a flush request, after an optional delay
+once clients A and B flush, client C gets the data
+client A should re-request WRITE access via data request
+
+
+PROBLEM
+
+client A has READ access
+client B requests WRITE access, so a flush request gets sent to client A and client B goes on WAITLIST
+   ACCESSLIST: A(read)   WAITLIST: B(for write)
+client A requests WRITE access (unlock request) and goes on WAITLIST
+client A processes flush and requests WRITE access, so goes on WAITLIST again with a data request
+client A is now on WAITLIST twice
+
+
+**** TEST CODE ****
 
 client operations:
 1. request READ access
@@ -773,19 +885,11 @@ Test for BUG 3: (one client, two pages A and B)
 
 data should always be modified if possible (whenever a client's got WRITE access)
 
+Check:
+[p] pages get written back in-order (though skips are possible)
+[ ] if a page is modified, nobody ever sees an earlier version of it
+[ ] all data requests are properly answered with a data supply or a data error (or data unavailable)
+[ ] all data unlock requests are properly answered with a data lock
+[ ] if a data lock requests a reply, make sure one is received
 
-WAITLIST is not empty only under one of these conditions:
-
-initial client goes on WRITELIST only when:
-1. page is PAGINGOUT, or
-2. a client has requested any access and another client has WRITE access
-3. a client has requested WRITE access (data request or unlock) and another client has any access
-4. a client is waiting for the page to page in
-
-
-client A has READ access
-client B requests WRITE access, so a flush request gets sent to client A and client B goes on WAITLIST
-   ACCESSLIST: A(read)   WAITLIST: B(for write)
-client A requests WRITE access (unlock request) and goes on WAITLIST
-client A processes flush and requests WRITE access, so goes on WAITLIST again with a data request
-client A is now on WAITLIST twice
+p = partially done
