@@ -541,6 +541,7 @@ m_o_data_unlock: (kernel requesting write access when it's already got read acce
   alloca() an array of UNLOCK and ERROR flags, one pair for each page in message
   for all pages:
     ASSERT: this client already on ACCESSLIST with read access
+    ASSERT: PAGINGOUT flag is not set (only should be set if a client had WRITE access)
     if WAITLIST contains at least one client waiting for WRITE access, do nothing and return
       (we're either already trying to flush everything on ACCESSLIST, or will, including this client)
       (if it saw the flush request before sending the unlock, it would never have sent the unlock)
@@ -626,6 +627,10 @@ m_o_data_return: (kernel returning pages)
 
   if pages are dirty:
 
+    ASSERT: if kernel_copy = true, then this client is the only thing on ACCESSLIST
+    ASSERT: if kernel_copy = false, then ACCESSLIST is empty
+      (this client was the only thing on ACCESSLIST, because it had WRITE access to create a dirty page)
+
     [ ] for all pages with empty WAITLISTs and ACCESSLISTs:
         (XXX pager_sync needs to trigger a write even for pages with active clients)
     [X] for all pages in message:
@@ -655,11 +660,17 @@ m_o_data_return: (kernel returning pages)
     for each page we just wrote:
       search WRITEWAIT list for matching pages
       ( can't use PAGEOUT flag because WRITEWAIT list might have changed while pager was unlocked )
-      if none found and WAITLIST is not empty:
+      if something found on WRITEWAIT:
+        ASSERT: kernel_copy is true (else how could there be a later write?)
+        do nothing
+      else if none found and WAITLIST is not empty:
         clear PAGINGOUT
-        service_waitlist (deallocate = false)
-        XXX: what if kernel_copy is true?
-      else
+        (this client had WRITE access because the page was dirty; so everything on WAITLIST is a data request)
+        if kernel_copy is true: send lock request (internal flush variant) (client still has WRITE access)
+           XXX: can this trigger multiple extraneous lock requests?
+        else (kernel_copy is false): service_waitlist (deallocate = false)
+      else (none found and WAITLIST is empty):
+        clear PAGINGOUT
         if kernel_copy is false, set NOTIFY flag and clear ERROR and NEXTERROR
         if ERROR flag is set, flag page INVALID
     munmap() current message
@@ -718,6 +729,15 @@ HOW ABOUT:
      and move them to ACCESSLIST, but send no lock requests
   after pager_write_page(), service any compatible WAITLIST clients and move them to ACCESSLIST
   if there are still outstanding WAITLIST clients, send lock requests to everyone on ACCESSLIST
+
+RACE CONDITION:
+  client A has WRITE access
+  pager_return() is called; a lock request is sent to A
+  client B requests access; a lock request is sent to A
+  client A answers the pager_return's lock request with a data_return (kernel_copy = false; dirty = true)
+  data_return code services WAITLIST and sends data to B
+  second lock requests answers and does nothing since A is no longer on ACCESSLIST
+  should be OK
 
 RACE CONDITION:
   client A has WRITE access
