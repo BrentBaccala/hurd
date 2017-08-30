@@ -19,6 +19,9 @@ pager_return() and pager_return_some() flush and return dirty (and precious) pag
 
 pager_sync() and pager_sync_some() return dirty (and precious) pages but don't flush.
 
+The current kernel implementation seems to request pages one at
+a time, as the process attempts to access them.
+
 If we're servicing a page read-only to multiple clients, where do we
 get the data from?  If our local kernel has a copy, we almost
 certainly want to get it there, since it's just a manner of flipping
@@ -37,12 +40,16 @@ pages around.
 How do we figure out which client is the local kernel?  One possible
 solution is for netmsg to listen on /servers/netmsg for an RPC that
 accepts a send right and identifies which node currently hosts the
-corresponding receive right.  If the kernel uses the same control port
-for all of its pager operations, then we wouldn't have to make this
-query for every memory object; a single ext2fs translator, for
-example, could globally identify the location of all of the control
-ports, one for each node, and this information could be shared amongst
-all of that translator's pager objects.
+corresponding receive right.
+
+[[ the kernel uses different control ports for different memory objects ]]
+
+  If the kernel uses the same control port for all of its pager
+  operations, then we wouldn't have to make this query for every memory
+  object; a single ext2fs translator, for example, could globally
+  identify the location of all of the control ports, one for each node,
+  and this information could be shared amongst all of that translator's
+  pager objects.
 
 DISTRIBUTED LIBPAGER.  We could use a shim process on remote nodes, to
 allow requests for an existing page go to a node that holds a copy of
@@ -109,7 +116,7 @@ TWO 2 BIT ERROR CODES - ERROR and NEXTERROR
       case libpager answers the unlock with a m_o_lock_request (the flush varient) and expects
       an upcoming m_o_data_request (for write access) to be answered with m_o_data_error
    ERROR - set to EIO as a result of a read error (actual error code is discarded)
-      an unlock error will get propagated from NEXTERROR to ERROR
+      an unlock error will get propagated from NEXTERROR to ERROR (actual error code is preserved)
       pager_get_error() will report error back to filesystem
       NEVER ACTUALLY USED BY libpager PROTOCOL ROUTINES
 
@@ -118,6 +125,15 @@ ERRORS
 read error on m_o_data_request - reply with m_o_data_error (EIO) and mark
 write error on m_o_data_return - flag page INVALID unless we can page it right back out again (error code dropped)
 unlock error on m_o_data_unlock - evict the page and report error back on next m_o_data_request
+
+only errors ENOSPC, EIO, and EDQUOT are reported
+
+m_o_data_request - checks for INVALID and NEXTERROR before attempting read
+m_o_data_return - no error checks before attempting write
+m_o_data_unlock - no error checks for attempting unlock
+
+error return from an unlock is propagated through NEXTERROR to ERROR and can retreived via pager_get_error()
+error returns from reads and writes are dropped and become EIO (read) or INVALID (EIO) (write)
 
 misaligned requests / bad length - request is dropped and error logged
 pagemap resize error - data request is ignored
@@ -262,13 +278,100 @@ struct pagemap_entry {
          NEVER ACTUALLY USED BY libpager PROTOCOL ROUTINES
 }
 
-How to maintain the pagemap for a large number of clients?  More than
-32 clients, actually, so that a pointer becomes more efficient than a
-bitmap.  So, each page has a pointer to a structure indicating which
-clients currently hold copies of the page.  We anticipate that many
-pages (say, all the pages in a single shared library) will have the
-same set of clients, so there's one structure for each combination of
-clients, with multiple pages pointing to it.
+PAGEMAP FOR A SMALL NUMBER OF CLIENTS
+
+XXX this won't work because it doesn't preserve ordering of the WAITLIST XXX
+
+Four bits per client - HAS READ ACCESS, HAS WRITE ACCESS, READ ACCESS REQUESTED, WRITE ACCESS REQUESTED
+
+Three bits per client:
+  NO ACCESS
+  HAVE READ ACCESS
+  HAVE READ ACCESS, WRITE ACCESS REQUESTED
+  HAVE WRITE ACCESS
+  READ ACCESS REQUESTED
+  WRITE ACCESS REQUESTED
+
+Four additional bits consume space for one client: PAGINGOUT, INVALID, ERROR (2 bits)
+
+16 bit int - three clients
+32 bit int - seven clients
+64 bit int - fifteen clients
+
+More compact representations
+
+3 bits / no additional bits - 16 bit int - five clients
+                              32 bit int - ten clients
+                              64 bit int - 21 clients
+
+3 bits / four additional bits - 16 bit int - four clients
+                                32 bit int - nine clients
+                                64 bit int - twenty clients
+
+multiple of six - 16 bit int - six clients
+                  32 bit int - twelve clients
+                  64 bit int - 24 clients
+
+
+PAGEMAP FOR A SMALL NUMBER OF CLIENTS (TAKE 2)
+
+client number 0 reserved to indicate an empty list entry
+
+ACCESSLIST:
+  client number plus one bit: READ ACCESS, WRITE ACCESS
+
+WAITLIST:
+  client number plus one bit: READ ACCESS REQUESTED, WRITE ACCESS REQUESTED
+
+ACCESSLIST and WAITLIST both need to hold all clients
+
+3 bit client numbers - 4 bit entries - 7 possible clients
+28 bit ACCESSLIST, 28 bit WAITLIST, plus 4 more bits
+
+
+PAGEMAP FOR A SMALL NUMBER OF CLIENTS (TAKE 3)
+
+ACCESSLIST:
+  client number plus two bits: READ ACCESS, WRITE ACCESS, WRITE ACCESS WITH READ ACCESS REQUESTED, END OF ACCESSLIST
+
+WAITLIST:
+  client number plus one bit: READ ACCESS REQUESTED, WRITE ACCESS REQUESTED
+
+ACCESSLIST and WAITLIST together need to hold all clients, plus one entry for END OF ACCESSLIST
+
+3 bit client numbers - 5 bit entries - 8 possible clients
+(8+1)*5 = 45 bits, plus 4 more bits - 49 bit pagemap
+
+4 bit client numbers - 6 bit entries - 16 possible clients
+(16+1)*5 = 85 bits, plus 4 more - 89 bit pagemap
+
+
+PAGEMAP FOR A SMALL NUMBER OF CLIENTS (TAKE 4)
+
+ACCESSLIST:
+  client number plus one bit: READ ACCESS, WRITE ACCESS
+
+WAITLIST:
+  client number plus one bit: READ ACCESS REQUESTED, WRITE ACCESS REQUESTED
+
+ACCESSLIST and WAITLIST both need to hold all clients
+
+3 bit client numbers - 5 bit entries - 8 possible clients
+(8+1)*5 = 45 bits, plus 4 more bits - 49 bit pagemap
+
+4 bit client numbers - 6 bit entries - 16 possible clients
+(16+1)*5 = 85 bits, plus 4 more - 89 bit pagemap
+
+
+PAGEMAP FOR A LARGE NUMBER OF CLIENTS
+
+How to maintain the pagemap for a large number of clients?  Each page
+has a pointer to a structure indicating which clients currently hold
+copies of the page.  We anticipate that many pages (say, all the pages
+in a single shared library) will have the same set of clients, so
+there's one structure for each combination of clients, with multiple
+pages pointing to it.  Pagemaps can be potentially large, so a pagemap
+entry should be a single pointer.
 
 Each file corresponds to a separate memory object, and separate memory
 objects get separate control ports in the kernel.  A future
@@ -277,37 +380,363 @@ all of its memory objects, allowing libpager to reduce the number of
 these combination structures, if different files have the same usage
 pattern (a program and some of its shared libraries, for example).
 
-What happens when a page gets a new client (or loses one)?  We have to
-search in the structures for the new combination, and create a new
-structure if the desired combination doesn't exist yet.
+Each pagemap entry has an ACCESSLIST and a WAITLIST.  ACCESSLIST is
+unordered; WAITLIST is ordered.  ACCESSLIST is stored sorted.
 
-[[ To speed this process, each structure can maintain pointers to
-accelerate this mapping.  Each structure would have an "add table"
-would maintain mappings like "add client 123 -> structure 0x80fadde0".
-If the "add table" doesn't have an entry, then we need to search all
-the structures to find one.  The problem with this is the need to
-invalidate those pointers when a structure is deallocated.  Keep this
-idea for a future enhancement. ]]
+What happens when either list gets a new client (or loses one)?  We
+have to search in the structures for the new combination, and create a
+new structure if the desired combination doesn't exist yet.
 
-How can we organize the structures?  First, by the number of clients.
-We'll always know how many clients are in the structure we're
-searching for, so if we've got six clients and are adding one, we'll
-search in the seven-client tables.  We can use a hash table or a tree.
+How can we organize the structures?  First, by the number of clients
+on each list.  We'll always know how many clients are in the
+ACCESSLIST we're searching for, so if we've got six ACCESSLIST clients
+and are moving the only client on WAITLIST to ACCESSLIST, we'll search
+in the seven-client ACCESSLIST, zero-client WAITLIST tables.  We can
+use a hash table or a tree.
+
+Because ACCESSLIST is sorted, we can binary search to find an
+ACCESSLIST that matches the one we want, then linear search forward
+and backward to find the one we want.
+
+... or ...
+
+Keep ACCESSLIST and WAITLIST completely separate for each other.  Each
+pagemap entry has an ACCESSLIST pointer and a WAITLIST pointer, as
+well as some flags, including WRITE-ACCESS, which indicates if we've
+given out write access to a single client, in which case ACCESSLIST
+isn't a pointer, but a single client port number.  If WRITE-ACCESS is
+false, then ACCESSLIST points to a NULL-terminated list of client
+port numbers.
+
+WAITLISTs are sorted and include a flag for each client indicating
+whether it's waiting for READ access or WRITE access.  A special case,
+indicated by a flag, could be a single client on a WAITLIST, in which
+case we don't need a pointer to a WAITLIST, but rather can use the
+port number instead of the pointer.
+
+
+=== C implementation ===
+
+union {
+  mach_port_t port;
+  void * pointer;
+} port_or_pointer;
+
+struct pagemap_entry {
+  port_or_pointer ACCESSLIST;
+  port_or_pointer WAITLIST;
+  kern_return_t ERROR;
+
+  boolean_t SINGLE_CLIENT_ON_ACCESSLIST;
+  boolean_t SINGLE_CLIENT_ON_WAITLIST;
+  boolean_t WRITE_ACCESS_GRANTED;
+  boolean_t PAGINGOUT;
+  boolean_t INVALID;
+};
+
+struct ACCESSLIST_entry {
+  int n;
+  mach_port_t client[];
+};
+
+static int
+ACCESSLIST_cmp(const void *pa, const void *pb)
+{
+  struct ACCESSLIST_entry * aa = (struct ACCESSLIST_entry *) pa;
+  struct ACCESSLIST_entry * ab = (struct ACCESSLIST_entry *) pb;
+
+  if (aa->n < ab->n) {
+    return -1;
+  }
+  if (aa->n > ab->n) {
+    return 1;
+  }
+  for (int i=0; i<aa->n; i++) {
+    if (aa->client[i] < ab->client[i]) {
+      return -1;
+    }
+    if (aa->client[i] > ab->client[i]) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+void * ALtree = NULL;
+struct ACCESSLIST_entry * dummy_ALs = NULL;
+int dummy_ALs_size = 0;
+
+struct ACCESSLIST_entry *
+  add_client_to_ACCESSLIST(struct ACCESSLIST_entry *al, mach_port_t client)
+{
+  int n = al->n + 1;
+  struct ACCESSLIST_entry * newal = NULL;
+
+  // keep dummy entries for n entries on an ACCESSLIST
+  if (dummy_ALs_size == 0) {
+    dummy_ALs = malloc(n * sizeof(struct ACCESSLIST_entry *));
+    dummy_ALs_size = n;
+  } else if (dummy_ALs_size < n) {
+    dummy_ALs = realloc(dummy_ALs, n * sizeof(struct ACCESSLIST_entry *));
+    while (dummy_ALs_size < n) {
+      dummy_ALs[dummy_ALs_size] = NULL;
+      dummy_ALs_size ++;
+    }
+  } else {
+    newal = dummy_ALs[n];
+  }
+
+  if (newal = NULL) {
+    newal = malloc(sizeof(int) + n * sizeof(mach_port_t));
+  }
+
+  newal->n = n;
+
+  for (int i=0; i < n; i++) {
+    newal->client[i] = client;
+  }
+  for (int i=0; i < al->n; i++) {
+    if (al->client[i] < client) {
+      newal->client[i] = al->client[i];
+    } else {
+      newal->client[i+1] = al->client[i];
+    }
+  }
+  struct ACCESSLIST_entry ** result = tsearch(newal, &ALtree, ACCESSLIST_compare);
+  if (*result != newal) {
+    // it already existed in the tree; we can reuse newal next time
+    dummy_ALs[n] = newal;
+  } else {
+    // it was added to the tree; we used dummy_ALs[n] and will need a new one next time
+    dummy_ALs[n] = NULL;
+  }
+  return *result;
+}
+
+
+struct WAITLIST_client {
+  mach_port_t client;
+  boolean_t write_access_requested;
+};
+
+struct WAITLIST_entry {
+  int n;
+  WAITLIST_client client[];
+};
+
+static int
+WAITLIST_cmp(const void *pa, const void *pb)
+{
+  struct WAITLIST_entry * aa = (struct WAITLIST_entry *) pa;
+  struct WAITLIST_entry * ab = (struct WAITLIST_entry *) pb;
+
+  if (aa->n < ab->n) {
+    return -1;
+  }
+  if (aa->n > ab->n) {
+    return 1;
+  }
+  for (int i=0; i<aa->n; i++) {
+    if (aa->client[i].client < ab->client[i].client) {
+      return -1;
+    }
+    if (aa->client[i].client > ab->client[i].client) {
+      return 1;
+    }
+    if (aa->client[i].write_access_requested && ! ab->client[i].write_access_requested) {
+      return -1;
+    }
+    if (! aa->client[i].write_access_requested && ab->client[i].write_access_requested) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+void * WLtree = NULL;
+struct WAITLIST_entry * dummy_WLs = NULL;
+int dummy_WLs_size = 0;
+
+struct WAITLIST_entry * get_dummyWL(int n)
+{
+  struct WAITLIST_entry * newwl = NULL;
+
+  // keep dummy entries for n entries on an WAITLIST
+  if (dummy_WLs_size == 0) {
+    dummy_WLs = malloc(n * sizeof(struct WAITLIST_entry *));
+    dummy_WLs_size = n;
+  } else if (dummy_WLs_size < n) {
+    dummy_WLs = realloc(dummy_WLs, n * sizeof(struct WAITLIST_entry *));
+    while (dummy_WLs_size < n) {
+      dummy_WLs[dummy_WLs_size] = NULL;
+      dummy_WLs_size ++;
+    }
+  } else {
+    newwl = dummy_WLs[n];
+  }
+
+  if (newwl = NULL) {
+    newwl = malloc(sizeof(int) + n * sizeof(struct WAITLIST_client));
+  }
+
+  return newwl;
+}
+
+struct WAITLIST_entry *
+  add_client_to_WAITLIST(struct WAITLIST_entry *wl, mach_port_t client, boolean_t write_access_requested)
+{
+  int n = wl->n + 1;
+  struct WAITLIST_entry * newwl = get_dummyWL(n);
+
+  newwl->n = n;
+
+  for (int i=0; i < wl->n; i++) {
+    newwl->client[i].client = wl->client[i].client;
+    newwl->client[i].write_access_requested = wl->client[i].write_access_requested;
+  }
+
+  newwl->client[n].client = client;
+  newwl->client[n].write_access_requested = write_access_requested;
+
+  struct WAITLIST_entry ** result = tsearch(newwl, &WLtree, WAITLIST_compare);
+  if (*result != newwl) {
+    // it already existed in the tree; we can reuse newwl next time
+    dummy_WLs[n] = newwl;
+  } else {
+    // it was added to the tree; we used dummy_WLs[n] and will need a new one next time
+    dummy_WLs[n] = NULL;
+  }
+  return *result;
+}
+
+
+==== C++ implementation ====
+
+class WAITLIST_client {
+public:
+  mach_port_t client;
+  boolean_t write_access_requested;
+
+  friend bool operator<(const WAITLIST_client & a, const WAITLIST_client & b);
+};
+
+bool operator<(const WAITLIST_client & a, const WAITLIST_client & b)
+{
+  if (a.client < b.client) {
+    return true;
+  }
+  if ((a.client == b.client) && ! a.write_access_requested && b.write_access_requested) {
+    return true;
+  }
+  return false;
+}
+
+typedef std::vector<WAITLIST_client> WAITLIST_entry;
+
+std::set<WAITLIST_entry> WLtree;
+
+class : std::vector<WAITLIST_entry *> {
+  WAITLIST_entry *& operator[](int n)
+  {
+    while (n >= size()) {
+      push_back(new WAITLIST_entry(size()+1));
+    }
+    return (*this)[n];
+  }
+} dummy_WLs;
+
+WAITLIST_entry *
+  add_client_to_WAITLIST(const WAITLIST_entry *wl, mach_port_t client, bool write_access_requested)
+{
+  int n = wl->size() + 1;
+  WAITLIST_entry * newwl = dummy_WLs[n];
+
+  *newwl = *wl;
+
+  newwl->emplace_back(client, write_access_requested);
+
+  auto result = WLtree.insert(std::move(*newwl));
+
+  if (result.second) {
+    // insert succeeded
+    dummy_WLs[n] = new WAITLIST_entry(n);
+  } else {
+    // insert failed; element already existed
+    // is newwl still valid?  standard doesn't say (seems to be a defect in the standard)
+    // https://stackoverflow.com/questions/10043716
+    // dummy_WLs[n] = newwl;
+  }
+
+  return result.first;
+}
+
+
+
+
+pagemap[page].ACCESSLIST.??
+
+std::set<mach_port_t> ACCESSLIST;
+pagemap[page].ACCESSLIST.insert(client)
+
+std::list<mach_port_with_flag> WAITLIST;
+pagemap[page].WAITLIST.insert(0, client, flag);
+pagemap[page].WAITLIST.pop_back()
+
+std::list<std::pair<mach_port_t, boolean_t>> WAITLIST;
+pagemap[page].WAITLIST.push_back(std::make_pair(client, flag));
+pagemap[page].WAITLIST.front()
+pagemap[page].WAITLIST.pop_front()
 
 The pagemap structures should contain a count of the number of pages
 pointing to them, to facilitate deallocation when the count drops to
-zero.  That interferes with the "add table" mapping described above.
+zero.  That interferes with the "add table" mapping described below.
 
-The current kernel implementation seems to be to request pages one at
-a time, as the process attempts to access them.
+OPTIONAL
 
-For writable pages, there can be a queue of clients waiting for a
-page.  A client can be waiting for multiple pages, if separate threads
-(or processes) on a single node are accessing different parts of the
-same file.
+To speed this process, each structure can maintain pointers to
+accelerate this mapping.  Each structure would have an "add table"
+would maintain mappings like "add client 123 -> structure 0x80fadde0".
+If the "add table" doesn't have an entry, then we need to search all
+the structures to find one.  A problem with this is the need to
+invalidate those pointers when a structure is deallocated.  Another
+problem is that it requires the structures to resize when these
+pointers are added. Keep this idea for a future enhancement.
 
-Pagemaps can be potentially large, so a pagemap entry should be a
-single pointer.
+
+PAGEMAP METHODS
+
+  CONST METHODS
+
+  for_all_clients_on_ACCESSLIST
+    send lock requests
+  for_all_clients_on_WAITLIST
+    send data error or lock
+  get_only_client_on_ACCESSLIST (asserts that there is only one)
+  for_all_clients_on_WAITLIST
+    send data error or lock (if its also on ACCESSLIST)
+  is_WAITLIST_empty
+  is_ACCESSLIST_empty
+  is_ACCESSLIST_read_only
+  is_client_on_ACCESSLIST (testing for error)
+  is_client_only_read_client_on_ACCESSLIST
+  does_WAITLIST_include_a_WRITE_client
+  is_first_client_on_WAITLIST_also_only_client_on_ACCESSLIST
+
+  NON-CONST METHODS
+
+  pop_first_WAITLIST_client
+  pop_first_WAITLIST_client_if_read
+  pop_first_WAITLIST_client_if_write
+  add_client_to_ACCESSLIST
+  append_client_to_WAITLIST
+  ( remove_client_from_WAITLIST )
+  remove_client_from_ACCESSLIST
+  clear_WAITLIST
+
+  pop_first_set_of_WAITLIST_clients_and_move_them_to_ACCESSLIST
+  update_ACCESSLIST_to_WRITE
+
+ACCESS CONTENTION
 
 Putting a client on an empty queue triggers lock requests to all
 clients in the working set, with the exception of the requesting
@@ -633,6 +1062,7 @@ m_o_data_return: (kernel returning pages)
         set UNLOCK flag
         (a client with READ access requested WRITE access and had to wait for other clients with READ access to flush)
     if any pages required UNLOCK:
+      XXX: should this code be moved down further?
       unlock pager
       for all pages with UNLOCK set:
         call pager_unlock_page() and set ERROR based on return value
@@ -784,6 +1214,9 @@ USEFUL CHANGES TO THE KERNEL:
     so it can serve out the page to other nodes without reading again from the disk
   - ability to notify memory manager when a non-precious page has been evicted
     (over the network, precious is heavy weight just to get notification that a page has been evicted)
+  - a kernel name port common across all memory objects
+    this would allow sharing pagemaps between memory objects with the same usage pattern
+    (i.e, kernels A and B both map files C and D)
 
 
 PRECIOUS PAGES
