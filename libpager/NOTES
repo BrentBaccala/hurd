@@ -432,7 +432,23 @@ struct pagemap_entry {
   boolean_t WRITE_ACCESS_GRANTED;
   boolean_t PAGINGOUT;
   boolean_t INVALID;
+
+  pagemap_entry * flip_PAGINGOUT;
 };
+
+single client
+  1. no access ->2 ->3
+    pagemap_entry * put_client_1_on_waitlist_for_READ
+    pagemap_entry * put_client_1_on_waitlist_for_WRITE
+  2. waiting for read ->4
+    pagemap_entry * move_first_WAITLIST_client_to_ACCESSLIST
+  3. waiting for write ->5
+    ditto (move_first_WAITLIST_client_to_ACCESSLIST)
+  4. has read ->6
+    ditto (put_client_1_on_WAITLIST_for_WRITE)
+  5. has write
+  6. has read; waiting for write ->5
+    ditto (move_first_WAITLIST_client_to_ACCESSLIST)
 
 struct ACCESSLIST_entry {
   int n;
@@ -614,29 +630,6 @@ struct WAITLIST_entry *
 
 typedef std::set<mach_port_t> ACCESSLIST_entry;
 
-std::set<ACCESSLIST_entry> ALtree;
-
-ACCESSLIST_entry newal;
-
-ACCESSLIST_entry *
-  add_client_to_ACCESSLIST(const ACCESSLIST_entry *al, mach_port_t client)
-{
-  newal = *al;
-
-  newal.insert(client);
-
-  auto result = ALtree.insert(std::move(newal));
-
-  // if the insert succeeded, then
-  // "Moved from objects are left in a valid but unspecified state"
-  // https://stackoverflow.com/questions/7930105
-  //
-  // so, the next time we copy-assign newwl, it will probably allocate another vector
-
-  return result.first;
-}
-
-
 class WAITLIST_client {
 public:
   mach_port_t client;
@@ -658,106 +651,85 @@ bool operator<(const WAITLIST_client & a, const WAITLIST_client & b)
 
 typedef std::vector<WAITLIST_client> WAITLIST_entry;
 
+std::set<ACCESSLIST_entry> ALtree;
+
 std::set<WAITLIST_entry> WLtree;
 
-class : std::vector<WAITLIST_entry *> {
-  WAITLIST_entry *& operator[](int n)
+ACCESSLIST_entry tmpal;
+
+WAITLIST_entry tmpwl;
+
+class pagemap_entry {
+public:
+  const ACCESSLIST_entry * ACCESSLIST;
+  const WAITLIST_entry * WAITLIST;
+
+  pagemap_entry()
   {
-    while (n >= size()) {
-      push_back(new WAITLIST_entry(size()+1));
-    }
-    return (*this)[n];
+    tmpal.clear();
+    ACCESSLIST = ALtree.insert(std::move(tmpal)).first;
+    tmpwl.clear();
+    WAITLIST = WLtree.insert(std::move(tmpwl)).first;
   }
-} dummy_WLs;
+};
 
-WAITLIST_entry *
-  add_client_to_WAITLIST(const WAITLIST_entry *wl, mach_port_t client, bool write_access_requested)
+void add_client_to_ACCESSLIST(pagemap_entry & entry, mach_port_t client)
 {
-  int n = wl->size() + 1;
-  WAITLIST_entry * newwl = dummy_WLs[n];
+  tmpal = * entry.ACCESSLIST;
 
-  *newwl = *wl;
+  tmpal.insert(client);
 
-  newwl->emplace_back(client, write_access_requested);
-
-  auto result = WLtree.insert(std::move(*newwl));
-
-  if (result.second) {
-    // insert succeeded
-    dummy_WLs[n] = new WAITLIST_entry(n);
-  } else {
-    // insert failed; element already existed
-    // is newwl still valid?  standard doesn't say (seems to be a defect in the standard)
-    // https://stackoverflow.com/questions/10043716
-    // dummy_WLs[n] = newwl;
-  }
-
-  return result.first;
-}
-
-
-... or ...
-
-WAITLIST_entry * newwl = new WAITLIST_entry();
-
-WAITLIST_entry *
-  add_client_to_WAITLIST(const WAITLIST_entry *wl, mach_port_t client, bool write_access_requested)
-{
-  *newwl = *wl;
-
-  newwl->emplace_back(client, write_access_requested);
-
-  auto result = WLtree.insert(std::move(*newwl));
-
-  if (result.second) {
-    // insert succeeded
-    // "Moved from objects are left in a valid but unspecified state"
-    // https://stackoverflow.com/questions/7930105
-    delete newwl;
-    newwl = new WAITLIST_entry();
-  }
-
-  return result.first;
-}
-
-... or ...
-
-WAITLIST_entry newwl;
-
-WAITLIST_entry *
-  add_client_to_WAITLIST(const WAITLIST_entry *wl, mach_port_t client, bool write_access_requested)
-{
-  newwl = *wl;
-
-  newwl.emplace_back(client, write_access_requested);
-
-  auto result = WLtree.insert(std::move(newwl));
+  auto result = ALtree.insert(std::move(tmpal));
 
   // if the insert succeeded, then
   // "Moved from objects are left in a valid but unspecified state"
   // https://stackoverflow.com/questions/7930105
   //
-  // so, the next time we copy-assign newwl, it will probably allocate another vector
+  // so, the next time we copy-assign tmpwl, it will probably allocate another vector
 
-  return result.first;
+  entry.ACCESSLIST = result.first;
+}
+
+
+void add_client_to_WAITLIST(pagemap_entry & entry, mach_port_t client, bool write_access_requested)
+{
+  tmpwl = * entry.WAITLIST;
+
+  tmpwl.emplace_back(client, write_access_requested);
+
+  auto result = WLtree.insert(std::move(tmpwl));
+
+  // if the insert succeeded, then
+  // "Moved from objects are left in a valid but unspecified state"
+  // https://stackoverflow.com/questions/7930105
+  //
+  // so, the next time we copy-assign tmpwl, it will probably allocate another vector
+
+  entry.WAITLIST = result.first;
 }
 
 mach_port_t
-  pop_client_from_WAITLIST_if_read(const WAITLIST_entry *wl, mach_port_t client, bool write_access_requested)
+  pop_client_from_WAITLIST_if_read(pagemap_entry & entry)
 {
-  newwl = *wl;
+  if (entry.WAITLIST->size() == 0 || entry.WAITLIST->front().write_access_requested) {
+    return MACH_PORT_NULL;
+  }
 
-  newwl.emplace_back(client, write_access_requested);
+  mach_port_t retval = entry.WAITLIST->front().client;
 
-  auto result = WLtree.insert(std::move(newwl));
+  tmpwl.assign(entry.WAITLIST->cbegin() + 1, entry.WAITLIST->cend());
+
+  auto result = WLtree.insert(std::move(tmpwl));
 
   // if the insert succeeded, then
   // "Moved from objects are left in a valid but unspecified state"
   // https://stackoverflow.com/questions/7930105
   //
-  // so, the next time we copy-assign newwl, it will probably allocate another vector
+  // so, the next time we copy-assign tmpwl, it will probably allocate another vector
 
-  return result.first;
+  entry.WAITLIST = result.first;
+
+  return retval;
 }
 
 
