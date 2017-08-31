@@ -651,61 +651,122 @@ bool operator<(const WAITLIST_client & a, const WAITLIST_client & b)
 
 typedef std::vector<WAITLIST_client> WAITLIST_entry;
 
-std::set<ACCESSLIST_entry> ALtree;
-
-std::set<WAITLIST_entry> WLtree;
-
-ACCESSLIST_entry tmpal;
-
-WAITLIST_entry tmpwl;
-
 class pagemap_entry {
 public:
-  const ACCESSLIST_entry * ACCESSLIST;
-  const WAITLIST_entry * WAITLIST;
+  ACCESSLIST_entry ACCESSLIST;
+  WAITLIST_entry WAITLIST;
+
+  boolean_t PAGINGOUT;
+  boolean_t INVALID;
+
+  kernel_return_t ERROR;
+
+  friend bool operator<(const pagemap_entry & a, const pagemap_entry & b);
 
   pagemap_entry()
   {
-    tmpal.clear();
-    ACCESSLIST = ALtree.insert(std::move(tmpal)).first;
-    tmpwl.clear();
-    WAITLIST = WLtree.insert(std::move(tmpwl)).first;
+    // default constructors produce empty ACCESSLIST and WAITLIST,
+    // but leave other fields undefined
+    ERROR = KERN_SUCCESS;
+    PAGINGOUT = false;
+    INVALID = false;
   }
 };
 
-void add_client_to_ACCESSLIST(pagemap_entry & entry, mach_port_t client)
+bool operator<(const pagemap_entry & a, const pagemap_entry & b)
 {
-  tmpal = * entry.ACCESSLIST;
+  return std::tie(a.ACCESSLIST, a.WAITLIST, a.PAGINGOUT, a.INVALID, a.ERROR)
+    < std::tie(b.ACCESSLIST, b.WAITLIST, b.PAGINGOUT, b.INVALID, b.ERROR);
+}
 
-  tmpal.insert(client);
+// make this a static member of pagemap_entry_ptr
+std::set<pagemap_entry> pagemap_tree;
 
-  auto result = ALtree.insert(std::move(tmpal));
+// The idea here is to keep around a pagemap_entry with allocated
+// space that can be copy-constructed into without malloc'ing memory.
+//
+// Then, we move-insert it into pagemap_tree.
+//
+// If the insert failed (because an identical pagemap_entry already
+// exists in pagemap_tree), we use the pointer to the existing
+// entry and leave tmp_pagemap_entry alone for the next operation,
+// which will probably copy-assign it without a malloc.
+//
+// If the insert succeeded, then
+// "Moved from objects are left in a valid but unspecified state"
+// https://stackoverflow.com/questions/7930105
+//
+// So, the next time we copy-assign tmp_pagemap_entry, it will
+// probably allocate memory
 
-  // if the insert succeeded, then
-  // "Moved from objects are left in a valid but unspecified state"
-  // https://stackoverflow.com/questions/7930105
-  //
-  // so, the next time we copy-assign tmpwl, it will probably allocate another vector
+// make this a static member of pagemap_entry_ptr
+pagemap_entry tmp_pagemap_entry;
 
-  entry.ACCESSLIST = result.first;
+class pagemap_entry_ptr
+{
+  const pagemap_entry * entry;
+
+public:
+
+  void add_client_to_ACCESSLIST(mach_port_t client)
+  {
+    tmp_pagemap_entry = * entry;
+
+    tmp_pagemap_entry.ACCESSLIST.insert(client);
+
+    entry = pagemap_tree.insert(std::move(tmp_pagemap_entry)).first;
+  }
+
+  void add_client_to_WAITLIST(mach_port_t client, bool write_access_requested)
+  {
+    tmp_pagemap_entry = * entry;
+
+    tmp_pagemap_entry.WAITLIST.emplace_back(client, write_access_requested);
+
+    entry = pagemap_tree.insert(std::move(tmp_pagemap_entry)).first;
+  }
+
+  mach_port_t pop_client_from_WAITLIST_if_read(void)
+  {
+    if (entry.WAITLIST->size() == 0 || entry.WAITLIST->front().write_access_requested) {
+      return MACH_PORT_NULL;
+    }
+
+    mach_port_t retval = entry.WAITLIST->front().client;
+
+    tmp_pagemap_entry = * entry;
+
+    // duplicate assignment - we already assigned once in the previous statement
+    tmp_pagemap_entry.WAITLIST.assign(entry.WAITLIST->cbegin() + 1, entry.WAITLIST->cend());
+
+    entry = pagemap_tree.insert(std::move(tmp_pagemap_entry)).first;
+
+    return retval;
+  }
+};
+
+pagemap_entry_ptr pagemap[];
+
+pagemap[n].add_client_to_ACCESSLIST(client);
+pagemap[n].add_client_to_WAITLIST(client, write_access_requested);
+
+void add_client_to_ACCESSLIST(pagemap_entry *& entry, mach_port_t client)
+{
+  tmp_pagemap_entry = * entry;
+
+  tmp_pagemap_entry.ACCESSLIST.insert(client);
+
+  entry = pagemap_tree.insert(std::move(tmp_pagemap_entry)).first;
 }
 
 
 void add_client_to_WAITLIST(pagemap_entry & entry, mach_port_t client, bool write_access_requested)
 {
-  tmpwl = * entry.WAITLIST;
+  tmp_pagemap_entry = * entry;
 
-  tmpwl.emplace_back(client, write_access_requested);
+  tmp_pagemap_entry.WAITLIST.emplace_back(client, write_access_requested);
 
-  auto result = WLtree.insert(std::move(tmpwl));
-
-  // if the insert succeeded, then
-  // "Moved from objects are left in a valid but unspecified state"
-  // https://stackoverflow.com/questions/7930105
-  //
-  // so, the next time we copy-assign tmpwl, it will probably allocate another vector
-
-  entry.WAITLIST = result.first;
+  entry = pagemap_tree.insert(std::move(tmp_pagemap_entry)).first;
 }
 
 mach_port_t
@@ -717,17 +778,12 @@ mach_port_t
 
   mach_port_t retval = entry.WAITLIST->front().client;
 
-  tmpwl.assign(entry.WAITLIST->cbegin() + 1, entry.WAITLIST->cend());
+  tmp_pagemap_entry = * entry;
 
-  auto result = WLtree.insert(std::move(tmpwl));
+  // duplicate assignment - we already assigned once in the previous statement
+  tmp_pagemap_entry.WAITLIST.assign(entry.WAITLIST->cbegin() + 1, entry.WAITLIST->cend());
 
-  // if the insert succeeded, then
-  // "Moved from objects are left in a valid but unspecified state"
-  // https://stackoverflow.com/questions/7930105
-  //
-  // so, the next time we copy-assign tmpwl, it will probably allocate another vector
-
-  entry.WAITLIST = result.first;
+  entry = pagemap_tree.insert(std::move(tmp_pagemap_entry)).first;
 
   return retval;
 }
