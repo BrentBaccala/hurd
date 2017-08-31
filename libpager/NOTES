@@ -612,6 +612,31 @@ struct WAITLIST_entry *
 
 ==== C++ implementation ====
 
+typedef std::set<mach_port_t> ACCESSLIST_entry;
+
+std::set<ACCESSLIST_entry> ALtree;
+
+ACCESSLIST_entry newal;
+
+ACCESSLIST_entry *
+  add_client_to_ACCESSLIST(const ACCESSLIST_entry *al, mach_port_t client)
+{
+  newal = *al;
+
+  newal.insert(client);
+
+  auto result = ALtree.insert(std::move(newal));
+
+  // if the insert succeeded, then
+  // "Moved from objects are left in a valid but unspecified state"
+  // https://stackoverflow.com/questions/7930105
+  //
+  // so, the next time we copy-assign newwl, it will probably allocate another vector
+
+  return result.first;
+}
+
+
 class WAITLIST_client {
 public:
   mach_port_t client;
@@ -671,6 +696,69 @@ WAITLIST_entry *
 }
 
 
+... or ...
+
+WAITLIST_entry * newwl = new WAITLIST_entry();
+
+WAITLIST_entry *
+  add_client_to_WAITLIST(const WAITLIST_entry *wl, mach_port_t client, bool write_access_requested)
+{
+  *newwl = *wl;
+
+  newwl->emplace_back(client, write_access_requested);
+
+  auto result = WLtree.insert(std::move(*newwl));
+
+  if (result.second) {
+    // insert succeeded
+    // "Moved from objects are left in a valid but unspecified state"
+    // https://stackoverflow.com/questions/7930105
+    delete newwl;
+    newwl = new WAITLIST_entry();
+  }
+
+  return result.first;
+}
+
+... or ...
+
+WAITLIST_entry newwl;
+
+WAITLIST_entry *
+  add_client_to_WAITLIST(const WAITLIST_entry *wl, mach_port_t client, bool write_access_requested)
+{
+  newwl = *wl;
+
+  newwl.emplace_back(client, write_access_requested);
+
+  auto result = WLtree.insert(std::move(newwl));
+
+  // if the insert succeeded, then
+  // "Moved from objects are left in a valid but unspecified state"
+  // https://stackoverflow.com/questions/7930105
+  //
+  // so, the next time we copy-assign newwl, it will probably allocate another vector
+
+  return result.first;
+}
+
+mach_port_t
+  pop_client_from_WAITLIST_if_read(const WAITLIST_entry *wl, mach_port_t client, bool write_access_requested)
+{
+  newwl = *wl;
+
+  newwl.emplace_back(client, write_access_requested);
+
+  auto result = WLtree.insert(std::move(newwl));
+
+  // if the insert succeeded, then
+  // "Moved from objects are left in a valid but unspecified state"
+  // https://stackoverflow.com/questions/7930105
+  //
+  // so, the next time we copy-assign newwl, it will probably allocate another vector
+
+  return result.first;
+}
 
 
 pagemap[page].ACCESSLIST.??
