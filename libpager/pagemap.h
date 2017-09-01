@@ -80,7 +80,7 @@ class pagemap_entry
   // The pagemap data for a single page.
 
   class pagemap_entry_data {
-  public:
+
     ACCESSLIST_entry ACCESSLIST;
     WAITLIST_entry WAITLIST;
 
@@ -98,6 +98,8 @@ class pagemap_entry
     // ERROR is the last error code returned from a backing store operation
     kern_return_t ERROR;
 
+  public:
+
     bool operator<(const pagemap_entry_data & rhs) const
     {
       return std::tie(ACCESSLIST, WAITLIST, PAGINGOUT, WRITE_ACCESS_GRANTED, INVALID, ERROR)
@@ -113,6 +115,57 @@ class pagemap_entry
       WRITE_ACCESS_GRANTED = false;
       INVALID = false;
     }
+
+    const ACCESSLIST_entry & ACCESSLIST_clients(void) const
+    {
+      return ACCESSLIST;
+    }
+
+    void add_client_to_ACCESSLIST(mach_port_t client)
+    {
+      ACCESSLIST.insert(client);
+    }
+
+    void remove_client_from_ACCESSLIST(mach_port_t client)
+    {
+      ACCESSLIST.erase(client);
+    }
+
+    bool is_WAITLIST_empty(void) const
+    {
+      return WAITLIST.empty();
+    }
+
+    void add_client_to_WAITLIST(mach_port_t client, bool write_access_requested)
+    {
+      WAITLIST.emplace_back(client, write_access_requested);
+    }
+
+    void pop_first_WAITLIST_client(void)
+    {
+      if (WAITLIST.size() == 0) {
+        // XXX throw exception?
+        return;
+      }
+
+      WAITLIST.erase(WAITLIST.cbegin());
+    }
+
+    WAITLIST_client first_WAITLIST_client(void) const
+    {
+      return WAITLIST.front();
+    }
+
+    void set_PAGINGOUT(bool val)
+    {
+      PAGINGOUT = val;
+    }
+
+    void set_WRITE_ACCESS_GRANTED(bool val)
+    {
+      WRITE_ACCESS_GRANTED = WRITE_ACCESS_GRANTED;
+    }
+
   };
 
   static std::set<pagemap_entry_data> pagemap_set;
@@ -142,7 +195,7 @@ class pagemap_entry
   // accommodate the largest pagemap_entry_data's being processed,
   // then won't have to do any more malloc's.
 
-  static pagemap_entry_data tmp_pagemap_entry;
+  // static pagemap_entry_data tmp_pagemap_entry;
 
   // this pointer is the only data in an instance of pagemap_entry
   const pagemap_entry_data * entry;
@@ -198,78 +251,12 @@ public:
     entry = &* pagemap_set.insert(std::move(data)).first;
   }
 
-  void add_client_to_ACCESSLIST(mach_port_t client)
-  {
-    tmp_pagemap_entry = * entry;
-
-    tmp_pagemap_entry.ACCESSLIST.insert(client);
-
-    operator= (tmp_pagemap_entry);
-  }
-
-  void remove_client_from_ACCESSLIST(mach_port_t client)
-  {
-    tmp_pagemap_entry = * entry;
-
-    tmp_pagemap_entry.ACCESSLIST.erase(client);
-
-    operator= (tmp_pagemap_entry);
-  }
-
-  void add_client_to_WAITLIST(mach_port_t client, bool write_access_requested)
-  {
-    tmp_pagemap_entry = * entry;
-
-    tmp_pagemap_entry.WAITLIST.emplace_back(client, write_access_requested);
-
-    operator= (tmp_pagemap_entry);
-  }
-
-  void pop_first_WAITLIST_client(void)
-  {
-    if (entry->WAITLIST.size() == 0) {
-      // XXX throw exception?
-      return;
-    }
-
-    tmp_pagemap_entry = * entry;
-
-    // duplicate assignment - we already assigned once in the previous statement
-    tmp_pagemap_entry.WAITLIST.assign(entry->WAITLIST.cbegin() + 1, entry->WAITLIST.cend());
-
-    operator= (tmp_pagemap_entry);
-  }
-
-  void set_PAGINGOUT(mach_port_t PAGINGOUT)
-  {
-    tmp_pagemap_entry = * entry;
-
-    tmp_pagemap_entry.PAGINGOUT = PAGINGOUT;
-
-    operator= (tmp_pagemap_entry);
-  }
-
-  void set_WRITE_ACCESS_GRANTED(mach_port_t WRITE_ACCESS_GRANTED)
-  {
-    tmp_pagemap_entry = * entry;
-
-    tmp_pagemap_entry.WRITE_ACCESS_GRANTED = WRITE_ACCESS_GRANTED;
-
-    operator= (tmp_pagemap_entry);
-  }
-
 };
 
-pagemap_entry::pagemap_entry_data pagemap_entry::tmp_pagemap_entry;
+// pagemap_entry::pagemap_entry_data pagemap_entry::tmp_pagemap_entry;
 std::set<pagemap_entry::pagemap_entry_data> pagemap_entry::pagemap_set;
 
 pagemap_entry pagemap[10];
-
-void test_function(void)
-{
-  pagemap[0].add_client_to_ACCESSLIST(1);
-  pagemap[1].add_client_to_WAITLIST(1, true);
-}
 
 const int page_size = 1024;
 const bool PRECIOUS = true;
@@ -283,40 +270,40 @@ class pager {
 
 void pager::service_WAITLIST(int n, void * data, int length, bool deallocate)
 {
-  if (pagemap[n]->WAITLIST.size() == 0) return;
+  if (pagemap[n]->is_WAITLIST_empty()) return;
 
   tmp_pagemap_entry = pagemap[n];
 
-  auto first_client = tmp_pagemap_entry.WAITLIST.front();
+  auto first_client = tmp_pagemap_entry.first_WAITLIST_client();
 
   if (first_client.write_access_requested) {
     memory_object_data_supply(first_client.client, n*page_size, (vm_offset_t) data, length, deallocate, 0, PRECIOUS, 0);
-    tmp_pagemap_entry.ACCESSLIST.insert(first_client.client);
-    tmp_pagemap_entry.WAITLIST.erase(tmp_pagemap_entry.WAITLIST.cbegin());
-    tmp_pagemap_entry.WRITE_ACCESS_GRANTED = true;
+    tmp_pagemap_entry.add_client_to_ACCESSLIST(first_client.client);
+    tmp_pagemap_entry.pop_first_WAITLIST_client();
+    tmp_pagemap_entry.set_WRITE_ACCESS_GRANTED(true);
   } else {
     do {
-      tmp_pagemap_entry.ACCESSLIST.insert(first_client.client);
-      tmp_pagemap_entry.WAITLIST.erase(tmp_pagemap_entry.WAITLIST.cbegin());
+      tmp_pagemap_entry.add_client_to_ACCESSLIST(first_client.client);
+      tmp_pagemap_entry.pop_first_WAITLIST_client();
 
-      if (tmp_pagemap_entry.WAITLIST.empty()) {
+      if (tmp_pagemap_entry.is_WAITLIST_empty()) {
         memory_object_data_supply(first_client.client, n*page_size, (vm_offset_t) data, length,
                                   deallocate, VM_PROT_WRITE, PRECIOUS, 0);
         break;
       }
 
-      auto next_client = tmp_pagemap_entry.WAITLIST.front();
+      auto next_client = tmp_pagemap_entry.first_WAITLIST_client();
 
       memory_object_data_supply(first_client.client, n*page_size, (vm_offset_t) data, length,
                                 next_client.write_access_requested ? deallocate : false,
                                 VM_PROT_WRITE, PRECIOUS, 0);
       first_client = next_client;
     } while (! first_client.write_access_requested);
-    tmp_pagemap_entry.WRITE_ACCESS_GRANTED = false;
+    tmp_pagemap_entry.set_WRITE_ACCESS_GRANTED(false);
   }
 
-  if (tmp_pagemap_entry.WAITLIST.size() > 0) {
-    for (auto client: tmp_pagemap_entry.ACCESSLIST) {
+  if (! tmp_pagemap_entry.is_WAITLIST_empty()) {
+    for (auto client: tmp_pagemap_entry.ACCESSLIST_clients()) {
       memory_object_lock_request(client, n*page_size, length, true, true, 0, reply_to);
     }
   }
