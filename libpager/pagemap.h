@@ -149,11 +149,53 @@ class pagemap_entry
 
 public:
 
+  // This typedef allows us to create temporary, local copies
+  // of pagemap data using the type "pagemap::data".
+
+  typedef pagemap_entry_data data;
+
   // This method allows direct access to the pagemap data, but only
   // for read operations, as it returns a const pointer.
 
   const pagemap_entry_data * operator->() {
     return entry;
+  }
+
+  // This method allows us to copy-assign this pagemap entry to a
+  // pagemap_entry_data structure.
+
+  operator const pagemap_entry_data & () {
+    return * entry;
+  }
+
+  // This operator= is responsible for updating the pointer 'entry' to
+  // reflect changed data.
+  //
+  // WARNING: this is a move!  the rhs can be altered!
+  //
+  // i.e, "pagemap[n] = entry" might change entry to an "valid but
+  // unspecified value"
+  //
+  // The idea is to use it like this:
+  //
+  //    pagemap::data tmp;
+  //
+  //    tmp = pagemap[n];
+  //    ... modify tmp ...
+  //    pagemap[n] = tmp;
+  //
+  // A long-lived 'tmp' should avoid lots of memory
+  // allocate/deallocate operations, as the above sequence may (or may
+  // not) leave 'tmp' with allocated data structures.
+  //
+  // std::set's insert() returns a std::pair, the first item of
+  // which is an iterator that we dereference (*) to get a
+  // reference, then take its address (&) to get a pointer.
+  //
+  // https://stackoverflow.com/a/2160319/1493790
+
+  void operator= (pagemap_entry_data & data) {
+    entry = &* pagemap_set.insert(std::move(data)).first;
   }
 
   void add_client_to_ACCESSLIST(mach_port_t client)
@@ -162,13 +204,7 @@ public:
 
     tmp_pagemap_entry.ACCESSLIST.insert(client);
 
-    // std::set's insert() returns a std::pair, the first item of
-    // which is an iterator that we dereference (*) to get a
-    // reference, then take its address (&) to get a pointer.
-    //
-    // https://stackoverflow.com/a/2160319/1493790
-
-    entry = &* pagemap_set.insert(std::move(tmp_pagemap_entry)).first;
+    operator= (tmp_pagemap_entry);
   }
 
   void remove_client_from_ACCESSLIST(mach_port_t client)
@@ -177,7 +213,7 @@ public:
 
     tmp_pagemap_entry.ACCESSLIST.erase(client);
 
-    entry = &* pagemap_set.insert(std::move(tmp_pagemap_entry)).first;
+    operator= (tmp_pagemap_entry);
   }
 
   void add_client_to_WAITLIST(mach_port_t client, bool write_access_requested)
@@ -186,7 +222,7 @@ public:
 
     tmp_pagemap_entry.WAITLIST.emplace_back(client, write_access_requested);
 
-    entry = &* pagemap_set.insert(std::move(tmp_pagemap_entry)).first;
+    operator= (tmp_pagemap_entry);
   }
 
   void pop_first_WAITLIST_client(void)
@@ -201,7 +237,7 @@ public:
     // duplicate assignment - we already assigned once in the previous statement
     tmp_pagemap_entry.WAITLIST.assign(entry->WAITLIST.cbegin() + 1, entry->WAITLIST.cend());
 
-    entry = &* pagemap_set.insert(std::move(tmp_pagemap_entry)).first;
+    operator= (tmp_pagemap_entry);
   }
 
   void set_PAGINGOUT(mach_port_t PAGINGOUT)
@@ -210,7 +246,7 @@ public:
 
     tmp_pagemap_entry.PAGINGOUT = PAGINGOUT;
 
-    entry = &* pagemap_set.insert(std::move(tmp_pagemap_entry)).first;
+    operator= (tmp_pagemap_entry);
   }
 
   void set_WRITE_ACCESS_GRANTED(mach_port_t WRITE_ACCESS_GRANTED)
@@ -219,7 +255,7 @@ public:
 
     tmp_pagemap_entry.WRITE_ACCESS_GRANTED = WRITE_ACCESS_GRANTED;
 
-    entry = &* pagemap_set.insert(std::move(tmp_pagemap_entry)).first;
+    operator= (tmp_pagemap_entry);
   }
 
 };
@@ -239,32 +275,53 @@ const int page_size = 1024;
 const bool PRECIOUS = true;
 const int reply_to = 0;
 
-void service_WAITLIST(int n, void * data, int length, bool deallocate)
+class pager {
+  pagemap_entry::data tmp_pagemap_entry;
+
+  void service_WAITLIST(int n, void * data, int length, bool deallocate);
+};
+
+void pager::service_WAITLIST(int n, void * data, int length, bool deallocate)
 {
   if (pagemap[n]->WAITLIST.size() == 0) return;
 
-  auto first_client = pagemap[n]->WAITLIST.front();
+  tmp_pagemap_entry = pagemap[n];
+
+  auto first_client = tmp_pagemap_entry.WAITLIST.front();
 
   if (first_client.write_access_requested) {
     memory_object_data_supply(first_client.client, n*page_size, (vm_offset_t) data, length, deallocate, 0, PRECIOUS, 0);
-    pagemap[n].add_client_to_ACCESSLIST(first_client.client);
-    pagemap[n].pop_first_WAITLIST_client();
-    pagemap[n].set_WRITE_ACCESS_GRANTED(true);
+    tmp_pagemap_entry.ACCESSLIST.insert(first_client.client);
+    tmp_pagemap_entry.WAITLIST.erase(tmp_pagemap_entry.WAITLIST.cbegin());
+    tmp_pagemap_entry.WRITE_ACCESS_GRANTED = true;
   } else {
     do {
-      memory_object_data_supply(first_client.client, n*page_size, (vm_offset_t) data, length, deallocate, VM_PROT_WRITE, PRECIOUS, 0);
-      pagemap[n].pop_first_WAITLIST_client();
-      pagemap[n].add_client_to_ACCESSLIST(first_client.client);
-      first_client = pagemap[n]->WAITLIST.front();
+      tmp_pagemap_entry.ACCESSLIST.insert(first_client.client);
+      tmp_pagemap_entry.WAITLIST.erase(tmp_pagemap_entry.WAITLIST.cbegin());
+
+      if (tmp_pagemap_entry.WAITLIST.empty()) {
+        memory_object_data_supply(first_client.client, n*page_size, (vm_offset_t) data, length,
+                                  deallocate, VM_PROT_WRITE, PRECIOUS, 0);
+        break;
+      }
+
+      auto next_client = tmp_pagemap_entry.WAITLIST.front();
+
+      memory_object_data_supply(first_client.client, n*page_size, (vm_offset_t) data, length,
+                                next_client.write_access_requested ? deallocate : false,
+                                VM_PROT_WRITE, PRECIOUS, 0);
+      first_client = next_client;
     } while (! first_client.write_access_requested);
-    pagemap[n].set_WRITE_ACCESS_GRANTED(false);
+    tmp_pagemap_entry.WRITE_ACCESS_GRANTED = false;
   }
 
-  if (pagemap[n]->WAITLIST.size() > 0) {
-    for (auto client: pagemap[n]->ACCESSLIST) {
+  if (tmp_pagemap_entry.WAITLIST.size() > 0) {
+    for (auto client: tmp_pagemap_entry.ACCESSLIST) {
       memory_object_lock_request(client, n*page_size, length, true, true, 0, reply_to);
     }
   }
+
+  pagemap[n] = tmp_pagemap_entry;
 }
 
 #endif
