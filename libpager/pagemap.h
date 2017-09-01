@@ -16,6 +16,8 @@
 #include <vector>
 #include <tuple>
 
+#include <mutex>
+
 extern "C" {
 #include <mach.h>
 #include <mach_error.h>
@@ -121,6 +123,16 @@ class pagemap_entry
       return ACCESSLIST;
     }
 
+    bool is_ACCESSLIST_empty(void) const
+    {
+      return ACCESSLIST.empty();
+    }
+
+    bool is_client_on_ACCESSLIST(mach_port_t client) const
+    {
+      return (ACCESSLIST.count(client) == 1);
+    }
+
     void add_client_to_ACCESSLIST(mach_port_t client)
     {
       ACCESSLIST.insert(client);
@@ -129,6 +141,11 @@ class pagemap_entry
     void remove_client_from_ACCESSLIST(mach_port_t client)
     {
       ACCESSLIST.erase(client);
+    }
+
+    const WAITLIST_entry & WAITLIST_clients(void) const
+    {
+      return WAITLIST;
     }
 
     bool is_WAITLIST_empty(void) const
@@ -156,14 +173,44 @@ class pagemap_entry
       return WAITLIST.front();
     }
 
+    kern_return_t get_ERROR(void) const
+    {
+      return ERROR;
+    }
+
+    void set_ERROR (kern_return_t val)
+    {
+      ERROR = val;
+    }
+
+    bool get_INVALID(void) const
+    {
+      return INVALID;
+    }
+
+    void set_INVALID(bool val)
+    {
+      INVALID = val;
+    }
+
+    bool get_PAGINGOUT(void) const
+    {
+      return PAGINGOUT;
+    }
+
     void set_PAGINGOUT(bool val)
     {
       PAGINGOUT = val;
     }
 
+    bool get_WRITE_ACCESS_GRANTED(void) const
+    {
+      return WRITE_ACCESS_GRANTED;
+    }
+
     void set_WRITE_ACCESS_GRANTED(bool val)
     {
-      WRITE_ACCESS_GRANTED = WRITE_ACCESS_GRANTED;
+      WRITE_ACCESS_GRANTED = val;
     }
 
   };
@@ -258,26 +305,34 @@ std::set<pagemap_entry::pagemap_entry_data> pagemap_entry::pagemap_set;
 
 pagemap_entry pagemap[10];
 
-const int page_size = 1024;
-const bool PRECIOUS = true;
-const int reply_to = 0;
+class pager : public std::mutex {
+  const int page_size = 1024;
+  const bool PRECIOUS = true;
+  const mach_port_t flush_reply_to = 0;
 
-class pager {
+  struct user_pager_info * UPI;
+
   pagemap_entry::data tmp_pagemap_entry;
 
-  void service_WAITLIST(int n, void * data, int length, bool deallocate);
+  void service_WAITLIST(vm_offset_t offset, vm_offset_t data, int length, bool deallocate);
+
+  void data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFSET,
+                    vm_offset_t LENGTH, vm_prot_t DESIRED_ACCESS);
+
 };
 
-void pager::service_WAITLIST(int n, void * data, int length, bool deallocate)
+/* service_WAITLIST
+ *
+ * Assumes that pager is locked and pagemap entry of page to be
+ * serviced is loaded into tmp_pagemap_entry.
+ */
+
+void pager::service_WAITLIST(vm_offset_t offset, vm_offset_t data, int length, bool deallocate)
 {
-  if (pagemap[n]->is_WAITLIST_empty()) return;
-
-  tmp_pagemap_entry = pagemap[n];
-
   auto first_client = tmp_pagemap_entry.first_WAITLIST_client();
 
   if (first_client.write_access_requested) {
-    memory_object_data_supply(first_client.client, n*page_size, (vm_offset_t) data, length, deallocate, 0, PRECIOUS, 0);
+    memory_object_data_supply(first_client.client, offset, data, length, deallocate, 0, PRECIOUS, 0);
     tmp_pagemap_entry.add_client_to_ACCESSLIST(first_client.client);
     tmp_pagemap_entry.pop_first_WAITLIST_client();
     tmp_pagemap_entry.set_WRITE_ACCESS_GRANTED(true);
@@ -287,14 +342,14 @@ void pager::service_WAITLIST(int n, void * data, int length, bool deallocate)
       tmp_pagemap_entry.pop_first_WAITLIST_client();
 
       if (tmp_pagemap_entry.is_WAITLIST_empty()) {
-        memory_object_data_supply(first_client.client, n*page_size, (vm_offset_t) data, length,
+        memory_object_data_supply(first_client.client, offset, data, length,
                                   deallocate, VM_PROT_WRITE, PRECIOUS, 0);
         break;
       }
 
       auto next_client = tmp_pagemap_entry.first_WAITLIST_client();
 
-      memory_object_data_supply(first_client.client, n*page_size, (vm_offset_t) data, length,
+      memory_object_data_supply(first_client.client, offset, data, length,
                                 next_client.write_access_requested ? deallocate : false,
                                 VM_PROT_WRITE, PRECIOUS, 0);
       first_client = next_client;
@@ -304,11 +359,91 @@ void pager::service_WAITLIST(int n, void * data, int length, bool deallocate)
 
   if (! tmp_pagemap_entry.is_WAITLIST_empty()) {
     for (auto client: tmp_pagemap_entry.ACCESSLIST_clients()) {
-      memory_object_lock_request(client, n*page_size, length, true, true, 0, reply_to);
+      memory_object_lock_request(client, offset, length, true, true, 0, flush_reply_to);
     }
   }
+}
 
-  pagemap[n] = tmp_pagemap_entry;
+void pager::data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFSET,
+                         vm_offset_t LENGTH, vm_prot_t DESIRED_ACCESS)
+{
+  std::unique_lock<std::mutex> pager_lock(*this);
+
+  assert(LENGTH == page_size);
+  assert(OFFSET % page_size == 0);
+
+  // XXX if NEXTERROR ...
+
+  tmp_pagemap_entry = pagemap[OFFSET / page_size];
+
+  if (tmp_pagemap_entry.get_PAGINGOUT()) {
+    if (tmp_pagemap_entry.is_WAITLIST_empty() && ! tmp_pagemap_entry.is_ACCESSLIST_empty()) {
+      for (auto client: tmp_pagemap_entry.ACCESSLIST_clients()) {
+        memory_object_lock_request(client, OFFSET, LENGTH, true, true, 0, flush_reply_to);
+      }
+    }
+    tmp_pagemap_entry.add_client_to_WAITLIST(MEMORY_CONTROL, DESIRED_ACCESS & VM_PROT_WRITE);
+    pagemap[OFFSET / page_size] = tmp_pagemap_entry;
+    return;
+  }
+
+  if (! tmp_pagemap_entry.is_WAITLIST_empty()) {
+    tmp_pagemap_entry.add_client_to_WAITLIST(MEMORY_CONTROL, DESIRED_ACCESS & VM_PROT_WRITE);
+    pagemap[OFFSET / page_size] = tmp_pagemap_entry;
+    return;
+  }
+
+  if (tmp_pagemap_entry.get_WRITE_ACCESS_GRANTED()) {
+    tmp_pagemap_entry.add_client_to_WAITLIST(MEMORY_CONTROL, DESIRED_ACCESS & VM_PROT_WRITE);
+    for (auto client: tmp_pagemap_entry.ACCESSLIST_clients()) {
+      memory_object_lock_request(client, OFFSET, LENGTH, true, true, 0, flush_reply_to);
+    }
+    pagemap[OFFSET / page_size] = tmp_pagemap_entry;
+    return;
+  }
+
+  if ((DESIRED_ACCESS & VM_PROT_WRITE) && ! tmp_pagemap_entry.is_ACCESSLIST_empty()) {
+    tmp_pagemap_entry.add_client_to_WAITLIST(MEMORY_CONTROL, DESIRED_ACCESS & VM_PROT_WRITE);
+    for (auto client: tmp_pagemap_entry.ACCESSLIST_clients()) {
+      memory_object_lock_request(client, OFFSET, LENGTH, true, true, 0, flush_reply_to);
+    }
+    pagemap[OFFSET / page_size] = tmp_pagemap_entry;
+    return;
+  }
+
+  if (tmp_pagemap_entry.get_INVALID()) {
+    memory_object_data_error(MEMORY_CONTROL, OFFSET, LENGTH, tmp_pagemap_entry.get_ERROR());
+  }
+
+  tmp_pagemap_entry.add_client_to_WAITLIST(MEMORY_CONTROL, DESIRED_ACCESS & VM_PROT_WRITE);
+
+  pagemap[OFFSET / page_size] = tmp_pagemap_entry;
+  pager_lock.unlock();
+
+  vm_address_t buffer;
+  int write_lock;
+
+  kern_return_t err = pager_read_page(UPI, OFFSET, &buffer, &write_lock);
+
+  pager_lock.lock();
+  tmp_pagemap_entry = pagemap[OFFSET / page_size];
+
+  if (err != KERN_SUCCESS) {
+    tmp_pagemap_entry.set_ERROR(err);
+    for (auto client: tmp_pagemap_entry.WAITLIST_clients()) {
+      if (tmp_pagemap_entry.is_client_on_ACCESSLIST(client.client)) {
+        memory_object_lock_request(client.client, OFFSET, LENGTH, true, true, 0, flush_reply_to);
+        // XXX go on NEXTERROR
+      } else {
+        memory_object_data_error(client.client, OFFSET, LENGTH, err);
+      }
+    }
+  } else {
+    service_WAITLIST(OFFSET, buffer, LENGTH, true);
+    tmp_pagemap_entry.set_ERROR(KERN_SUCCESS);
+  }
+
+  pagemap[OFFSET / page_size] = tmp_pagemap_entry;
 }
 
 #endif
