@@ -314,7 +314,7 @@ class pager : public std::mutex {
 
   pagemap_entry::data tmp_pagemap_entry;
 
-  void service_WAITLIST(vm_offset_t offset, vm_offset_t data, int length, bool deallocate);
+  void service_WAITLIST(vm_offset_t offset, vm_offset_t data, int length, bool allow_write_access, bool deallocate);
 
   void data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFSET,
                     vm_offset_t LENGTH, vm_prot_t DESIRED_ACCESS);
@@ -327,11 +327,11 @@ class pager : public std::mutex {
  * serviced is loaded into tmp_pagemap_entry.
  */
 
-void pager::service_WAITLIST(vm_offset_t offset, vm_offset_t data, int length, bool deallocate)
+void pager::service_WAITLIST(vm_offset_t offset, vm_offset_t data, int length, bool allow_write_access, bool deallocate)
 {
   auto first_client = tmp_pagemap_entry.first_WAITLIST_client();
 
-  if (first_client.write_access_requested) {
+  if (allow_write_access && first_client.write_access_requested) {
     memory_object_data_supply(first_client.client, offset, data, length, deallocate, 0, PRECIOUS, 0);
     tmp_pagemap_entry.add_client_to_ACCESSLIST(first_client.client);
     tmp_pagemap_entry.pop_first_WAITLIST_client();
@@ -439,7 +439,7 @@ void pager::data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFF
       }
     }
   } else {
-    service_WAITLIST(OFFSET, buffer, LENGTH, true);
+    service_WAITLIST(OFFSET, buffer, LENGTH, !write_lock, true);
     tmp_pagemap_entry.set_ERROR(KERN_SUCCESS);
   }
 
