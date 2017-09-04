@@ -591,10 +591,10 @@ m_o_data_request: (kernel requesting a single page)
   if WAITLIST is not empty, add requesting client to WAITLIST and return
   if this client is already on ACCESSLIST, print error message and return
   if another client has WRITE access (WAITLIST is empty), add requesting client to WAITLIST,
-     send lock request (return data; flush; no reply) and return
+     send lock request (internal flush variant) and return
   if WRITE access is requested and ACCESSLIST is not empty (other clients have access),
      add requesting client to WAITLIST (it's empty),
-     send lock requests (return data; flush; no reply) and return
+     send lock requests (internal flush variant) and return
      (we could give out the page with READ access and wait for a unlock request, but I think not)
   else
      (ACCESSLIST is empty or READ access is requested and only READ clients are on ACCESSLIST)
