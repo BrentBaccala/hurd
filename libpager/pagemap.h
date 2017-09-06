@@ -176,6 +176,11 @@ class pagemap_entry
       return false;
     }
 
+    void clear_WAITLIST(void)
+    {
+      WAITLIST.clear();
+    }
+
     void add_client_to_WAITLIST(mach_port_t client, bool write_access_requested)
     {
       WAITLIST.emplace_back(client, write_access_requested);
@@ -369,7 +374,7 @@ class pager : public std::mutex {
 
   void service_WAITLIST(vm_offset_t offset, vm_offset_t data, bool allow_write_access, bool deallocate);
 
-  void send_error_to_WAITLIST(vm_offset_t OFFSET, int LENGTH);
+  void send_error_to_WAITLIST(vm_offset_t OFFSET);
 
   void finalize_unlock(vm_offset_t OFFSET, kern_return_t ERROR);
 
@@ -437,16 +442,17 @@ void pager::service_WAITLIST(vm_offset_t offset, vm_offset_t data, bool allow_wr
 //
 // assumes that pager is locked and tmp_pagemap_entry is loaded
 
-void pager::send_error_to_WAITLIST(vm_offset_t OFFSET, int LENGTH)
+void pager::send_error_to_WAITLIST(vm_offset_t OFFSET)
 {
   for (auto client: tmp_pagemap_entry.WAITLIST_clients()) {
     if (tmp_pagemap_entry.is_client_on_ACCESSLIST(client.client)) {
-      memory_object_lock_request(client.client, OFFSET, LENGTH, true, true, 0, flush_reply_to);
+      memory_object_lock_request(client.client, OFFSET, page_size, true, true, 0, flush_reply_to);
       NEXTERROR.emplace_back(client.client, OFFSET, tmp_pagemap_entry.get_ERROR());
     } else {
-      memory_object_data_error(client.client, OFFSET, LENGTH, tmp_pagemap_entry.get_ERROR());
+      memory_object_data_error(client.client, OFFSET, page_size, tmp_pagemap_entry.get_ERROR());
     }
   }
+  tmp_pagemap_entry.clear_WAITLIST();
 }
 
 // finalize_unlock() - call with pager lock held and tmp_pagemap_entry loaded
@@ -540,11 +546,10 @@ void pager::data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFF
   pager_lock.lock();
   tmp_pagemap_entry = pagemap[OFFSET / page_size];
 
+  tmp_pagemap_entry.set_ERROR(err);
   if (err != KERN_SUCCESS) {
-    tmp_pagemap_entry.set_ERROR(err);
-    send_error_to_WAITLIST(OFFSET, LENGTH);
+    send_error_to_WAITLIST(OFFSET);
   } else {
-    tmp_pagemap_entry.set_ERROR(KERN_SUCCESS);
     service_WAITLIST(OFFSET, buffer, !write_lock, true);
   }
 
@@ -576,7 +581,7 @@ void pager::internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
         if (! tmp_pagemap_entry.get_INVALID()) {
           operation[i] = PAGEIN;
         } else {
-          send_error_to_WAITLIST(page * page_size, page_size);
+          send_error_to_WAITLIST(page * page_size);
         }
       } else if ((tmp_pagemap_entry.ACCESSLIST_num_clients() == 1)
                  && ! tmp_pagemap_entry.get_WRITE_ACCESS_GRANTED()
@@ -608,12 +613,11 @@ void pager::internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
   for (int i = 0; i < npages; i ++, page ++) {
     if (operation[i] == PAGEIN) {
       tmp_pagemap_entry = pagemap[page];
+      tmp_pagemap_entry.set_ERROR(err[i]);
       if (err[i] == KERN_SUCCESS) {
-        tmp_pagemap_entry.set_ERROR(KERN_SUCCESS);
         service_WAITLIST(page * page_size, buffer[i], !write_lock[i], true);
       } else {
-        tmp_pagemap_entry.set_ERROR(err[i]);
-        send_error_to_WAITLIST(page * page_size, page_size);
+        send_error_to_WAITLIST(page * page_size);
       }
       pagemap[page] = tmp_pagemap_entry;
     } else if (operation[i] == UNLOCK) {
