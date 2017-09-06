@@ -581,6 +581,20 @@ service_waitlist: (pass in a pagetable pointer, a data pointer, a read/write fla
      [ ] use a timeout before sending more lock requests?
      [X] send lock requests right away to everything on ACCESSLIST
 
+send_error_to_WAITLIST (pass in an error and offset):
+  XXX: data length must be page_size
+    ( XXX this causes a data_error to be sent for each page, when we could consolidate them, )
+    ( but hopefully data_error is a corner case.  For ENOSPC or EDQUOT, though, not really. )
+  send m_o_data_error's to everything on WAITLIST and clear WAITLIST
+    anything on WAITLIST that's also on ACCESSLIST should get a lock instead of data_error
+      and be put on NEXTERROR list
+  (such a client sent an unlock request and is waiting for a lock, not data_error)
+
+  [ ] flush everything else on ACCESSLIST
+  [X] do nothing to ACCESSLIST
+  [ ] do something more clever with stuff on ACCESSLIST
+     (we got a read error, but other clients have copies of the data)
+
 finalize_unlock: (pass in a page number and an error code)
   if page not flagged ERROR:
      send m_o_lock_request to first client on WAITLIST (no reply), remove this client from WAITLIST,
@@ -619,45 +633,8 @@ m_o_data_request: (kernel requesting a single page)
      unlock pager
      read the page with pager_read_page()
      relock pager
-     if pager_read_page() returned an error, mark page with ERROR=EIO,
-        send m_o_data_error's to everything on WAITLIST and clear WAITLIST
-          anything on WAITLIST that's also on ACCESSLIST should get a lock instead of data_error
-            and be put on NEXTERROR list
-        (such a client sent an unlock request and is waiting for a lock, not data_error)
-
-        [ ] flush everything else on ACCESSLIST
-        [X] do nothing to ACCESSLIST
-        [ ] do something more clever with stuff on ACCESSLIST
-           (we got a read error, but other clients have copies of the data)
-
+     if pager_read_page() returned an error, mark page with ERROR and call send_error_to_WAITLIST
      if no error, service_waitlist(deallocate=true) (read/write status supplied by filesystem), clear ERROR
-
-ISSUE:
-  client on WAITLIST could have sent an unlock request and be waiting for a lock, not data_error
-  a unlock request will come from a client on ACCESSLIST (for READ) and will have it put on WAITLIST (for WRITE)
-  there could be an outstanding flush if something is already on WAITLIST for WRITE
-
-
-RESOLVED ISSUE:
-  this logic could cause multiple overlapping calls to pager_read_page() if a bunch of clients
-    request READ access near simultaneously
-
-RACE CONDITION:
-  client requests access
-  client is put on WAITLIST and pager_read_page() begins
-  another client requests contradictory access via m_o_data_request
-  NOT [ we send a lock request to original client, even though it hasn't gotten the data yet! ]
-  NOT [ then pager_read_page() completes, and we send the data to the original client! ]
-  YES [ no messages are sent since WAITLIST is not empty ]
-  YES [ new client is put on the end of WAITLIST ]
-
-RACE CONDITION:
-  client B has READ access
-  client A requests WRITE access (m_o_data_request)
-  lock (flush) request is sent to client B and client A is added to WAITLIST
-  nearly simultaneously, client B requests WRITE access (unlock)
-  do nothing, since client B wouldn't have sent unlock request if it had already received lock request,
-    so it will interpret the lock request as an answer to the unlock request
 
 m_o_lock_completed: (external variant)
   m_o_lock_completed could have been sent in response to a fs flush, sync, return
@@ -673,11 +650,8 @@ m_o_lock_completed: (internal flush variant)
       remove client from ACCESSLIST
       if ACCESSLIST is empty but WAITLIST is not:
         if INVALID is not set: set PAGEIN flag
-        else (INVALID set):
-          mark page with ERROR=EIO, send m_o_data_error to everything on WAITLIST, and clear WAITLIST
-              anything on WAITLIST that's also on ACCESSLIST should get a lock instead of data_error
-          ( XXX this causes a data_error to be sent for each page, when we could consolidate them, )
-          ( but hopefully data_error is a corner case.  For ENOSPC or EDQUOT, though, not really. )
+        else (INVALID set): call send_error_to_WAITLIST
+          XXX: assumes that ERROR is correctly set whenever INVALID is set
 
       if ACCESSLIST has a single client with READ access and it's also the first client on WAITLIST requesting WRITE access,
         set UNLOCK flag
@@ -697,46 +671,8 @@ m_o_lock_completed: (internal flush variant)
     if page not flagged ERROR:
        service_waitlist(deallocate=true) (read/write status supplied by filesystem), clear ERROR
        XXX: this causes multi-page operations to broken up into single page ops
-    else (page flagged ERROR):
-      mark page with ERROR=EIO, send m_o_data_error to everything on WAITLIST, and clear WAITLIST
-          anything on WAITLIST that's also on ACCESSLIST should get a lock instead of data_error
-            and be put on NEXTERROR list
-
-      [ ] flush everything else on ACCESSLIST
-      [X] do nothing to ACCESSLIST
-      [ ] do something more clever with stuff on ACCESSLIST
-         (we got a read error, but other clients have copies of the data)
-
+    else (page flagged ERROR): call send_error_to_WAITLIST
   for each page flagged UNLOCK: call finalize_unlock
-
-Q: when could a client on WAITLIST be waiting for an lock, not a data_supply?
-A: when that client already had READ access and sent an unlock request to get WRITE access
-  if a client sent an unlock request, then it already had READ access
-  how could this happen if there's (other) clients on WAITLIST?
-  1. a lock/flush message has already been sent to service the clients on WAITLIST,
-       the client sent the unlock request before processing the lock/flush,
-       so essentially the unlock has already been answered and can be ignored
-     this happens if a client is waiting for WRITE access when other clients had access (of some kind)
-  2. the clients are on WAITLIST because we're waiting for paging (in or out) to complete
-     in this case, we need to send a lock
-
-RACE CONDITION:
-  client A has READ access
-  client B requested READ access, and we start paging in (client B goes on WAITLIST)
-  client A requested WRITE access (via unlock), so it goes on WAITLIST
-  client B's pager_read_page() returned an error, so we want to send data_error to B
-     and lock to client A, with a queued NEXTERROR for client A
-
-
-RACE CONDITION: (not sure about this - idea is to trigger something very similar to what is matched in above code)
-  client A has WRITE access
-  client B requests READ access
-  lock request is sent to client A
-  client A returns page with data_return, and client B gets the data and goes on ACCESSLIST
-  client B returns the data and is removed from ACCESSLIST
-  client C requests READ access, goes on WAITLIST and a pager_read_page() starts
-  client A's lock completed message is processed, triggering a second pager_read_page(), since ACCESSLIST is empty
-
 
 m_o_data_unlock: (kernel requesting write access when it's already got read access)
   lock pager
@@ -761,9 +697,6 @@ m_o_data_unlock: (kernel requesting write access when it's already got read acce
     call pager_unlock_page() and set ERROR based on return value
   relock pager
   for all pages with UNLOCK flag set: call finalize_unlock
-
-RESOLVED ISSUE: if multiple clients with READ access attempt to unlock near simultaneously, this
-  logic will trigger multiple lock requests (a set for each client attempting to unlock)
 
 lock_object: (several types: flush, sync, return, response to an unlock request)
   NEW MODE NEEDED: asynchronous, but reply requested
@@ -886,6 +819,35 @@ pager_flush:
   send multiple locks for multiple clients
   set (or increment) locks_pending by the number of lock requests sent
 
+
+POTENTIAL PROBLEMS
+
+ISSUE:
+  client on WAITLIST could have sent an unlock request and be waiting for a lock, not data_error
+  a unlock request will come from a client on ACCESSLIST (for READ) and will have it put on WAITLIST (for WRITE)
+  there could be an outstanding flush if something is already on WAITLIST for WRITE
+
+RESOLVED ISSUE:
+  data_request logic could cause multiple overlapping calls to pager_read_page() if a bunch of clients
+    request READ access near simultaneously
+
+RACE CONDITION:
+  client requests access
+  client is put on WAITLIST and pager_read_page() begins
+  another client requests contradictory access via m_o_data_request
+  NOT [ we send a lock request to original client, even though it hasn't gotten the data yet! ]
+  NOT [ then pager_read_page() completes, and we send the data to the original client! ]
+  YES [ no messages are sent since WAITLIST is not empty ]
+  YES [ new client is put on the end of WAITLIST ]
+
+RACE CONDITION:
+  client B has READ access
+  client A requests WRITE access (m_o_data_request)
+  lock (flush) request is sent to client B and client A is added to WAITLIST
+  nearly simultaneously, client B requests WRITE access (unlock)
+  do nothing, since client B wouldn't have sent unlock request if it had already received lock request,
+    so it will interpret the lock request as an answer to the unlock request
+
 RACE CONDITION:
   client A has WRITE access
   pager_return()  (pager_sync would have kernel_copy = true; pager_flush never returns data)
@@ -897,6 +859,38 @@ RACE CONDITION:
   client A sends completions for both lock requests
   RESULT: pager_write_page() is never called; data just moved from client A to client B
   ( old code would always call write_page(), then set PAGEINWAIT flag on request, then service request after page out finished)
+
+
+Q: when could a client on WAITLIST be waiting for an lock, not a data_supply?
+A: when that client already had READ access and sent an unlock request to get WRITE access
+  if a client sent an unlock request, then it already had READ access
+  how could this happen if there's (other) clients on WAITLIST?
+  1. a lock/flush message has already been sent to service the clients on WAITLIST,
+       the client sent the unlock request before processing the lock/flush,
+       so essentially the unlock has already been answered and can be ignored
+     this happens if a client is waiting for WRITE access when other clients had access (of some kind)
+  2. the clients are on WAITLIST because we're waiting for paging (in or out) to complete
+     in this case, we need to send a lock
+
+RACE CONDITION:
+  client A has READ access
+  client B requested READ access, and we start paging in (client B goes on WAITLIST)
+  client A requested WRITE access (via unlock), so it goes on WAITLIST
+  client B's pager_read_page() returned an error, so we want to send data_error to B
+     and lock to client A, with a queued NEXTERROR for client A
+
+
+RACE CONDITION: (not sure about this - idea is to trigger something very similar to what is matched in above code)
+  client A has WRITE access
+  client B requests READ access
+  lock request is sent to client A
+  client A returns page with data_return, and client B gets the data and goes on ACCESSLIST
+  client B returns the data and is removed from ACCESSLIST
+  client C requests READ access, goes on WAITLIST and a pager_read_page() starts
+  client A's lock completed message is processed, triggering a second pager_read_page(), since ACCESSLIST is empty
+
+RESOLVED ISSUE: if multiple clients with READ access attempt to unlock near simultaneously,
+  data_unlock logic will trigger multiple lock requests (a set for each client attempting to unlock)
 
 
 ISSUES:
