@@ -581,6 +581,21 @@ service_waitlist: (pass in a pagetable pointer, a data pointer, a read/write fla
      [ ] use a timeout before sending more lock requests?
      [X] send lock requests right away to everything on ACCESSLIST
 
+finalize_unlock: (pass in a page number and an error code)
+  if page not flagged ERROR:
+     send m_o_lock_request to first client on WAITLIST (no reply), remove this client from WAITLIST,
+     and upgrade its ACCESSLIST entry to reflect WRITE access
+     if there are additional clients on WAITLIST:
+        [ ] use a timeout before sending a lock request to this client
+        [X] send a lock request right away to this client
+            (XXX note that we just sent a lock request to answer the unlock; really want a timeout here)
+  else (page flagged ERROR):
+     send m_o_lock_request to first client on WAITLIST (internal flush variant)
+     remove this client from WAITLIST
+     add this client and error to NEXTERROR list
+     (wait for reply and don't remove from ACCESSLIST until we get it)
+     (other clients on WAITLIST will be processed when the lock is answered)
+
 m_o_data_request: (kernel requesting a single page)
 
   if this client is on NEXTERROR list and WRITE ACCESS WAS REQUESTED, send a m_o_data_error message,
@@ -692,15 +707,7 @@ m_o_lock_completed: (internal flush variant)
       [ ] do something more clever with stuff on ACCESSLIST
          (we got a read error, but other clients have copies of the data)
 
-  for each page flagged UNLOCK:
-    if page not flagged ERROR:
-       send m_o_lock_request to first client on WAITLIST (no reply), remove this client from WAITLIST,
-       and upgrade its ACCESSLIST entry to reflect WRITE access
-    else (page flagged ERROR):
-       send m_o_lock_request to first client on WAITLIST (flush variant, no reply),
-          remove this client from WAITLIST and ACCESSLIST,
-       XXX: should we ask for a reply and not remove from ACCESSLIST until we get it?
-       and put this client and error on NEXTERROR list
+  for each page flagged UNLOCK: call finalize_unlock
 
 Q: when could a client on WAITLIST be waiting for an lock, not a data_supply?
 A: when that client already had READ access and sent an unlock request to get WRITE access
@@ -753,19 +760,7 @@ m_o_data_unlock: (kernel requesting write access when it's already got read acce
   for all pages with UNLOCK flag set:
     call pager_unlock_page() and set ERROR based on return value
   relock pager
-  for all pages with UNLOCK flag set:
-    if ERROR flag not set:
-       answer with m_o_lock_request (lock_object; not synchronous)
-       remove this client from WAITLIST and update its ACCESSLIST entry to WRITE access
-       if there are additional clients on WAITLIST:
-          [ ] use a timeout before sending a lock request to this client
-          [X] send a lock request right away to this client
-              (XXX note that we just sent a lock request to answer the unlock; really want a timeout here)
-    else (ERROR flag set):
-       answer with m_o_data_lock (internal flush variant)
-       remove this client from WAITLIST
-       add this client and error to NEXTERROR list
-       (other clients on WAITLIST will be processed when the lock is answered)
+  for all pages with UNLOCK flag set: call finalize_unlock
 
 RESOLVED ISSUE: if multiple clients with READ access attempt to unlock near simultaneously, this
   logic will trigger multiple lock requests (a set for each client attempting to unlock)
@@ -815,13 +810,7 @@ m_o_data_return: (kernel returning pages)
       for all pages with UNLOCK set:
         call pager_unlock_page() and set ERROR based on return value
       relock pager
-      for all pages with UNLOCK set:
-        if ERROR is not set:
-           send m_o_lock_object (no reply), remove it from WAITLIST,
-           and upgrade its ACCESSLIST entry to reflect WRITE access
-        else ERROR is set:
-           send m_o_data_lock (flush variant, no reply), remove this client from WAITLIST and ACCESSLIST,
-           and put this client and error on NEXTERROR list
+      for all pages with UNLOCK set: call finalize_unlock
 
   if pages are dirty:
 

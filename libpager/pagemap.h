@@ -9,10 +9,8 @@
    written in C++11 (uses move semantics)
 
    TODO:
-   - we use "int" for things like page number and npages
    - pagemap[] is statically allocated
    - update NOTES to reflect code factorization
-   - update NOTES to reflect slight differences in how unlocks are finalized
    - handle multi page operations
 */
 
@@ -343,6 +341,17 @@ public:
   {}
 };
 
+class NEXTERROR_entry {
+  public:
+  memory_object_control_t client;
+  vm_offset_t offset;
+  kern_return_t error;
+
+  NEXTERROR_entry(memory_object_control_t client, vm_offset_t offset, kern_return_t error)
+    : client(client), offset(offset), error(error)
+  {}
+};
+
 class pager : public std::mutex {
   const int page_size = 1024;
   const bool PRECIOUS = true;
@@ -354,14 +363,15 @@ class pager : public std::mutex {
 
   std::list<WRITEWAIT_entry> WRITEWAIT;
 
+  std::list<NEXTERROR_entry> NEXTERROR;
+
   pagemap_entry::data tmp_pagemap_entry;
 
   void service_WAITLIST(vm_offset_t offset, vm_offset_t data, bool allow_write_access, bool deallocate);
 
   void send_error_to_WAITLIST(vm_offset_t OFFSET, int LENGTH);
 
-  void finalize_unlock(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFSET,
-                       vm_offset_t LENGTH, kern_return_t ERROR);
+  void finalize_unlock(vm_offset_t OFFSET, kern_return_t ERROR);
 
   void service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_lock);
 
@@ -432,7 +442,7 @@ void pager::send_error_to_WAITLIST(vm_offset_t OFFSET, int LENGTH)
   for (auto client: tmp_pagemap_entry.WAITLIST_clients()) {
     if (tmp_pagemap_entry.is_client_on_ACCESSLIST(client.client)) {
       memory_object_lock_request(client.client, OFFSET, LENGTH, true, true, 0, flush_reply_to);
-      // XXX go on NEXTERROR
+      NEXTERROR.emplace_back(client.client, OFFSET, tmp_pagemap_entry.get_ERROR());
     } else {
       memory_object_data_error(client.client, OFFSET, LENGTH, tmp_pagemap_entry.get_ERROR());
     }
@@ -441,20 +451,21 @@ void pager::send_error_to_WAITLIST(vm_offset_t OFFSET, int LENGTH)
 
 // finalize_unlock() - call with pager lock held and tmp_pagemap_entry loaded
 
-void pager::finalize_unlock(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFSET,
-                            vm_offset_t LENGTH, kern_return_t ERROR)
+void pager::finalize_unlock(vm_offset_t OFFSET, kern_return_t ERROR)
 {
+  auto client = tmp_pagemap_entry.first_WAITLIST_client().client;
+
+  tmp_pagemap_entry.pop_first_WAITLIST_client();
+
   if (error == KERN_SUCCESS) {
-    memory_object_lock_request(MEMORY_CONTROL, OFFSET, LENGTH, false, false, VM_PROT_NONE, 0);
-    tmp_pagemap_entry.pop_first_WAITLIST_client();
+    memory_object_lock_request(client, OFFSET, page_size, false, false, VM_PROT_NONE, 0);
     tmp_pagemap_entry.set_WRITE_ACCESS_GRANTED(true);
     if (! tmp_pagemap_entry.is_WAITLIST_empty()) {
-      memory_object_lock_request(MEMORY_CONTROL, OFFSET, LENGTH, true, true, VM_PROT_NONE, flush_reply_to);
+      memory_object_lock_request(client, OFFSET, page_size, true, true, VM_PROT_NONE, flush_reply_to);
     }
   } else {
-    memory_object_lock_request(MEMORY_CONTROL, OFFSET, LENGTH, true, true, VM_PROT_NONE, flush_reply_to);
-    tmp_pagemap_entry.pop_first_WAITLIST_client();
-    // XXX go on NEXTERROR
+    memory_object_lock_request(client, OFFSET, page_size, true, true, VM_PROT_NONE, flush_reply_to);
+    NEXTERROR.emplace_back(client, OFFSET, ERROR);
   }
 }
 
@@ -466,9 +477,16 @@ void pager::data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFF
   assert(LENGTH == page_size);
   assert(OFFSET % page_size == 0);
 
-  // XXX if NEXTERROR ...
-
   tmp_pagemap_entry = pagemap[OFFSET / page_size];
+
+  for (auto ne = NEXTERROR.cbegin(); ne != NEXTERROR.cend(); ne ++) {
+    if ((ne->client == MEMORY_CONTROL) && (ne->offset == OFFSET)) {
+      memory_object_data_error(MEMORY_CONTROL, OFFSET, LENGTH, ne->error);
+      tmp_pagemap_entry.set_ERROR(ne->error);
+      NEXTERROR.erase(ne);
+      return;
+    }
+  }
 
   if (tmp_pagemap_entry.get_PAGINGOUT()) {
     if (tmp_pagemap_entry.is_WAITLIST_empty() && ! tmp_pagemap_entry.is_ACCESSLIST_empty()) {
@@ -541,13 +559,13 @@ void pager::internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
   assert(LENGTH % page_size == 0);
   assert(OFFSET % page_size == 0);
 
-  int npages = LENGTH / page_size;
+  vm_size_t npages = LENGTH / page_size;
 
   uint8_t * operation = (uint8_t *) alloca(npages);
   const int PAGEIN = 1;
   const int UNLOCK = 2;
 
-  int page = OFFSET / page_size;
+  vm_offset_t page = OFFSET / page_size;
   for (int i = 0; i < npages; i ++, page ++) {
     operation[i] = 0;
     if (pagemap[page]->is_client_on_ACCESSLIST(MEMORY_CONTROL)) {
@@ -600,18 +618,7 @@ void pager::internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
       pagemap[page] = tmp_pagemap_entry;
     } else if (operation[i] == UNLOCK) {
       tmp_pagemap_entry = pagemap[page];
-      auto client = tmp_pagemap_entry.first_WAITLIST_client().client;
-      if (err[i] == KERN_SUCCESS) {
-        tmp_pagemap_entry.set_ERROR(KERN_SUCCESS);
-        tmp_pagemap_entry.set_WRITE_ACCESS_GRANTED(true);
-        tmp_pagemap_entry.pop_first_WAITLIST_client();
-        memory_object_lock_request(client, page * page_size, page_size, false, false, VM_PROT_NONE, 0);
-      } else {
-        // XXX go on NEXTERROR
-        tmp_pagemap_entry.pop_first_WAITLIST_client();
-        tmp_pagemap_entry.remove_client_from_ACCESSLIST(client);
-        memory_object_lock_request(client, page * page_size, page_size, false, true, 0, 0);
-      }
+      finalize_unlock(page * page_size, err[i]);
       pagemap[page] = tmp_pagemap_entry;
     }
   }
@@ -625,11 +632,11 @@ void pager::data_unlock(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
   assert(LENGTH % page_size == 0);
   assert(OFFSET % page_size == 0);
 
-  int npages = LENGTH / page_size;
+  vm_size_t npages = LENGTH / page_size;
 
   bool * do_unlock = (bool *) alloca(npages * sizeof(bool));
 
-  int page = OFFSET / page_size;
+  vm_offset_t page = OFFSET / page_size;
   for (int i = 0; i < npages; i ++, page ++) {
     do_unlock[i] = false;
     tmp_pagemap_entry = pagemap[page];
@@ -665,7 +672,7 @@ void pager::data_unlock(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
   for (int i = 0; i < npages; i ++, page ++) {
     if (do_unlock[i]) {
       tmp_pagemap_entry = pagemap[page];
-      finalize_unlock(MEMORY_CONTROL, page * page_size, page_size, err[i]);
+      finalize_unlock(page * page_size, err[i]);
       pagemap[page] = tmp_pagemap_entry;
     }
   }
@@ -676,7 +683,7 @@ void pager::data_unlock(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
 void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_lock)
 {
   auto current = WRITEWAIT.front();
-  int npages = current.LENGTH / page_size;
+  vm_size_t npages = current.LENGTH / page_size;
 
   WRITEWAIT.pop_front();
 
@@ -693,7 +700,7 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
   bool * do_pageout = (bool *) alloca(npages * sizeof(bool));
   bool any_pageout_required = false;
 
-  int page = current.OFFSET / page_size;
+  vm_offset_t page = current.OFFSET / page_size;
   for (int i = 0; i < npages; i ++, page ++) {
     do_pageout[i] = ! matching_page_on_WRITEWAIT(page);
     if (do_pageout[i]) {
@@ -773,12 +780,12 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
   assert(LENGTH % page_size == 0);
   assert(OFFSET % page_size == 0);
 
-  int npages = LENGTH / page_size;
+  vm_size_t npages = LENGTH / page_size;
 
   bool * do_unlock = (bool *) alloca(npages * sizeof(bool));
   bool any_unlocks_required = false;
 
-  int page = OFFSET / page_size;
+  vm_offset_t page = OFFSET / page_size;
   for (int i = 0; i < npages; i ++, page ++) {
     do_unlock[i] = false;
     tmp_pagemap_entry = pagemap[page];
@@ -820,7 +827,7 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
     for (int i = 0; i < npages; i ++, page ++) {
       if (do_unlock[i]) {
         tmp_pagemap_entry = pagemap[page];
-        finalize_unlock(MEMORY_CONTROL, page * page_size, page_size, err[i]);
+        finalize_unlock(page * page_size, err[i]);
         pagemap[page] = tmp_pagemap_entry;
       }
     }
