@@ -571,7 +571,8 @@ CAP THEOREM
 
 NEW PSEUDOCODE
 
-service_waitlist: (pass in a pagetable pointer, a data pointer/length, a read/write flag, a deallocate flage)
+service_waitlist: (pass in a pagetable pointer, a data pointer, a read/write flag, a deallocate flage)
+  XXX: data length must be page_size, as this logic is for a single page
   call with pager locked
   use m_o_data_supply to supply first set of WAITLIST clients
     all but last specify deallocate=false; last one specifies deallocation flag as passed in
@@ -660,6 +661,8 @@ m_o_lock_completed: (internal flush variant)
         else (INVALID set):
           mark page with ERROR=EIO, send m_o_data_error to everything on WAITLIST, and clear WAITLIST
               anything on WAITLIST that's also on ACCESSLIST should get a lock instead of data_error
+          ( XXX this causes a data_error to be sent for each page, when we could consolidate them, )
+          ( but hopefully data_error is a corner case.  For ENOSPC or EDQUOT, though, not really. )
 
       if ACCESSLIST has a single client with READ access and it's also the first client on WAITLIST requesting WRITE access,
         set UNLOCK flag
@@ -678,6 +681,7 @@ m_o_lock_completed: (internal flush variant)
   for each page flagged PAGEIN:
     if page not flagged ERROR:
        service_waitlist(deallocate=true) (read/write status supplied by filesystem), clear ERROR
+       XXX: this causes multi-page operations to broken up into single page ops
     else (page flagged ERROR):
       mark page with ERROR=EIO, send m_o_data_error to everything on WAITLIST, and clear WAITLIST
           anything on WAITLIST that's also on ACCESSLIST should get a lock instead of data_error
@@ -690,10 +694,12 @@ m_o_lock_completed: (internal flush variant)
 
   for each page flagged UNLOCK:
     if page not flagged ERROR:
-       send m_o_lock_object (no reply), remove this client from WAITLIST,
+       send m_o_lock_request to first client on WAITLIST (no reply), remove this client from WAITLIST,
        and upgrade its ACCESSLIST entry to reflect WRITE access
     else (page flagged ERROR):
-       send m_o_data_lock (flush variant, no reply), remove this client from WAITLIST and ACCESSLIST,
+       send m_o_lock_request to first client on WAITLIST (flush variant, no reply),
+          remove this client from WAITLIST and ACCESSLIST,
+       XXX: should we ask for a reply and not remove from ACCESSLIST until we get it?
        and put this client and error on NEXTERROR list
 
 Q: when could a client on WAITLIST be waiting for an lock, not a data_supply?
@@ -749,12 +755,12 @@ m_o_data_unlock: (kernel requesting write access when it's already got read acce
   relock pager
   for all pages with UNLOCK flag set:
     if ERROR flag not set:
-       answer with m_o_data_lock (lock_object; not synchronous)
+       answer with m_o_lock_request (lock_object; not synchronous)
        remove this client from WAITLIST and update its ACCESSLIST entry to WRITE access
        if there are additional clients on WAITLIST:
           [ ] use a timeout before sending a lock request to this client
           [X] send a lock request right away to this client
-              (note that we just sent a lock request to answer the unlock)
+              (XXX note that we just sent a lock request to answer the unlock; really want a timeout here)
     else (ERROR flag set):
        answer with m_o_data_lock (internal flush variant)
        remove this client from WAITLIST
@@ -802,6 +808,8 @@ m_o_data_return: (kernel returning pages)
         set UNLOCK flag
         (a client with READ access requested WRITE access and had to wait for other clients with READ access to flush)
     if any pages required UNLOCK:
+      ( this can't happen if pages are dirty )
+      ASSERT: ! pages_dirty
       XXX: should this code be moved down further?
       unlock pager
       for all pages with UNLOCK set:
@@ -873,6 +881,7 @@ m_o_data_return: (kernel returning pages)
     if WRITEWAIT still has messages on it, pop next message as current message and goto (1)
 
   else (pages are not dirty), munmap() data
+    XXX: notify?
 
 pager_sync:
   only needs to do anything if a client has WRITE access
