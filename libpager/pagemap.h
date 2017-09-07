@@ -20,6 +20,7 @@
 #include <set>
 #include <vector>
 #include <list>
+#include <map>
 #include <tuple>
 
 #include <mutex>
@@ -370,6 +371,18 @@ class pager : public std::mutex {
 
   std::list<NEXTERROR_entry> NEXTERROR;
 
+  struct outstanding_lock_data {
+    int locks_pending;
+    int writes_pending;
+    outstanding_lock_data(void)
+    {
+      locks_pending = 0;
+      writes_pending = 0;
+    }
+  };
+
+  std::map<std::pair<vm_offset_t, vm_size_t>, outstanding_lock_data> outstanding_locks;
+
   pagemap_entry::data tmp_pagemap_entry;
 
   void service_WAITLIST(vm_offset_t offset, vm_offset_t data, bool allow_write_access, bool deallocate);
@@ -379,6 +392,9 @@ class pager : public std::mutex {
   void finalize_unlock(vm_offset_t OFFSET, kern_return_t ERROR);
 
   void service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_lock);
+
+
+  void external_lock_request(vm_offset_t OFFSET, vm_size_t LENGTH, int RETURN, bool FLUSH, bool sync);
 
 
   void data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFSET,
@@ -554,6 +570,46 @@ void pager::data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFF
   }
 
   pagemap[OFFSET / page_size] = tmp_pagemap_entry;
+}
+
+void pager::external_lock_request(vm_offset_t OFFSET, vm_size_t LENGTH, int RETURN, bool FLUSH, bool sync)
+{
+  std::unique_lock<std::mutex> pager_lock(*this);
+
+  // sync: flush=false, return=true(MEMORY_OBJECT_RETURN_DIRTY)
+  // return: flush=true, return=true
+  // flush: flush=true, return=false
+
+  bool only_signal_WRITE_clients = (! FLUSH) && (RETURN != MEMORY_OBJECT_RETURN_ALL);
+
+  // XXX allocates on heap.  Would be faster to allocate on stack
+  std::set<memory_object_control_t> clients;
+
+  vm_size_t npages = LENGTH / page_size;
+
+  vm_offset_t page = OFFSET / page_size;
+  for (int i = 0; i < npages; i ++, page ++) {
+    for (auto client: pagemap[page]->ACCESSLIST_clients()) {
+      if (! only_signal_WRITE_clients || pagemap[page]->get_WRITE_ACCESS_GRANTED()) {
+        clients.insert(client);
+      }
+    }
+  }
+
+  for (auto client: clients) {
+    memory_object_lock_request(client, OFFSET, LENGTH, RETURN, FLUSH, VM_PROT_NO_CHANGE, sync ? flush_reply_to : 0);
+  }
+
+  // we're not using a separate reply port for each external lock request, so we
+  // track them by OFFSET and LENGTH; more than one request can be outstanding
+  // for each OFFSET/LENGTH pair.
+
+  // std::map's operator[] will insert a value-initialized datum if the specified key doesn't exist
+  // http://en.cppreference.com/w/cpp/container/map/operator_at
+
+  outstanding_locks[{OFFSET, LENGTH}].locks_pending += clients.size();
+
+  // need to make this a list so we can keep a pointer to "last lock incremented"
 }
 
 void pager::internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
