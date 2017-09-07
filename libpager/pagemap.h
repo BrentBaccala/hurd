@@ -20,7 +20,6 @@
 #include <set>
 #include <vector>
 #include <list>
-#include <map>
 #include <tuple>
 
 #include <mutex>
@@ -372,16 +371,17 @@ class pager : public std::mutex {
   std::list<NEXTERROR_entry> NEXTERROR;
 
   struct outstanding_lock_data {
+    vm_offset_t offset;
+    vm_size_t length;
     int locks_pending;
     int writes_pending;
-    outstanding_lock_data(void)
-    {
-      locks_pending = 0;
-      writes_pending = 0;
-    }
+
+    outstanding_lock_data(vm_offset_t offset, vm_size_t length, int locks_pending, int writes_pending) :
+      offset(offset), length(length), locks_pending(locks_pending), writes_pending(writes_pending)
+    { }
   };
 
-  std::map<std::pair<vm_offset_t, vm_size_t>, outstanding_lock_data> outstanding_locks;
+  std::list<outstanding_lock_data> outstanding_locks;
 
   pagemap_entry::data tmp_pagemap_entry;
 
@@ -604,10 +604,18 @@ void pager::external_lock_request(vm_offset_t OFFSET, vm_size_t LENGTH, int RETU
   // track them by OFFSET and LENGTH; more than one request can be outstanding
   // for each OFFSET/LENGTH pair.
 
-  // std::map's operator[] will insert a value-initialized datum if the specified key doesn't exist
-  // http://en.cppreference.com/w/cpp/container/map/operator_at
+  for (auto & lock: outstanding_locks) {
+    if ((lock.offset == OFFSET) && (lock.offset == LENGTH)) {
+      lock.locks_pending += clients.size();
+      goto wait_for_locks;
+    }
+  }
 
-  outstanding_locks[{OFFSET, LENGTH}].locks_pending += clients.size();
+  outstanding_locks.emplace_back(OFFSET, LENGTH, clients.size(), 0);
+
+ wait_for_locks:
+
+  ;
 
   // need to make this a list so we can keep a pointer to "last lock incremented"
 }
