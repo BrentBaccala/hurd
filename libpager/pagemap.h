@@ -23,6 +23,7 @@
 #include <tuple>
 
 #include <mutex>
+#include <condition_variable>
 
 extern "C" {
 #include <sys/mman.h>
@@ -341,6 +342,8 @@ public:
   vm_size_t LENGTH;
   boolean_t KERNEL_COPY;
 
+  std::condition_variable waiting_threads;
+
   WRITEWAIT_entry(vm_offset_t OFFSET, vm_offset_t DATA, vm_size_t LENGTH, boolean_t KERNEL_COPY)
     : OFFSET(OFFSET), DATA(DATA), LENGTH(LENGTH), KERNEL_COPY(KERNEL_COPY)
   {}
@@ -369,19 +372,6 @@ class pager : public std::mutex {
   std::list<WRITEWAIT_entry> WRITEWAIT;
 
   std::list<NEXTERROR_entry> NEXTERROR;
-
-  struct outstanding_lock_data {
-    vm_offset_t offset;
-    vm_size_t length;
-    int locks_pending;
-    int writes_pending;
-
-    outstanding_lock_data(vm_offset_t offset, vm_size_t length, int locks_pending, int writes_pending) :
-      offset(offset), length(length), locks_pending(locks_pending), writes_pending(writes_pending)
-    { }
-  };
-
-  std::list<outstanding_lock_data> outstanding_locks;
 
   pagemap_entry::data tmp_pagemap_entry;
 
@@ -574,11 +564,9 @@ void pager::data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFF
 
 void pager::external_lock_request(vm_offset_t OFFSET, vm_size_t LENGTH, int RETURN, bool FLUSH, bool sync)
 {
-  std::unique_lock<std::mutex> pager_lock(*this);
-
-  // sync: flush=false, return=true(MEMORY_OBJECT_RETURN_DIRTY)
-  // return: flush=true, return=true
-  // flush: flush=true, return=false
+  // sync: flush=false, return=MEMORY_OBJECT_RETURN_DIRTY
+  // return: flush=true, return=MEMORY_OBJECT_RETURN_ALL
+  // flush: flush=true, return=MEMORY_OBJECT_RETURN_NONE
 
   bool only_signal_WRITE_clients = (! FLUSH) && (RETURN != MEMORY_OBJECT_RETURN_ALL);
 
@@ -587,37 +575,65 @@ void pager::external_lock_request(vm_offset_t OFFSET, vm_size_t LENGTH, int RETU
 
   vm_size_t npages = LENGTH / page_size;
 
-  vm_offset_t page = OFFSET / page_size;
-  for (int i = 0; i < npages; i ++, page ++) {
-    for (auto client: pagemap[page]->ACCESSLIST_clients()) {
-      if (! only_signal_WRITE_clients || pagemap[page]->get_WRITE_ACCESS_GRANTED()) {
-        clients.insert(client);
+  {
+    std::unique_lock<std::mutex> pager_lock(*this);
+
+    vm_offset_t page = OFFSET / page_size;
+    for (int i = 0; i < npages; i ++, page ++) {
+      for (auto client: pagemap[page]->ACCESSLIST_clients()) {
+        if (! only_signal_WRITE_clients || pagemap[page]->get_WRITE_ACCESS_GRANTED()) {
+          clients.insert(client);
+        }
       }
     }
   }
 
-  for (auto client: clients) {
-    memory_object_lock_request(client, OFFSET, LENGTH, RETURN, FLUSH, VM_PROT_NO_CHANGE, sync ? flush_reply_to : 0);
-  }
+  if (! sync) {
 
-  // we're not using a separate reply port for each external lock request, so we
-  // track them by OFFSET and LENGTH; more than one request can be outstanding
-  // for each OFFSET/LENGTH pair.
+    for (auto client: clients) {
+      memory_object_lock_request(client, OFFSET, LENGTH, RETURN, FLUSH, VM_PROT_NO_CHANGE, 0);
+    }
 
-  for (auto & lock: outstanding_locks) {
-    if ((lock.offset == OFFSET) && (lock.offset == LENGTH)) {
-      lock.locks_pending += clients.size();
-      goto wait_for_locks;
+  } else {
+
+    mach_port_t reply;
+    int locks_outstanding = 0;
+
+    mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &reply);
+
+    for (auto client: clients) {
+      memory_object_lock_request(client, OFFSET, LENGTH, RETURN, FLUSH, VM_PROT_NO_CHANGE, reply);
+      locks_outstanding ++;
+    }
+
+    while (locks_outstanding) {
+      machMessage msg;
+
+      // XXX should we check to make sure that the message is a lock_reply?
+      mach_msg (msg, MACH_RCV_MSG, 0, msg.max_size, reply, 0, MACH_PORT_NULL);
+
+      locks_outstanding --;
+    }
+
+    // XXX perhaps we should use deallocate or mod_refs instead?
+    mach_port_destroy (mach_task_self (), reply);
+
+    // now we have to wait until any outstanding writes complete
+
+    // find the last data block on WRITEWAIT that overlaps this lock request
+    // and wait for it to finish
+
+    {
+      std::unique_lock<std::mutex> pager_lock(*this);
+
+      for (auto iter = WRITEWAIT.rbegin(); iter != WRITEWAIT.rend(); iter ++) {
+        if ((iter->OFFSET <= OFFSET + LENGTH) && (iter->OFFSET + iter->LENGTH >= OFFSET)) {
+          iter->waiting_threads.wait(pager_lock);
+          break;
+        }
+      }
     }
   }
-
-  outstanding_locks.emplace_back(OFFSET, LENGTH, clients.size(), 0);
-
- wait_for_locks:
-
-  ;
-
-  // need to make this a list so we can keep a pointer to "last lock incremented"
 }
 
 void pager::internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
@@ -750,19 +766,20 @@ void pager::data_unlock(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
 
 void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_lock)
 {
-  auto current = WRITEWAIT.front();
+  auto & current = WRITEWAIT.front();
   vm_size_t npages = current.LENGTH / page_size;
 
-  WRITEWAIT.pop_front();
-
-  auto matching_page_on_WRITEWAIT = [this] (vm_offset_t page) -> bool
+  auto matching_page_count_on_WRITEWAIT = [this] (vm_offset_t page) -> int
     {
-      for (auto next: WRITEWAIT) {
+      int count = 0;
+
+      for (auto & next: WRITEWAIT) {
         if ((next.OFFSET <= page * page_size) && (next.OFFSET + next.LENGTH >= (page + 1) * page_size)) {
-          return true;
+          count ++;
         }
       }
-      return false;
+
+      return count;
     };
 
   bool * do_pageout = (bool *) alloca(npages * sizeof(bool));
@@ -770,7 +787,7 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
 
   vm_offset_t page = current.OFFSET / page_size;
   for (int i = 0; i < npages; i ++, page ++) {
-    do_pageout[i] = ! matching_page_on_WRITEWAIT(page);
+    do_pageout[i] = (matching_page_count_on_WRITEWAIT(page) > 1);
     if (do_pageout[i]) {
       any_pageout_required = true;
     }
@@ -806,7 +823,7 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
         tmp_pagemap_entry.set_INVALID(true);
         tmp_pagemap_entry.set_ERROR(err[i]);
       }
-      if (! matching_page_on_WRITEWAIT(page)) {
+      if (matching_page_count_on_WRITEWAIT(page) == 1) {
         tmp_pagemap_entry.set_PAGINGOUT(false);
         if (! current.KERNEL_COPY) {
           if (! tmp_pagemap_entry.is_WAITLIST_empty()) {
@@ -822,8 +839,8 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
   }
 
   munmap((void*) current.DATA, current.LENGTH);
-
-  // XXX handle lock requests
+  current.waiting_threads.notify_all();
+  WRITEWAIT.pop_front();
 
   if (notify_on_evict && any_notification_required) {
     pager_lock.unlock();
