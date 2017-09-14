@@ -16,7 +16,6 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 
-#include "priv.h"
 #include "pager.h"
 #include <sys/mman.h>
 #include <hurd/sigpreempt.h>

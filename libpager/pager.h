@@ -19,6 +19,10 @@
 #ifndef _HURD_PAGER_
 #define _HURD_PAGER_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <hurd/ports.h>
 
 /* This declaration exists to place struct user_pager_info in the proper
@@ -235,5 +239,9 @@ pager_clear_user_data (struct user_pager_info *pager);
    this function to do nothing.  */
 void
 pager_dropweak (struct user_pager_info *p);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

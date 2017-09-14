@@ -1,5 +1,5 @@
-/* Pager shutdown in pager library
-   Copyright (C) 1994, 1995 Free Software Foundation
+/* Return the port corresponding to a pager.
+   Copyright (C) 1993, 1994 Free Software Foundation
 
    This program is free software; you can redistribute it and/or
    modify it under the terms of the GNU General Public License as
@@ -15,18 +15,13 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 
-#include "priv.h"
-#include <mach/notify.h>
+#include "pagemap.h"
 
-/* Shutdown pager P and prevent any future paging activity on it.  */
-void
-pager_shutdown (struct pager *p)
+/* Return the port (receive right) corresponding to a pager.  It is
+   essential that a new send right be created from this port.  */
+extern "C"
+mach_port_t
+pager_get_port (struct pager *p)
 {
-  /* Sync and flush pager */
-  pager_sync (p, 1);
-  pager_flush (p, 1);
-  pthread_mutex_lock (&p->interlock);
-  p->pager_state = SHUTDOWN;
-  ports_destroy_right (p);
-  pthread_mutex_unlock (&p->interlock);
+  return ports_get_right (p);
 }

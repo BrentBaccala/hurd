@@ -18,12 +18,11 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111, USA. */
 
-#include "priv.h"
+#include "pagemap.h"
 
-void
-_pager_real_dropweak (void *arg)
+extern "C"
+struct user_pager_info *
+pager_get_upi (struct pager *p)
 {
-  struct pager *p = arg;
-  
-  pager_dropweak (p->upi);
+  return p->upi;
 }

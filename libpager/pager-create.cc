@@ -15,7 +15,10 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 
-#include "priv.h"
+#include "pagemap.h"
+#include "mig-decls.h"
+
+struct port_class *_pager_class;
 
 static struct pager *
 _pager_create (size_t size,
@@ -25,30 +28,17 @@ _pager_create (size_t size,
 	       boolean_t notify_on_evict)
 {
   struct pager *p;
+  void * result;
 
-  errno = ports_create_port (_pager_class, bucket, sizeof *p + size, &p);
+  errno = ports_create_port (_pager_class, bucket, sizeof *p + size, &result);
   if (errno)
     return 0;
 
-  p->pager_state = NOTINIT;
-  pthread_mutex_init (&p->interlock, NULL);
-  pthread_cond_init (&p->wakeup, NULL);
-  p->lock_requests = 0;
-  p->attribute_requests = 0;
-  p->may_cache = may_cache;
-  p->copy_strategy = copy_strategy;
-  p->notify_on_evict = notify_on_evict;
-  p->memobjcntl = MACH_PORT_NULL;
-  p->memobjname = MACH_PORT_NULL;
-  p->noterm = 0;
-  p->termwaiting = 0;
-  p->pagemap = 0;
-  p->pagemapsize = 0;
-
-  return p;
+  return new(result) pager(may_cache, copy_strategy, notify_on_evict);
 }
 
 /* Create and return a new pager with user info UPI.  */
+extern "C"
 struct pager *
 pager_create (struct user_pager_info *upi,
 	      struct port_bucket *bucket,
@@ -65,6 +55,7 @@ pager_create (struct user_pager_info *upi,
   return p;
 }
 
+extern "C"
 struct pager *
 pager_create_alloc (size_t u_pager_size,
 		    struct port_bucket *bucket,
@@ -82,6 +73,9 @@ pager_create_alloc (size_t u_pager_size,
   return p;
 }
 
+
+void _pager_clean (void *arg);
+void _pager_real_dropweak (void *arg);
 
 /* This causes the function to be run at startup by compiler magic. */
 static void create_class (void) __attribute__ ((constructor));

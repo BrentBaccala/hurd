@@ -16,7 +16,6 @@
    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 
 
-#include "priv.h"
 #include "memory_object_S.h"
 #include <stdio.h>
 
@@ -40,5 +39,14 @@ _pager_S_memory_object_supply_completed (struct pager *p,
 				       vm_offset_t err_off)
 {
   printf ("m_o_supply_completed called\n");
+  return EOPNOTSUPP;
+}
+
+kern_return_t __attribute__((weak))
+_pager_S_memory_object_change_completed (struct pager *p,
+				       boolean_t maycache,
+				       memory_object_copy_strategy_t strat)
+{
+  printf ("m_o_change_completed called\n");
   return EOPNOTSUPP;
 }

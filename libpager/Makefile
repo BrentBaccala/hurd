@@ -17,28 +17,32 @@
 dir := libpager
 makemode := library
 
+%_pic.o: %.cc
+	$(COMPILE.cc) $< -DPIC -fPIC -o $@
+
 libname = libpager
-SRCS = data-request.c data-return.c data-unlock.c pager-port.c \
-	inhibit-term.c lock-completed.c lock-object.c mark-error.c \
-	object-init.c object-terminate.c pagemap.c \
-	pager-create.c pager-flush.c pager-shutdown.c pager-sync.c \
-	stubs.c demuxer.c chg-compl.c pager-attr.c clean.c \
-	dropweak.c get-upi.c pager-memcpy.c pager-return.c
+SRCS = data-request.cc data-return.cc data-unlock.cc pager-port.cc \
+	lock-completed.cc get-error.cc \
+	object-init.cc object-terminate.cc pagemap.cc \
+	pager-create.cc pager-flush.cc pager-shutdown.cc pager-sync.cc \
+	stubs.c demuxer.c pager-attr.cc clean.cc \
+	dropweak.c get-upi.cc pager-memcpy.c pager-return.cc
 installhdrs = pager.h
 
 HURDLIBS= ports
 LDLIBS += -lpthread
-OBJS = $(SRCS:.c=.o) memory_objectServer.o
+OBJS = $(patsubst %.cc, %.o, $(SRCS:.c=.o)) memory_objectServer.o
 
 MIGSFLAGS = -imacros $(srcdir)/mig-mutate.h
 MIGCOMSFLAGS = -prefix _pager_
 
-LDLIBS = -L . -lpager -lports -lpthread
+LDLIBS = -lports -lpthread
 
 # This is broken.  $(progtarg) is an internal target used by Makeconf,
 # and shouldn't be referenced here.  Unfortunately, Makeconf provides
 # no supported way to specify binaries to be built with libraries.
 
 progtarg: libpager-test
+libpager-test: LDLIBS = -L . -lpager -lports -lpthread
 
 include ../Makeconf

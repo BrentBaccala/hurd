@@ -21,7 +21,6 @@
 #include <pthread.h>
 #include <string.h>
 
-#include "priv.h"
 #include "memory_object_S.h"
 #include "libports/notify_S.h"
 #include "queue.h"

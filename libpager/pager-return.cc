@@ -1,6 +1,6 @@
 /* 
-   Copyright (C) 1995 Free Software Foundation, Inc.
-   Written by Michael I. Bushnell.
+   Copyright (C) 1996 Free Software Foundation, Inc.
+   Written by Michael I. Bushnell, p/BSG.
 
    This file is part of the GNU Hurd.
 
@@ -18,10 +18,26 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111, USA. */
 
-#include "priv.h"
+#include "pagemap.h"
 
-struct user_pager_info *
-pager_get_upi (struct pager *p)
+#include "pager.h"
+
+/* Have all dirty pages written back, and also flush the contents of
+   the kernel's cache. */
+void
+pager_return (struct pager *p, int wait)
 {
-  return p->upi;
+  vm_address_t offset;
+  vm_size_t len;
+  
+  pager_report_extent (p->upi, &offset, &len);
+
+  p->lock_object (offset, len, MEMORY_OBJECT_RETURN_ALL, 1, wait);
+}
+
+void
+pager_return_some (struct pager *p, vm_address_t offset,
+		   vm_size_t size, int wait)
+{
+  p->lock_object (offset, size, MEMORY_OBJECT_RETURN_ALL, 1, wait);
 }

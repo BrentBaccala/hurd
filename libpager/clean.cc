@@ -1,6 +1,6 @@
 /* 
-   Copyright (C) 1996 Free Software Foundation, Inc.
-   Written by Michael I. Bushnell, p/BSG.
+   Copyright (C) 1995, 1996 Free Software Foundation, Inc.
+   Written by Michael I. Bushnell.
 
    This file is part of the GNU Hurd.
 
@@ -18,26 +18,21 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111, USA. */
 
-#include "priv.h"
+#include "pagemap.h"
 
-/* Have all dirty pages written back, and also flush the contents of
-   the kernel's cache. */
+/* Called by port management routines when the last send-right
+   to a pager has gone away.  This is a dual of pager_create.  */
 void
-pager_return (struct pager *p, int wait)
+_pager_clean (void *arg)
 {
-  vm_address_t offset;
-  vm_size_t len;
-  
-  pager_report_extent (p->upi, &offset, &len);
-  
-  _pager_lock_object (p, offset, len, MEMORY_OBJECT_RETURN_ALL, 1,
-		      VM_PROT_NO_CHANGE, wait);
-}
+  struct pager *p = (struct pager *) arg;
 
-void
-pager_return_some (struct pager *p, vm_address_t offset,
-		   vm_size_t size, int wait)
-{
-  _pager_lock_object (p, offset, size, MEMORY_OBJECT_RETURN_ALL, 1,
-		      VM_PROT_NO_CHANGE, wait);
+  // libports malloc'ed the struct pager, then we did a placement new
+  // in _pager_create to call the C++ constructor.  Now we call the
+  // destructor, not "delete p", since when this function returns
+  // libports will free() the memory.
+
+  // see https://en.wikipedia.org/wiki/Placement_syntax
+
+  p->~pager();
 }

@@ -15,49 +15,23 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 
-#include "priv.h"
-#include "memory_object_S.h"
-#include <stdio.h>
+#include "pagemap.h"
 
 /* The kernel calls this (as described in <mach/memory_object.defs>)
    when a memory_object_lock_request call has completed.  Read this
    in combination with lock-object.c.  */
+extern "C"
 kern_return_t
 _pager_S_memory_object_lock_completed (struct pager *p,
 					    mach_port_t control,
 					    vm_offset_t offset,
 					    vm_size_t length)
 {
-  error_t err = 0;
-  struct lock_request *lr;
-
   if (!p
-      || p->port.class != _pager_class)
+      || p->port.port_class != _pager_class)
     return EOPNOTSUPP;
 
-  pthread_mutex_lock (&p->interlock);
+  p->internal_lock_completed(control, offset, length);
 
-  if (control != p->memobjcntl)
-    {
-      printf ("lock_completed: bad control port\n");
-      err = EPERM;
-      goto out;
-    }
-
-  mach_port_deallocate (mach_task_self (), control);
-
-  for (lr = p->lock_requests; lr; lr = lr->next)
-    if (lr->start == offset && lr->end == offset + length)
-      {
-	if (lr->locks_pending)
-	  --lr->locks_pending;
-	if (!lr->locks_pending && !lr->pending_writes)
-	  pthread_cond_broadcast (&p->wakeup);
-	break;
-      }
-      
- out:
-  pthread_mutex_unlock (&p->interlock);
-
-  return err;
+  return 0;
 }

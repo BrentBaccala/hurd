@@ -1,5 +1,5 @@
-/* Return the port corresponding to a pager.
-   Copyright (C) 1993, 1994 Free Software Foundation
+/* Pager shutdown in pager library
+   Copyright (C) 1994, 1995 Free Software Foundation
 
    This program is free software; you can redistribute it and/or
    modify it under the terms of the GNU General Public License as
@@ -15,12 +15,19 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 
-#include "priv.h"
+#include "pagemap.h"
+#include "pager.h"
 
-/* Return the port (receive right) corresponding to a pager.  It is
-   essential that a new send right be created from this port.  */
-mach_port_t
-pager_get_port (struct pager *p)
+/* Shutdown pager P and prevent any future paging activity on it.  */
+void
+pager_shutdown (struct pager *p)
 {
-  return ports_get_right (p);
+  /* Fetch and flush all pages */
+  pager_return (p, 1);
+
+  // XXX NOTES files has more ideas about what to do here
+
+  // Don't "delete p" here, as ports_destroy_right will probably do
+  // this for us.
+  ports_destroy_right (p);
 }
