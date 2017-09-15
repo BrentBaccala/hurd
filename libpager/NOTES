@@ -222,6 +222,10 @@ BUG IN CURRENT CODE (NOT):
 BUG IN CURRENT CODE:
   m_o_data_supply is called in data-return.c with precious = 0, instead of notify_on_evict
 
+BUG IN CURRENT CODE:
+  in pager_shutdown(), pthread_mutex_unlock() is called after ports_destroy_right(), which
+  might have free'd the struct pager
+
 CAVEAT IN CURRENT CODE:
   if we get a write error during a m_o_data_return, and we're flagged PAGEINWAIT because of an outstanding READ request,
   then the INVALID flag doesn't get set, but after we hand out the data, we won't get it back from the kernel
@@ -818,6 +822,18 @@ pager_flush:
   scan pagelist for specified range and form the union of all clients on the ACCESSLISTs
   send multiple locks for multiple clients
   set (or increment) locks_pending by the number of lock requests sent
+
+m_o_terminate:
+  mach_port_destroy() control and name ports passed in
+    (we had send rights and should have just received receive rights in the m_o_terminate message)
+
+pager_shutdown:
+  set terminating flag
+  send pager_return (flush, return all, sync) to all active clients
+  in the meanwhile, we reject any new data requests with ENODEV
+  send m_o_destroy (error = ENODEV) to all active clients
+  we expect m_o_terminate replies from the kernels
+  call ports_destroy_right, which will blow away our receive right
 
 
 POTENTIAL PROBLEMS
