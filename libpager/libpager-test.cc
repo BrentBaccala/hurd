@@ -348,7 +348,8 @@ void test_bug1(void)
   cl.service_message();
   translator_complete_operation();
   /* pager_shutdown will then flush (no return).  Service the sync. */
-  cl.service_message();
+  // new code's pager_shutdown only send a single lock
+  // cl.service_message();
 
   /* now wait for the pager_shutdown() */
   t.join();

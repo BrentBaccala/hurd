@@ -455,7 +455,7 @@ struct pager {
     // create a SEND ONCE right, so we shouldn't use port_get_right,
     // which is designed for the creation of a SEND right.
 
-    // return port_get_right(&port);
+    // return ports_get_right(&port);
     return port.port_right;
   }
 

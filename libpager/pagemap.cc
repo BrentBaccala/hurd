@@ -491,6 +491,8 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
   auto & current = WRITEWAIT.front();
   vm_size_t npages = current.LENGTH / page_size;
 
+  // fprintf(stderr, "service_first_WRITEWAIT_entry(OFFSET=%d, LENGTH=%d)\n", current.OFFSET, current.LENGTH);
+
   auto matching_page_count_on_WRITEWAIT = [this] (vm_offset_t page) -> int
     {
       int count = 0;
@@ -509,13 +511,15 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
 
   vm_offset_t page = current.OFFSET / page_size;
   for (int i = 0; i < npages; i ++, page ++) {
-    do_pageout[i] = (matching_page_count_on_WRITEWAIT(page) > 1);
+    do_pageout[i] = (matching_page_count_on_WRITEWAIT(page) == 1);
     if (do_pageout[i]) {
       any_pageout_required = true;
     }
   }
 
   kern_return_t * err = (kern_return_t *) alloca(npages * sizeof(kern_return_t));
+
+  // fprintf(stderr, "service_first_WRITEWAIT_entry pageout_required=%d\n", any_pageout_required);
 
   if (any_pageout_required) {
 
@@ -591,6 +595,8 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
 
   bool * do_unlock = (bool *) alloca(npages * sizeof(bool));
   bool any_unlocks_required = false;
+
+  // fprintf(stderr, "data_return(OFFSET=%d, LENGTH=%d)\n", OFFSET, LENGTH);
 
   vm_offset_t page = OFFSET / page_size;
   for (int i = 0; i < npages; i ++, page ++) {
