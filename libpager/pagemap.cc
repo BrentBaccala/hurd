@@ -24,7 +24,18 @@ extern "C" {
 #include <mach/mach_interface.h>
 }
 
-std::set<pagemap_entry::pagemap_entry_data> pagemap_entry::pagemap_set;
+// 1. create an empty pagemap entry
+// 2. initialize it into pagemap_set (which copies it)
+// 3. extract a pointer to the copy inside pagemap_set
+
+// pagemap_entry::data empty_page;
+// std::set<pagemap_entry::data> pagemap_entry::pagemap_set {empty_page};
+
+// 1. create pagemap_set and initialize it with a single empty pagemap entry
+// 2. extract a pointer to that entry and save it as empty_page_ptr
+
+std::set<pagemap_entry::data> pagemap_entry::pagemap_set {pagemap_entry::data()};
+const pagemap_entry::data * pagemap_entry::empty_page_ptr = &* pagemap_entry::pagemap_set.begin();
 
 /* service_WAITLIST
  *
@@ -113,6 +124,9 @@ void pager::data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFF
 
   assert(LENGTH == page_size);
   assert(OFFSET % page_size == 0);
+
+  // fprintf(stderr, "data_request(OFFSET=%d) page_size=%d\n", OFFSET, page_size);
+  // fprintf(stderr, "PAGINGOUT = %d\n", pagemap[OFFSET / page_size]->get_PAGINGOUT());
 
   tmp_pagemap_entry = pagemap[OFFSET / page_size];
 

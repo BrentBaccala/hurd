@@ -275,10 +275,13 @@ class pagemap_entry
   // accommodate the largest pagemap_entry_data's being processed,
   // then won't have to do any more malloc's.
 
-  // static pagemap_entry_data tmp_pagemap_entry;
+  // empty_page_ptr is a pointer to the empty page in pagemap_set,
+  // which is the only item in pagemap_set when we initialize.
+
+  static const pagemap_entry_data * empty_page_ptr;
 
   // this pointer is the only data in an instance of pagemap_entry
-  const pagemap_entry_data * entry;
+  const pagemap_entry_data * entry = empty_page_ptr;
 
 public:
 
@@ -341,6 +344,7 @@ class pagemap_vector : private std::vector<pagemap_entry>
 
   pagemap_entry & operator[](int n)
   {
+    // fprintf(stderr, "[](%d) size=%d\n", n, size());
     if (n >= size()) {
       resize(n+1);
     }
@@ -374,12 +378,13 @@ class NEXTERROR_entry {
 };
 
 struct pager {
-  const int page_size = vm_page_size;
-  const mach_port_t flush_reply_to = 0;
 
   // libport implements a pseudo class inheritance scheme
   // the first data object in struct pager must be struct port_info
   struct port_info port;
+
+  const int page_size = vm_page_size;
+  const mach_port_t flush_reply_to = 0;
 
   bool may_cache;
   memory_object_copy_strategy_t copy_strategy;
@@ -399,7 +404,7 @@ struct pager {
 
   pagemap_entry::data tmp_pagemap_entry;
 
-  pager(boolean_t & may_cache, memory_object_copy_strategy_t & copy_strategy, boolean_t & notify_on_evict)
+  pager(boolean_t may_cache, memory_object_copy_strategy_t copy_strategy, boolean_t notify_on_evict)
     : may_cache(may_cache), copy_strategy(copy_strategy), notify_on_evict(notify_on_evict)
   { }
 
