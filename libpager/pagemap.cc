@@ -446,10 +446,13 @@ void pager::data_unlock(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
   for (int i = 0; i < npages; i ++, page ++) {
     do_unlock[i] = false;
     tmp_pagemap_entry = pagemap[page];
+    assert(tmp_pagemap_entry.is_client_on_ACCESSLIST(MEMORY_CONTROL));
+    assert(! tmp_pagemap_entry.get_WRITE_ACCESS_GRANTED());
+    assert(! tmp_pagemap_entry.get_PAGINGOUT());
     if (tmp_pagemap_entry.is_any_client_waiting_for_write_access()) {
     } else if (! tmp_pagemap_entry.is_WAITLIST_empty()) {
       tmp_pagemap_entry.add_client_to_WAITLIST(MEMORY_CONTROL, true);
-    } else if (! tmp_pagemap_entry.is_ACCESSLIST_empty()) {
+    } else if (tmp_pagemap_entry.ACCESSLIST_num_clients() > 1) {
       tmp_pagemap_entry.add_client_to_WAITLIST(MEMORY_CONTROL, true);
       for (auto client: tmp_pagemap_entry.ACCESSLIST_clients()) {
         memory_object_lock_request(client, OFFSET, LENGTH, true, true, 0, pager_port());
