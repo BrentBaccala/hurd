@@ -123,6 +123,7 @@ public:
     void * ptr;
     boolean_t precious;
     vm_prot_t access;
+    int count = 0;
   };
   std::vector<struct page> pageptrs;
 
@@ -196,6 +197,7 @@ public:
                                         VM_PROT_READ | VM_PROT_WRITE));
   }
 
+#if 0
   void flush(int start_page, int end_page)
   {
     /* if pages have WRITE access, modify data and data_return */
@@ -216,6 +218,7 @@ public:
       /* increment integer at beginning of each page to track out-of-sequence writes */
       if (dirty) {
         (*((int *) (pageptrs[page].ptr))) ++;
+        pageptrs[page].count ++;
       }
     }
 
@@ -229,6 +232,7 @@ public:
       pageptrs[page].ptr = nullptr;
     }
   }
+#endif
 
   void service_message(void)
   {
@@ -289,6 +293,7 @@ public:
             if (should_return) {
               // XXX returns multiple pages individually, never in a multi-page operation
               (*((int *) (pageptrs[page].ptr))) ++;
+              pageptrs[page].count ++;
               mach_call(memory_object_data_return(memobj, memory_control, page * page_size,
                                                   (vm_offset_t) pageptrs[page].ptr, page_size, dirty, kcopy));
             }
@@ -319,6 +324,126 @@ public:
   }
 };
 
+/* PAGER CALLBACK ROUTINES
+ *
+ * The test program is linked with libpager to implement a simple
+ * memory-backed object that can be used as a testing target.
+ */
+
+#define BUFFER_SIZE (2*4096)
+
+char buffer[BUFFER_SIZE];
+
+error_t pager_read_page (struct user_pager_info *PAGER,
+          vm_offset_t PAGE, vm_address_t *BUF, int *WRITE_LOCK)
+{
+  /*
+     For pager PAGER, read one page from offset PAGE.  Set '*BUF' to be
+     the address of the page, and set '*WRITE_LOCK' if the page must be
+     provided read-only.  The only permissible error returns are 'EIO',
+     'EDQUOT', and 'ENOSPC'.
+  */
+
+  translator_suspend_operation();
+
+  /* libpager only calls pager_report_extent() from pager_flush(),
+   * pager_return(), and pager_sync().  It doesn't check the extent
+   * prior to pager_read_page(), so we must check for overflow here
+   * and return an error.
+   */
+
+  if (PAGE + __vm_page_size > BUFFER_SIZE) {
+    return EIO;
+  }
+
+  //void * buf = malloc(__vm_page_size);
+
+  void * buf;
+  posix_memalign(&buf, __vm_page_size, __vm_page_size);
+
+  memcpy(buf, buffer + PAGE, __vm_page_size);
+  *BUF = (vm_address_t) buf;
+  *WRITE_LOCK = TRUE;
+
+  return ESUCCESS;
+}
+
+error_t pager_write_page (struct user_pager_info *PAGER,
+          vm_offset_t PAGE, vm_address_t BUF)
+{
+  /*
+     For pager PAGER, synchronously write one page from BUF to offset
+     PAGE.  In addition, 'vm_deallocate' (or equivalent) BUF.  The only
+     permissible error returns are 'EIO', 'EDQUOT', and 'ENOSPC'.
+  */
+
+  translator_suspend_operation();
+
+  if (PAGE + __vm_page_size > BUFFER_SIZE) {
+    return EIO;
+  }
+
+  int page = PAGE / __vm_page_size;
+  printf("pager_write_page() page%d[0]=%d\n", page, *(int *)BUF);
+  assert (*(int *)BUF >= *(int *)(buffer + PAGE));
+  memcpy(buffer + PAGE, (void *) BUF, __vm_page_size);
+
+  return ESUCCESS;
+}
+
+error_t pager_unlock_page (struct user_pager_info *PAGER,
+          vm_offset_t ADDRESS)
+{
+  /* A page should be made writable. */
+
+  translator_suspend_operation();
+
+  return ESUCCESS;
+}
+
+error_t pager_report_extent
+          (struct user_pager_info *PAGER, vm_address_t *OFFSET,
+          vm_size_t *SIZE)
+{
+  /*
+     This function should report in '*OFFSET' and '*SIZE' the minimum
+     valid address the pager will accept and the size of the object.
+  */
+  *OFFSET = 0;
+  *SIZE = BUFFER_SIZE;
+
+  return ESUCCESS;
+}
+
+void pager_clear_user_data (struct user_pager_info *PAGER)
+{
+/*
+     This is called when a pager is being deallocated after all extant
+     send rights have been destroyed.
+*/
+}
+
+void pager_dropweak (struct user_pager_info *P)
+{
+  /*
+     This will be called when the ports library wants to drop weak
+     references.  The pager library creates no weak references itself,
+     so if the user doesn't either, then it is all right for this
+     function to do nothing.
+  */
+}
+
+void
+pager_notify_evict (struct user_pager_info *pager,
+		    vm_offset_t page)
+{
+  /* Undocumented in info file */
+}
+
+
+/**** BUG TESTS ****/
+
+
 void test_bug1(void)
 {
   client cl;  /* creating the client does the m_o_init / m_o_ready exchange */
@@ -345,7 +470,14 @@ void test_bug1(void)
     });
 
   /* pager_shutdown will first sync.  Service the sync and complete the resulting write */
-  cl.service_message();
+  /* XXX no locking here */
+  std::thread x([&cl](){
+      while (1) {
+        cl.service_message();
+      }
+    });
+  x.detach();
+
   translator_complete_operation();
   /* pager_shutdown will then flush (no return).  Service the sync. */
   // new code's pager_shutdown only send a single lock
@@ -353,6 +485,10 @@ void test_bug1(void)
 
   /* now wait for the pager_shutdown() */
   t.join();
+
+  assert(cl.pageptrs[0].ptr == nullptr);
+  fprintf(stderr, "%d %d\n", cl.pageptrs[0].count, *((int *) buffer));
+  assert(cl.pageptrs[0].count == *((int *) buffer));
 }
 
 void test_bug3(void)
@@ -507,121 +643,6 @@ const struct argp_child children[] =
 
 static struct argp argp = { options, parse_opt, args_doc, doc, children };
 
-/* PAGER CALLBACK ROUTINES
- *
- * The test program is linked with libpager to implement a simple
- * memory-backed object that can be used as a testing target.
- */
-
-#define BUFFER_SIZE (2*4096)
-
-char buffer[BUFFER_SIZE];
-
-error_t pager_read_page (struct user_pager_info *PAGER,
-          vm_offset_t PAGE, vm_address_t *BUF, int *WRITE_LOCK)
-{
-  /*
-     For pager PAGER, read one page from offset PAGE.  Set '*BUF' to be
-     the address of the page, and set '*WRITE_LOCK' if the page must be
-     provided read-only.  The only permissible error returns are 'EIO',
-     'EDQUOT', and 'ENOSPC'.
-  */
-
-  translator_suspend_operation();
-
-  /* libpager only calls pager_report_extent() from pager_flush(),
-   * pager_return(), and pager_sync().  It doesn't check the extent
-   * prior to pager_read_page(), so we must check for overflow here
-   * and return an error.
-   */
-
-  if (PAGE + __vm_page_size > BUFFER_SIZE) {
-    return EIO;
-  }
-
-  //void * buf = malloc(__vm_page_size);
-
-  void * buf;
-  posix_memalign(&buf, __vm_page_size, __vm_page_size);
-
-  memcpy(buf, buffer + PAGE, __vm_page_size);
-  *BUF = (vm_address_t) buf;
-  *WRITE_LOCK = TRUE;
-
-  return ESUCCESS;
-}
-
-error_t pager_write_page (struct user_pager_info *PAGER,
-          vm_offset_t PAGE, vm_address_t BUF)
-{
-  /*
-     For pager PAGER, synchronously write one page from BUF to offset
-     PAGE.  In addition, 'vm_deallocate' (or equivalent) BUF.  The only
-     permissible error returns are 'EIO', 'EDQUOT', and 'ENOSPC'.
-  */
-
-  translator_suspend_operation();
-
-  if (PAGE + __vm_page_size > BUFFER_SIZE) {
-    return EIO;
-  }
-
-  int page = PAGE / __vm_page_size;
-  printf("pager_write_page() page%d[0]=%d\n", page, *(int *)BUF);
-  assert (*(int *)BUF >= *(int *)(buffer + PAGE));
-  memcpy(buffer + PAGE, (void *) BUF, __vm_page_size);
-
-  return ESUCCESS;
-}
-
-error_t pager_unlock_page (struct user_pager_info *PAGER,
-          vm_offset_t ADDRESS)
-{
-  /* A page should be made writable. */
-
-  translator_suspend_operation();
-
-  return ESUCCESS;
-}
-
-error_t pager_report_extent
-          (struct user_pager_info *PAGER, vm_address_t *OFFSET,
-          vm_size_t *SIZE)
-{
-  /*
-     This function should report in '*OFFSET' and '*SIZE' the minimum
-     valid address the pager will accept and the size of the object.
-  */
-  *OFFSET = 0;
-  *SIZE = BUFFER_SIZE;
-
-  return ESUCCESS;
-}
-
-void pager_clear_user_data (struct user_pager_info *PAGER)
-{
-/*
-     This is called when a pager is being deallocated after all extant
-     send rights have been destroyed.
-*/
-}
-
-void pager_dropweak (struct user_pager_info *P)
-{
-  /*
-     This will be called when the ports library wants to drop weak
-     references.  The pager library creates no weak references itself,
-     so if the user doesn't either, then it is all right for this
-     function to do nothing.
-  */
-}
-
-void
-pager_notify_evict (struct user_pager_info *pager,
-		    vm_offset_t page)
-{
-  /* Undocumented in info file */
-}
 
 
 
