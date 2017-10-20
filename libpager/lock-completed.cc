@@ -31,7 +31,7 @@ _pager_S_memory_object_lock_completed (struct pager *p,
       || p->port.port_class != _pager_class)
     return EOPNOTSUPP;
 
-  p->internal_lock_completed(control, offset, length);
+  p->lock_completed(control, offset, length);
 
   return 0;
 }

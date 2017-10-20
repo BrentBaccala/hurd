@@ -44,6 +44,11 @@ const pagemap_entry::data * pagemap_entry::empty_page_ptr = &* pagemap_entry::pa
 
 void pager::internal_flush_request(memory_object_control_t client, vm_offset_t OFFSET)
 {
+  auto & record = outstanding_locks[{OFFSET, page_size}];
+
+  record.internal_lock_outstanding = true;
+  record.locks_outstanding ++;
+
   memory_object_lock_request(client, OFFSET, page_size, true, true, 0, pager_port());
 }
 
@@ -247,58 +252,42 @@ void pager::lock_object(vm_offset_t OFFSET, vm_size_t LENGTH, int RETURN, bool F
   // XXX allocates on heap.  Would be faster to allocate on stack
   std::set<memory_object_control_t> clients;
 
+  std::unique_lock<std::mutex> pager_lock(lock);
+
   vm_size_t npages = LENGTH / page_size;
 
-  {
-    std::unique_lock<std::mutex> pager_lock(lock);
-
-    vm_offset_t page = OFFSET / page_size;
-    for (int i = 0; i < npages; i ++, page ++) {
-      for (auto client: pagemap[page]->ACCESSLIST_clients()) {
-        if (! only_signal_WRITE_clients || pagemap[page]->get_WRITE_ACCESS_GRANTED()) {
-          clients.insert(client);
-        }
+  vm_offset_t page = OFFSET / page_size;
+  for (int i = 0; i < npages; i ++, page ++) {
+    for (auto client: pagemap[page]->ACCESSLIST_clients()) {
+      if (! only_signal_WRITE_clients || pagemap[page]->get_WRITE_ACCESS_GRANTED()) {
+        clients.insert(client);
       }
     }
   }
 
-  if (! sync) {
+  if (! clients.empty()) {
 
-    for (auto client: clients) {
-      memory_object_lock_request(client, OFFSET, LENGTH, RETURN, FLUSH, VM_PROT_NO_CHANGE, 0);
-    }
+    if (! sync) {
 
-  } else {
+      for (auto client: clients) {
+        memory_object_lock_request(client, OFFSET, LENGTH, RETURN, FLUSH, VM_PROT_NO_CHANGE, 0);
+      }
 
-    mach_port_t reply;
-    int locks_outstanding = 0;
+    } else {
 
-    mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &reply);
+      auto & record = outstanding_locks[{OFFSET, LENGTH}];
 
-    for (auto client: clients) {
-      memory_object_lock_request(client, OFFSET, LENGTH, RETURN, FLUSH, VM_PROT_NO_CHANGE, reply);
-      locks_outstanding ++;
-    }
+      for (auto client: clients) {
+        memory_object_lock_request(client, OFFSET, LENGTH, RETURN, FLUSH, VM_PROT_NO_CHANGE, pager_port());
+        record.locks_outstanding ++;
+      }
 
-    while (locks_outstanding) {
-      machMessage msg;
+      record.waiting_threads.wait(pager_lock);
 
-      // XXX should we check to make sure that the message is a lock_reply?
-      mach_msg (msg, MACH_RCV_MSG, 0, msg.max_size, reply, 0, MACH_PORT_NULL);
+      // we now wait until any outstanding writes to complete
 
-      locks_outstanding --;
-    }
-
-    // XXX perhaps we should use deallocate or mod_refs instead?
-    mach_port_destroy (mach_task_self (), reply);
-
-    // now we have to wait until any outstanding writes complete
-
-    // find the last data block on WRITEWAIT that overlaps this lock request
-    // and wait for it to finish
-
-    {
-      std::unique_lock<std::mutex> pager_lock(lock);
+      // find the last data block on WRITEWAIT that overlaps this lock request
+      // and wait for it to finish
 
       for (auto iter = WRITEWAIT.rbegin(); iter != WRITEWAIT.rend(); iter ++) {
         if ((iter->OFFSET <= OFFSET + LENGTH) && (iter->OFFSET + iter->LENGTH >= OFFSET)) {
@@ -437,6 +426,40 @@ void pager::internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
       tmp_pagemap_entry = pagemap[page];
       finalize_unlock(page * page_size, err[i]);
       pagemap[page] = tmp_pagemap_entry;
+    }
+  }
+}
+
+void pager::lock_completed(memory_object_control_t MEMORY_CONTROL,
+                           vm_offset_t OFFSET, vm_size_t LENGTH)
+{
+  std::unique_lock<std::mutex> pager_lock(lock);
+
+  auto it = outstanding_locks.find({OFFSET, LENGTH});
+
+  assert (it != outstanding_locks.end());
+
+  auto & record = it->second;
+
+  assert(record.locks_outstanding > 0);
+
+  record.locks_outstanding --;
+
+  if (record.locks_outstanding == 0) {
+
+    if (record.internal_lock_outstanding) {
+      record.internal_lock_outstanding = false;
+      internal_lock_completed(MEMORY_CONTROL, OFFSET, LENGTH);
+    }
+
+    record.waiting_threads.notify_all();
+
+    // the internal_lock_completed() calls could have triggered new
+    // lock requests, so check again to see if locks_outstanding
+    // is zero before erasing
+
+    if (record.locks_outstanding == 0) {
+      outstanding_locks.erase(it);
     }
   }
 }

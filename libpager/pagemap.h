@@ -21,6 +21,7 @@
 #include <vector>
 #include <list>
 #include <tuple>
+#include <map>
 
 #include <mutex>
 #include <condition_variable>
@@ -377,6 +378,12 @@ class NEXTERROR_entry {
   {}
 };
 
+struct outstanding_lock {
+  int locks_outstanding = 0;
+  bool internal_lock_outstanding = false;
+  std::condition_variable waiting_threads;
+};
+
 struct pager {
 
   // libport implements a pseudo class inheritance scheme
@@ -399,6 +406,8 @@ struct pager {
   std::list<WRITEWAIT_entry> WRITEWAIT;
 
   std::list<NEXTERROR_entry> NEXTERROR;
+
+  std::map<std::pair<vm_offset_t, vm_size_t>, outstanding_lock> outstanding_locks;
 
   pagemap_vector pagemap;
 
@@ -438,8 +447,8 @@ struct pager {
   void data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFSET,
                     vm_offset_t LENGTH, vm_prot_t DESIRED_ACCESS);
 
-  void internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
-                               vm_offset_t OFFSET, vm_size_t LENGTH);
+  void lock_completed(memory_object_control_t MEMORY_CONTROL,
+                      vm_offset_t OFFSET, vm_size_t LENGTH);
 
   void data_unlock(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFSET,
                    vm_size_t LENGTH, vm_prot_t DESIRED_ACCESS);
@@ -460,6 +469,9 @@ struct pager {
   }
 
   void internal_flush_request(memory_object_control_t client, vm_offset_t OFFSET);
+
+  void internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
+                               vm_offset_t OFFSET, vm_size_t LENGTH);
 
   void service_WAITLIST(vm_offset_t offset, vm_offset_t data, bool allow_write_access, bool deallocate);
 
