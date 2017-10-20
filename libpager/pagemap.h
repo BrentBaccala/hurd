@@ -459,6 +459,8 @@ struct pager {
     return port.port_right;
   }
 
+  void internal_flush_request(memory_object_control_t client, vm_offset_t OFFSET);
+
   void service_WAITLIST(vm_offset_t offset, vm_offset_t data, bool allow_write_access, bool deallocate);
 
   void send_error_to_WAITLIST(vm_offset_t OFFSET);
