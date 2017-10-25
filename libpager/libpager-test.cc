@@ -297,7 +297,7 @@ public:
         int dirty = 1;
         int should_return = msg[2][0];
         int should_flush = msg[3][0];
-        int kcopy = ~ should_flush;
+        int kcopy = ! should_flush;
         for (int i = 0; i < msg[1][0] / page_size; i ++) {
           int page = msg[0][0] / page_size + i;
           if (page < pageptrs.size() && pageptrs[page].ptr != nullptr) {
