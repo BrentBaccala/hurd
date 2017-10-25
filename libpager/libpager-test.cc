@@ -97,6 +97,7 @@ struct pager * pager;       /* this is the libpager pager object */
 
 pthread_mutex_t mutex = PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+bool block_operations = true;
 int operations = 0;
 
 void translator_complete_operation(void)
@@ -110,10 +111,20 @@ void translator_complete_operation(void)
 void translator_suspend_operation(void)
 {
   pthread_mutex_lock (&mutex);
-  while (operations == 0) {
-    pthread_cond_wait (&cond, &mutex);
+  if (block_operations) {
+    while (block_operations && (operations == 0)) {
+      pthread_cond_wait (&cond, &mutex);
+    }
+    operations --;
   }
-  operations --;
+  pthread_mutex_unlock (&mutex);
+}
+
+void translator_complete_all_operations(void)
+{
+  pthread_mutex_lock (&mutex);
+  block_operations = false;
+  pthread_cond_signal (&cond);
   pthread_mutex_unlock (&mutex);
 }
 
@@ -234,7 +245,7 @@ public:
   }
 #endif
 
-  void service_message(void)
+  void service_message(bool block = true)
   {
     machMessage msg;
 
@@ -242,7 +253,7 @@ public:
     /* read message */
 
     kern_return_t err;
-    if ((err = mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+    if ((err = mach_call (mach_msg (msg, block ? MACH_RCV_MSG : MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                              0, msg.max_size, memory_control,
                              timeout, MACH_PORT_NULL)))
         == 0x10004003 /* ipc/rcv timed out */ ) {
@@ -321,6 +332,16 @@ public:
     default:
       printf("unknown message\n");
     }
+  }
+
+  void service_all_messages(void)
+  {
+    std::thread t([this](){
+        while (1) {
+          service_message(true);
+        }
+      });
+    t.detach();
   }
 };
 
@@ -462,29 +483,14 @@ void test_bug1(void)
   translator_complete_operation();
   translator_complete_operation();
 
-  /* pager_shutdown() will trigger two synchronous locks (a sync and a flush),
-   * so run it on a separate thread
-   */
-  std::thread t([](){
-      pager_shutdown(pager);
-    });
+  /* unblock all messages and operations */
 
-  /* pager_shutdown will first sync.  Service the sync and complete the resulting write */
-  /* XXX no locking here */
-  std::thread x([&cl](){
-      while (1) {
-        cl.service_message();
-      }
-    });
-  x.detach();
+  cl.service_all_messages();
+  translator_complete_all_operations();
 
-  translator_complete_operation();
-  /* pager_shutdown will then flush (no return).  Service the sync. */
-  // new code's pager_shutdown only send a single lock
-  // cl.service_message();
+  /* shutdown the pager and ensure that everything closed out correctly */
 
-  /* now wait for the pager_shutdown() */
-  t.join();
+  pager_shutdown(pager);
 
   assert(cl.pageptrs[0].ptr == nullptr);
   fprintf(stderr, "%d %d\n", cl.pageptrs[0].count, *((int *) buffer));
@@ -545,12 +551,31 @@ void test_bug3a(void)
   /* request page 1 back (demux blocks) */
   cl.request_write_access(1, 1);
 
+#if 1
   translator_complete_operation();  /* complete the page 0 write */
   translator_complete_operation();  /* complete the page 0/1 writes */
   translator_complete_operation();
   translator_complete_operation();  /* complete the page 1 read */
 
   cl.service_message();   /* service the page 1 data supply */
+#endif
+
+  cl.service_all_messages();
+  translator_complete_all_operations();
+
+  // 1. pager_return sends lock_request, but not synchronous
+  // 2. the lock_request is serviced, which data_return's both pages, and the first data_return blocks
+  // 3. client's request_write_access sends m_o_data_request
+  // 4. pager_shutdown sends lock_request
+
+  pager_shutdown(pager);
+
+  for (int page = 0; page <= 1; page ++) {
+    int buffer_count = * (int *) (buffer + page * __vm_page_size);
+    assert(cl.pageptrs[page].ptr == nullptr);
+    fprintf(stderr, "%d %d\n", cl.pageptrs[page].count, buffer_count);
+    assert(cl.pageptrs[page].count == buffer_count);
+  }
 }
 
 /* test_bug3a would segfault if pager_read_page() didn't return
@@ -705,7 +730,7 @@ main (int argc, char **argv)
     mach_call (mach_port_insert_right (mach_task_self (), memobj, memobj,
                                        MACH_MSG_TYPE_MAKE_SEND));
 
-    test_bug1();
+    test_bug3a();
   }
 
 #if 0
