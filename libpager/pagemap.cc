@@ -624,6 +624,7 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
   munmap((void*) current.DATA, current.LENGTH);
   current.waiting_threads.notify_all();
   WRITEWAIT.pop_front();
+  // fprintf(stderr, "service_first_WRITEWAIT_entry pop_front\n");
 
   if (notify_on_evict && any_notification_required) {
     pager_lock.unlock();
@@ -653,7 +654,7 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
   bool * do_unlock = (bool *) alloca(npages * sizeof(bool));
   bool any_unlocks_required = false;
 
-  // fprintf(stderr, "data_return(OFFSET=%d, LENGTH=%d)\n", OFFSET, LENGTH);
+  // fprintf(stderr, "data_return(OFFSET=%d, LENGTH=%d, DIRTY=%d, KCOPY=%d, %d)\n", OFFSET, LENGTH, DIRTY, KERNEL_COPY, *((int *)DATA));
 
   vm_offset_t page = OFFSET / page_size;
   for (int i = 0; i < npages; i ++, page ++) {
