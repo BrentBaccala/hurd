@@ -600,6 +600,7 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
   for (int i = 0; i < npages; i ++, page ++) {
     do_notify[i] = false;
     if (do_pageout[i]) {
+      tmp_pagemap_entry = pagemap[page];
       if (err[i] == KERN_SUCCESS) {
         tmp_pagemap_entry.set_INVALID(false);
       } else {
@@ -618,6 +619,7 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
           }
         }
       }
+      pagemap[page] = tmp_pagemap_entry;
     }
   }
 
