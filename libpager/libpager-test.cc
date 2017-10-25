@@ -279,7 +279,7 @@ public:
         /* ASSERT: page absent in client */
         assert(page >= pageptrs.size() || pageptrs[page].ptr == nullptr);
         if (page >= pageptrs.size()) pageptrs.resize(page+1);
-        pageptrs[page].ptr = (char *) msg[1].data() + page * page_size;
+        pageptrs[page].ptr = (char *) msg[1].data() + i * page_size;
         pageptrs[page].access = msg[2][0];
         pageptrs[page].precious = msg[2][0];
       }
