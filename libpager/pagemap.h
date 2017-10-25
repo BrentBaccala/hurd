@@ -473,7 +473,8 @@ struct pager {
   void internal_flush_request(memory_object_control_t client, vm_offset_t OFFSET);
 
   void internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
-                               vm_offset_t OFFSET, vm_size_t LENGTH);
+                               vm_offset_t OFFSET, vm_size_t LENGTH,
+                               std::unique_lock<std::mutex> & pager_lock);
 
   void service_WAITLIST(vm_offset_t offset, vm_offset_t data, bool allow_write_access, bool deallocate);
 

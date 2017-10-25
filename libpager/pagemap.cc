@@ -380,10 +380,9 @@ void pager::change_attributes(boolean_t may_cache, memory_object_copy_strategy_t
 }
 
 void pager::internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
-                                    vm_offset_t OFFSET, vm_size_t LENGTH)
+                                    vm_offset_t OFFSET, vm_size_t LENGTH,
+                                    std::unique_lock<std::mutex> & pager_lock)
 {
-  std::unique_lock<std::mutex> pager_lock(lock);
-
   assert(LENGTH % page_size == 0);
   assert(OFFSET % page_size == 0);
 
@@ -470,7 +469,7 @@ void pager::lock_completed(memory_object_control_t MEMORY_CONTROL,
 
     if (record.internal_lock_outstanding) {
       record.internal_lock_outstanding = false;
-      internal_lock_completed(MEMORY_CONTROL, OFFSET, LENGTH);
+      internal_lock_completed(MEMORY_CONTROL, OFFSET, LENGTH, pager_lock);
     }
 
     record.waiting_threads.notify_all();
