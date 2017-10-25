@@ -241,6 +241,27 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
   // if we lose our last client, we can free the pagemap
 }
 
+void pager::shutdown (void)
+{
+  // XXX set terminating flag
+
+  /* Fetch and flush all pages */
+  pager_return (this, 1);
+
+  // XXX in the meanwhile, we reject any new data requests with ENODEV
+
+  std::unique_lock<std::mutex> pager_lock(lock);
+
+  // XXX send m_o_destroy (error = ENODEV) to all open clients
+  // XXX we expect m_o_terminate replies from the kernels
+
+  // wait for replies to any outstanding locks
+
+  while (! outstanding_locks.empty()) {
+    outstanding_locks.begin()->second.waiting_threads.wait(pager_lock);
+  }
+}
+
 void pager::lock_object(vm_offset_t OFFSET, vm_size_t LENGTH, int RETURN, bool FLUSH, bool sync)
 {
   // sync: flush=false, return=MEMORY_OBJECT_RETURN_DIRTY

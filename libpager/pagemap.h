@@ -442,6 +442,8 @@ struct pager {
 
   kern_return_t get_error(vm_offset_t OFFSET);
 
+  void shutdown(void);
+
   // Methods triggered by messages from the kernel clients
 
   void data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFSET,

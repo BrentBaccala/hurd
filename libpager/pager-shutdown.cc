@@ -22,10 +22,7 @@
 void
 pager_shutdown (struct pager *p)
 {
-  /* Fetch and flush all pages */
-  pager_return (p, 1);
-
-  // XXX NOTES files has more ideas about what to do here
+  p->shutdown();
 
   // Don't "delete p" here, as ports_destroy_right will probably do
   // this for us.
