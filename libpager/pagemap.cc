@@ -49,7 +49,7 @@ void pager::internal_flush_request(memory_object_control_t client, vm_offset_t O
   record.internal_lock_outstanding = true;
   record.locks_outstanding ++;
 
-  memory_object_lock_request(client, OFFSET, page_size, true, true, 0, pager_port());
+  memory_object_lock_request(client, OFFSET, page_size, MEMORY_OBJECT_RETURN_ALL, true, VM_PROT_NO_CHANGE, pager_port());
 }
 
 
