@@ -320,7 +320,7 @@ public:
 
       if (msg[5][0] != 0) {
         /* send reply message */
-        mach_call(memory_object_lock_completed(msg[5][0], MACH_MSG_TYPE_MOVE_SEND_ONCE, memory_control, msg[0][0], msg[1][0]));
+        mach_call(memory_object_lock_completed(msg[5][0], MACH_MSG_TYPE_PORT_SEND_ONCE, memory_control, msg[0][0], msg[1][0]));
       }
       break;
 
