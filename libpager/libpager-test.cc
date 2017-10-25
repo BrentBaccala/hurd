@@ -267,8 +267,8 @@ public:
       break;
 
     case 2093: /* memory_object_data_supply */
-      printf("m_o_data_supply: offset = %d, data @ 0x%08x, length = %d, lock_value = %d; precious = %d\n",
-             msg[0][0], (void *) msg[1].data(), msg[1].data_size(), msg[2][0], msg[3][0]);
+      printf("m_o_data_supply: offset = %d, data @ 0x%08x, length = %d, count = %d, lock_value = %d; precious = %d\n",
+             msg[0][0], (void *) msg[1].data(), msg[1].data_size(), *(int *)((void *) msg[1].data()), msg[2][0], msg[3][0]);
 
       assert(msg[1].data_size() % page_size == 0);
 
@@ -304,6 +304,7 @@ public:
             if (should_return) {
               // XXX returns multiple pages individually, never in a multi-page operation
               (*((int *) (pageptrs[page].ptr))) ++;
+              // fprintf(stderr, "page %d count is %d\n", page, (*((int *) (pageptrs[page].ptr))));
               pageptrs[page].count ++;
               mach_call(memory_object_data_return(memobj, memory_control, page * page_size,
                                                   (vm_offset_t) pageptrs[page].ptr, page_size, dirty, kcopy));
@@ -385,6 +386,8 @@ error_t pager_read_page (struct user_pager_info *PAGER,
   memcpy(buf, buffer + PAGE, __vm_page_size);
   *BUF = (vm_address_t) buf;
   *WRITE_LOCK = TRUE;
+
+  // fprintf(stderr, "pager_read_page() page%d[0]=%d\n", PAGE / __vm_page_size, *(int *)buf);
 
   return ESUCCESS;
 }
