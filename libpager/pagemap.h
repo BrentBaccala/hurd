@@ -195,8 +195,7 @@ class pagemap_entry
     void pop_first_WAITLIST_client(void)
     {
       if (WAITLIST.size() == 0) {
-        // XXX throw exception?
-        return;
+        throw std::out_of_range("WAITLIST is empty");
       }
 
       WAITLIST.erase(WAITLIST.cbegin());
@@ -204,7 +203,9 @@ class pagemap_entry
 
     WAITLIST_client first_WAITLIST_client(void) const
     {
-      return WAITLIST.front();
+      // not WAITLIST.front(), which is undefined if WAITLIST is empty,
+      // but WAITLIST.at(0), which throws std::out_of_range
+      return WAITLIST.at(0);
     }
 
     kern_return_t get_ERROR(void) const

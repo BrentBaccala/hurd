@@ -61,6 +61,8 @@ void pager::internal_flush_request(memory_object_control_t client, vm_offset_t O
 
 void pager::service_WAITLIST(vm_offset_t offset, vm_offset_t data, bool allow_write_access, bool deallocate)
 {
+  if (tmp_pagemap_entry.is_WAITLIST_empty()) return;
+
   auto first_client = tmp_pagemap_entry.first_WAITLIST_client();
 
   if (allow_write_access && first_client.write_access_requested) {
@@ -114,6 +116,8 @@ void pager::send_error_to_WAITLIST(vm_offset_t OFFSET)
 }
 
 // finalize_unlock() - call with pager lock held and tmp_pagemap_entry loaded
+//
+// There should be a client on WAITLIST, or the first line will throw an exception.
 
 void pager::finalize_unlock(vm_offset_t OFFSET, kern_return_t ERROR)
 {
@@ -407,6 +411,7 @@ void pager::internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
         }
       } else if ((tmp_pagemap_entry.ACCESSLIST_num_clients() == 1)
                  && ! tmp_pagemap_entry.get_WRITE_ACCESS_GRANTED()
+                 && ! tmp_pagemap_entry.is_WAITLIST_empty()
                  && tmp_pagemap_entry.is_client_on_ACCESSLIST(tmp_pagemap_entry.first_WAITLIST_client().client)) {
         operation[i] = UNLOCK;
       }
@@ -656,18 +661,22 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
   bool * do_unlock = (bool *) alloca(npages * sizeof(bool));
   bool any_unlocks_required = false;
 
-  // fprintf(stderr, "data_return(OFFSET=%d, LENGTH=%d, DIRTY=%d, KCOPY=%d, %d)\n", OFFSET, LENGTH, DIRTY, KERNEL_COPY, *((int *)DATA));
+  // fprintf(stderr, "data_return(MEMORY_CONTROL=%d, OFFSET=%d, LENGTH=%d, DIRTY=%d, KCOPY=%d, count=%d)\n",
+  //         MEMORY_CONTROL, OFFSET, LENGTH, DIRTY, KERNEL_COPY, *((int *)DATA));
 
   vm_offset_t page = OFFSET / page_size;
   for (int i = 0; i < npages; i ++, page ++) {
     do_unlock[i] = false;
     tmp_pagemap_entry = pagemap[page];
     if (! KERNEL_COPY) {
-      tmp_pagemap_entry.remove_client_from_ACCESSLIST(MEMORY_CONTROL);
+      if (MEMORY_CONTROL != MACH_PORT_DEAD) {
+        tmp_pagemap_entry.remove_client_from_ACCESSLIST(MEMORY_CONTROL);
+      }
       if (tmp_pagemap_entry.is_ACCESSLIST_empty() && ! tmp_pagemap_entry.is_WAITLIST_empty()) {
         service_WAITLIST(page * page_size, DATA + i * page_size, true, false);
       } else if ((tmp_pagemap_entry.ACCESSLIST_num_clients() == 1)
                  && ! tmp_pagemap_entry.get_WRITE_ACCESS_GRANTED()
+                 && ! tmp_pagemap_entry.is_WAITLIST_empty()
                  && tmp_pagemap_entry.is_client_on_ACCESSLIST(tmp_pagemap_entry.first_WAITLIST_client().client)) {
         do_unlock[i] = true;
         any_unlocks_required = true;
