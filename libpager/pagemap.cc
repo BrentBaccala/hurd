@@ -57,12 +57,13 @@ void pager::internal_flush_request(memory_object_control_t client, vm_offset_t O
  *
  * Assumes that pager is locked and pagemap entry of page to be
  * serviced is loaded into tmp_pagemap_entry.
+ *
+ * There should be a client on WAITLIST, or the first line will throw
+ * an exception.
  */
 
 void pager::service_WAITLIST(vm_offset_t offset, vm_offset_t data, bool allow_write_access, bool deallocate)
 {
-  if (tmp_pagemap_entry.is_WAITLIST_empty()) return;
-
   auto first_client = tmp_pagemap_entry.first_WAITLIST_client();
 
   if (allow_write_access && first_client.write_access_requested) {
@@ -240,9 +241,9 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
   mach_port_destroy (mach_task_self (), control);
   mach_port_destroy (mach_task_self (), name);
 
-  // pending locks and attribute changes - return immediately
+  // XXX pending locks and attribute changes - return immediately
 
-  // if we lose our last client, we can free the pagemap
+  // XXX if we lose our last client, we can free the pagemap
 }
 
 void pager::shutdown (void)
