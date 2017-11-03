@@ -155,11 +155,24 @@ public:
   std::mutex lock;
   std::condition_variable cv;
   struct page {
-    void * ptr;
-    boolean_t precious;
+    void * ptr = nullptr;
     vm_prot_t access;
+    boolean_t precious;
+    boolean_t request_outstanding = false;
   };
-  std::vector<struct page> pageptrs;
+
+  class : public std::vector<page>
+  {
+  public:
+
+    page & operator[](int n)
+    {
+      if (n >= size()) {
+        resize(n+1);
+      }
+      return std::vector<page>::operator[](n);
+    }
+  } pageptrs;
 
   mach_port_t memory_control;
   mach_port_t memory_object_name;
@@ -170,7 +183,9 @@ public:
   {
     /* ASSERT: page absent in client */
     for (int page = start_page; page <= end_page; page ++) {
-      assert(page >= pageptrs.size() || pageptrs[page].ptr == nullptr);
+      assert(pageptrs[page].ptr == nullptr);
+      assert(! pageptrs[page].request_outstanding);
+      pageptrs[page].request_outstanding = true;
     }
     /* sends m_o_data_request */
     mach_call(memory_object_data_request(memobj, memory_control,
@@ -182,7 +197,9 @@ public:
   {
     /* ASSERT: page absent in client */
     for (int page = start_page; page <= end_page; page ++) {
-      assert(page >= pageptrs.size() || pageptrs[page].ptr == nullptr);
+      assert(pageptrs[page].ptr == nullptr);
+      assert(! pageptrs[page].request_outstanding);
+      pageptrs[page].request_outstanding = true;
     }
     /* sends m_o_data_request */
     mach_call(memory_object_data_request(memobj, memory_control,
@@ -199,7 +216,27 @@ public:
   {
     std::unique_lock<std::mutex> client_lock(lock);
 
-    while (page >= pageptrs.size() || pageptrs[page].ptr == nullptr) {
+    while (pageptrs[page].request_outstanding) {
+      cv.wait(client_lock);
+    }
+  }
+
+  void wait_for_all_pages(void)
+  {
+    std::unique_lock<std::mutex> client_lock(lock);
+
+    for (int page = 0; page < pageptrs.size(); page ++) {
+      while (pageptrs[page].request_outstanding) {
+        cv.wait(client_lock);
+      }
+    }
+  }
+
+  void wait_for_page_absent(int page)
+  {
+    std::unique_lock<std::mutex> client_lock(lock);
+
+    while (pageptrs[page].ptr != nullptr) {
       cv.wait(client_lock);
     }
   }
@@ -208,7 +245,9 @@ public:
   {
     /* ASSERT: page present in client without write access */
     for (int page = start_page; page <= end_page; page ++) {
-      assert(page < pageptrs.size() && pageptrs[page].ptr != nullptr && !(pageptrs[page].access & VM_PROT_WRITE));
+      assert(pageptrs[page].ptr != nullptr && !(pageptrs[page].access & VM_PROT_WRITE));
+      assert(! pageptrs[page].request_outstanding);
+      pageptrs[page].request_outstanding = true;
     }
     /* sends m_o_data_unlock */
     mach_call(memory_object_data_unlock(memobj, memory_control,
@@ -227,7 +266,7 @@ public:
 
     /* ASSERT: pages present in client */
     for (int page = start_page; page <= end_page; page ++) {
-      assert(page < pageptrs.size() && pageptrs[page].ptr != nullptr);
+      assert(pageptrs[page].ptr != nullptr);
       if ((pageptrs[start_page].access != pageptrs[page].access)
           || (pageptrs[start_page].precious != pageptrs[page].precious)) {
         /* not all pages in the range might have the same permissions, so use recursion to break them up */
@@ -298,11 +337,13 @@ public:
       for (int i = 0; i < msg[1].data_size() / page_size; i ++) {
         int page = msg[0][0] / page_size + i;
         /* ASSERT: page absent in client */
-        assert(page >= pageptrs.size() || pageptrs[page].ptr == nullptr);
-        if (page >= pageptrs.size()) pageptrs.resize(page+1);
+        assert(pageptrs[page].ptr == nullptr);
+        assert(pageptrs[page].request_outstanding);
+
         pageptrs[page].ptr = (char *) msg[1].data() + i * page_size;
         pageptrs[page].access = msg[2][0];
         pageptrs[page].precious = msg[2][0];
+        pageptrs[page].request_outstanding = false;
       }
 
       cv.notify_all();
@@ -324,7 +365,7 @@ public:
         int kcopy = ! should_flush;
         for (int i = 0; i < msg[1][0] / page_size; i ++) {
           int page = msg[0][0] / page_size + i;
-          if (page < pageptrs.size() && pageptrs[page].ptr != nullptr) {
+          if (pageptrs[page].ptr != nullptr) {
             if (should_return && (pageptrs[page].access | VM_PROT_WRITE)) {
               return_page(page, dirty, kcopy);
             }
@@ -334,6 +375,10 @@ public:
               pageptrs[page].ptr = nullptr;
             }
           }
+        }
+
+        if (should_flush) {
+          cv.notify_all();
         }
       }
 
@@ -402,6 +447,8 @@ public:
 
   ~client()
   {
+    wait_for_all_pages();
+
     {
       std::unique_lock<std::mutex> client_lock(lock);
 
@@ -585,7 +632,7 @@ void test_bug1_asynchronous(void)
 
   cl.request_write_access(0);
 
-  cl.wait_for_page(0);
+  cl.wait_for_all_pages();
 
   pager_sync(pager, 0);
   pager_sync(pager, 0);
@@ -728,20 +775,19 @@ void test_bug3_asynchronous(void)
   cl.request_write_access(0);   /* old code: doesn't support multi-page operations */
   cl.request_write_access(1);
 
-  cl.wait_for_page(1);
+  cl.wait_for_all_pages();
 
-  /* sync page 0 */
+  /* sync page 0; start it paging out */
   pager_sync_some(pager, 0, __vm_page_size, 0);
 
-  /* return both pages and service the lock request */
-  pager_return(pager, 1);
+  /* return both pages, they go on WRITEWAIT list */
+  pager_return(pager, 0);
 
-  /* request page 1 back (demux blocks) */
+  /* wait for page 1 to be returned to libpager */
+  cl.wait_for_page_absent(1);
+
+  /* request page 1 back */
   cl.request_write_access(1);
-
-  cl.wait_for_page(1);
-
-  pager_sync(pager, 1);
 }
 
 /***** COMMAND-LINE OPTIONS *****/
@@ -850,6 +896,7 @@ main (int argc, char **argv)
     mach_call (mach_port_insert_right (mach_task_self (), memobj, memobj,
                                        MACH_MSG_TYPE_MAKE_SEND));
 
+    //test_bug1_asynchronous();
     test_bug3_asynchronous();
 
     pager_shutdown(pager);
