@@ -28,6 +28,9 @@
 #include <vector>
 #include <thread>
 
+#include <mutex>
+#include <condition_variable>
+
 #include "machMessage.h"
 
 /* XXX For parse_opt(), we want constants from the error_t enum, and
@@ -87,7 +90,17 @@ struct pager * pager;       /* this is the libpager pager object */
                             /* it also needs to be initialized early! */
                             /* if we operate in the mode where we're talking to a disk file, this never gets used */
 
-/* translator operations such as pager_read_page() suspend until translator_complete_operation()
+/***** SYNCHRONIZATION *****/
+
+/* To reproducibly test asynchronous operations, we need to impose
+ * some kind of ordering on those operations.  However, it's difficult
+ * to know if we need to wait for an operation to occur, or if the
+ * operation will never occur.  So, a synchronous testing framework is
+ * here, but it can be disable for ease of use.  The price you pay is
+ * that some tests may pass or fail unpredictably, depending on the
+ * order of operations.
+ *
+ * translator operations such as pager_read_page() suspend until translator_complete_operation()
  * is called by the testing framework.  To avoid race conditions and deadlock in the test
  * program, we increment a counter ('operations') whenever translator_complete_operation()
  * is called, and allow translator_suspend_operation() to proceed if the counter is positive.
@@ -95,9 +108,11 @@ struct pager * pager;       /* this is the libpager pager object */
  * (so far).
  */
 
+const bool enable_synchronization = false;
+
 pthread_mutex_t mutex = PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
-bool block_operations = true;
+bool block_operations = enable_synchronization;
 int operations = 0;
 
 void translator_complete_operation(void)
@@ -128,13 +143,21 @@ void translator_complete_all_operations(void)
   pthread_mutex_unlock (&mutex);
 }
 
+
+/***** MOCK KERNELS *****/
+
+/* A "class client" is a client of the memory object; i.e, a kernel */
+
+int buffer_write_count[2];
+
 class client {
 public:
+  std::mutex lock;
+  std::condition_variable cv;
   struct page {
     void * ptr;
     boolean_t precious;
     vm_prot_t access;
-    int count = 0;
   };
   std::vector<struct page> pageptrs;
 
@@ -142,35 +165,6 @@ public:
   mach_port_t memory_object_name;
 
   size_t page_size = __vm_page_size;
-
-  client(void)
-  {
-
-    /* Create two receive rights */
-
-    mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &memory_control));
-    mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &memory_object_name));
-
-    /* send memory_object_init */
-
-    mach_call (memory_object_init (memobj, memory_control, memory_object_name, __vm_page_size));
-
-    /* wait for the memory_object_ready (2094) in reply, but we'll get
-     * no reply from the old libpager if the kernel has already
-     * requested a memory object from this file, and even just a simple
-     * 'cat' on the file will trigger that
-     */
-
-    machMessage msg;
-
-    mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
-                         0, msg.max_size, memory_control,
-                         timeout, MACH_PORT_NULL));
-
-    printf("%d %d\n", msg->msgh_size, msg->msgh_id);
-
-    assert(msg->msgh_id == 2094); /* memory_object_ready */
-  }
 
   void request_read_access(int start_page, int end_page)
   {
@@ -194,6 +188,20 @@ public:
     mach_call(memory_object_data_request(memobj, memory_control,
                                          start_page * page_size, (end_page - start_page + 1) * page_size,
                                          VM_PROT_READ | VM_PROT_WRITE));
+  }
+
+  void request_write_access(int page)
+  {
+    request_write_access(page, page);
+  }
+
+  void wait_for_page(int page)
+  {
+    std::unique_lock<std::mutex> client_lock(lock);
+
+    while (page >= pageptrs.size() || pageptrs[page].ptr == nullptr) {
+      cv.wait(client_lock);
+    }
   }
 
   void request_unlock(int start_page, int end_page)
@@ -229,7 +237,7 @@ public:
       /* increment integer at beginning of each page to track out-of-sequence writes */
       if (dirty) {
         (*((int *) (pageptrs[page].ptr))) ++;
-        pageptrs[page].count ++;
+        buffer_write_count[page] ++;
       }
     }
 
@@ -245,22 +253,35 @@ public:
   }
 #endif
 
-  void service_message(bool block = true)
+  void return_page(int page, int dirty, int kcopy)
+  {
+    // XXX returns multiple pages individually, never in a multi-page operation
+    (*((int *) (pageptrs[page].ptr))) ++;
+    fprintf(stderr, "return_page: page %d addr is 0x%08x count is %d\n",
+            page, pageptrs[page].ptr, (*((int *) (pageptrs[page].ptr))));
+    buffer_write_count[page] ++;
+
+    mach_call(memory_object_data_return(memobj, memory_control, page * page_size,
+                                        (vm_offset_t) pageptrs[page].ptr, page_size, dirty, kcopy));
+  }
+
+  kern_return_t service_message(bool block = true)
   {
     machMessage msg;
 
-    printf("client service_message %x\n", &msg);
+    // printf("client service_message %x\n", &msg);
     /* read message */
 
     kern_return_t err;
-    if ((err = mach_call (mach_msg (msg, block ? MACH_RCV_MSG : MACH_RCV_MSG | MACH_RCV_TIMEOUT,
-                             0, msg.max_size, memory_control,
-                             timeout, MACH_PORT_NULL)))
-        == 0x10004003 /* ipc/rcv timed out */ ) {
-      return;
-    }
+    err = mach_call (mach_msg (msg, block ? MACH_RCV_MSG : MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                               0, msg.max_size, memory_control,
+                               timeout, MACH_PORT_NULL));
 
     printf("%d %d %x\n", msg->msgh_size, msg->msgh_id, err);
+
+    if (err != 0) return err;
+
+    std::unique_lock<std::mutex> client_lock(lock);
 
     switch (msg->msgh_id) {
     case 2094: /* memory_object_ready */
@@ -283,10 +304,13 @@ public:
         pageptrs[page].access = msg[2][0];
         pageptrs[page].precious = msg[2][0];
       }
+
+      cv.notify_all();
+
       break;
 
     case 2044: /* memory_object_lock_request */
-      printf("m_o_lock_request: offset = %d, size = %d, should_return = %d, should_flush = %d, lock_value = %d, reply = %d\n",
+      fprintf(stderr, "m_o_lock_request: offset = %d, size = %d, should_return = %d, should_flush = %d, lock_value = %d, reply = %d\n",
              msg[0][0], msg[1][0], msg[2][0], msg[3][0], msg[4][0], msg[5][0]);
 
       /* data_lock - send messages, update pointers, reply if requested */
@@ -301,13 +325,8 @@ public:
         for (int i = 0; i < msg[1][0] / page_size; i ++) {
           int page = msg[0][0] / page_size + i;
           if (page < pageptrs.size() && pageptrs[page].ptr != nullptr) {
-            if (should_return) {
-              // XXX returns multiple pages individually, never in a multi-page operation
-              (*((int *) (pageptrs[page].ptr))) ++;
-              // fprintf(stderr, "page %d count is %d\n", page, (*((int *) (pageptrs[page].ptr))));
-              pageptrs[page].count ++;
-              mach_call(memory_object_data_return(memobj, memory_control, page * page_size,
-                                                  (vm_offset_t) pageptrs[page].ptr, page_size, dirty, kcopy));
+            if (should_return && (pageptrs[page].access | VM_PROT_WRITE)) {
+              return_page(page, dirty, kcopy);
             }
             if (should_flush) {
               // XXX seems to generate seg faults
@@ -333,16 +352,76 @@ public:
     default:
       printf("unknown message\n");
     }
+
+    return err;
   }
+
+  std::thread service_thread;
 
   void service_all_messages(void)
   {
-    std::thread t([this](){
-        while (1) {
-          service_message(true);
-        }
+    service_thread = std::thread ([this](){
+        // loop until service_message returns (ipc/rcv) invalid name,
+        // which happens when the memory_control receive right is destroyed
+        while (service_message(true) != 0x10004002);
       });
-    t.detach();
+  }
+
+  client(void)
+  {
+
+    /* Create two receive rights */
+
+    mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &memory_control));
+    mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &memory_object_name));
+
+    /* send memory_object_init */
+
+    mach_call (memory_object_init (memobj, memory_control, memory_object_name, __vm_page_size));
+
+    /* wait for the memory_object_ready (2094) in reply, but we'll get
+     * no reply from the old libpager if the kernel has already
+     * requested a memory object from this file, and even just a simple
+     * 'cat' on the file will trigger that
+     */
+
+    machMessage msg;
+
+    mach_call (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                         0, msg.max_size, memory_control,
+                         timeout, MACH_PORT_NULL));
+
+    printf("%d %d\n", msg->msgh_size, msg->msgh_id);
+
+    assert(msg->msgh_id == 2094); /* memory_object_ready */
+
+    if (! enable_synchronization) {
+      service_all_messages();
+    }
+  }
+
+  ~client()
+  {
+    {
+      std::unique_lock<std::mutex> client_lock(lock);
+
+      // return any pages that we're holding
+
+      for (int page = 0; page < pageptrs.size(); page ++) {
+        if ((pageptrs[page].ptr != nullptr) && (pageptrs[page].access | VM_PROT_WRITE)) {
+          return_page(page, 1, 0);
+          pageptrs[page].ptr = nullptr;
+        }
+      }
+
+      // return our receive rights
+
+      mach_call (memory_object_terminate (memobj, memory_control, memory_object_name));
+    }
+
+    if (service_thread.joinable()) {
+      service_thread.join();
+    }
   }
 };
 
@@ -495,9 +574,22 @@ void test_bug1(void)
 
   pager_shutdown(pager);
 
-  assert(cl.pageptrs[0].ptr == nullptr);
-  fprintf(stderr, "%d %d\n", cl.pageptrs[0].count, *((int *) buffer));
-  assert(cl.pageptrs[0].count == *((int *) buffer));
+  // assert(cl.pageptrs[0].ptr == nullptr);
+  // fprintf(stderr, "%d %d\n", cl.pageptrs[0].count, *((int *) buffer));
+  // assert(cl.pageptrs[0].count == *((int *) buffer));
+}
+
+void test_bug1_asynchronous(void)
+{
+  client cl;  /* creating the client does the m_o_init / m_o_ready exchange */
+
+  cl.request_write_access(0);
+
+  cl.wait_for_page(0);
+
+  pager_sync(pager, 0);
+  pager_sync(pager, 0);
+  pager_sync(pager, 1);
 }
 
 void test_bug3(void)
@@ -575,9 +667,9 @@ void test_bug3a(void)
 
   for (int page = 0; page <= 1; page ++) {
     int buffer_count = * (int *) (buffer + page * __vm_page_size);
-    assert(cl.pageptrs[page].ptr == nullptr);
-    fprintf(stderr, "%d %d\n", cl.pageptrs[page].count, buffer_count);
-    assert(cl.pageptrs[page].count == buffer_count);
+    //assert(cl.pageptrs[page].ptr == nullptr);
+    fprintf(stderr, "%d %d\n", buffer_write_count[page], buffer_count);
+    assert(buffer_write_count[page] == buffer_count);
   }
 }
 
@@ -625,6 +717,31 @@ void test_bug3b(void)
   mach_call (mach_msg (msg2, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                        0, msg1.max_size, port,
                        timeout, MACH_PORT_NULL));
+}
+
+void test_bug3_asynchronous(void)
+{
+  /* "Test" bug 3 in a way compatible with the old code */
+
+  client cl;  /* creating the client does the m_o_init / m_o_ready exchange */
+
+  cl.request_write_access(0);   /* old code: doesn't support multi-page operations */
+  cl.request_write_access(1);
+
+  cl.wait_for_page(1);
+
+  /* sync page 0 */
+  pager_sync_some(pager, 0, __vm_page_size, 0);
+
+  /* return both pages and service the lock request */
+  pager_return(pager, 1);
+
+  /* request page 1 back (demux blocks) */
+  cl.request_write_access(1);
+
+  cl.wait_for_page(1);
+
+  pager_sync(pager, 1);
 }
 
 /***** COMMAND-LINE OPTIONS *****/
@@ -733,7 +850,17 @@ main (int argc, char **argv)
     mach_call (mach_port_insert_right (mach_task_self (), memobj, memobj,
                                        MACH_MSG_TYPE_MAKE_SEND));
 
-    test_bug3a();
+    test_bug3_asynchronous();
+
+    pager_shutdown(pager);
+
+    for (int page = 0; page <= 1; page ++) {
+      int buffer_count = * (int *) (buffer + page * __vm_page_size);
+      //assert(cl.pageptrs[page].ptr == nullptr);
+      fprintf(stderr, "%d %d\n", buffer_write_count[page], buffer_count);
+      assert(buffer_write_count[page] == buffer_count);
+    }
+
   }
 
 #if 0
