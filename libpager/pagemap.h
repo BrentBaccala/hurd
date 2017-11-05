@@ -74,6 +74,7 @@ class pagemap_entry
   // WAITLIST's are an ordered set of clients (processed FIFO), along with
   // a flag indicating if they requested read-only or write access.
 
+public: // for object_terminate()
   class WAITLIST_client {
   public:
     mach_port_t client;
@@ -340,7 +341,8 @@ public:
 };
 
 
-class pagemap_vector : private std::vector<pagemap_entry>
+// public for object_terminate()
+class pagemap_vector : public std::vector<pagemap_entry>
 {
   public:
 

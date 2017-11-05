@@ -16,6 +16,7 @@
 
 #include <cassert>
 #include <iostream>
+#include <algorithm>
 
 #include "pager.h"
 #include "pagemap.h"
@@ -250,15 +251,58 @@ void pager::object_init (mach_port_t control, mach_port_t name, vm_size_t pagesi
 
 void pager::object_terminate (mach_port_t control, mach_port_t name)
 {
-  // XXX check to see if this client has any outstanding pages
-
-  // XXX check to see if any messages are outstanding on control
+  std::unique_lock<std::mutex> pager_lock(lock);
 
   // One of my test cases transmitted a data_request, then called
-  // object_terminate before receiving the data_supply in reply, so
-  // the answer to both of these questions was YES, since the
-  // data_supply, with an attached page, was outstanding on the
-  // control port.
+  // object_terminate before receiving the data_supply in reply, so we
+  // had both outstanding pages and outstanding messages.  Doubt this
+  // would happen with an actual Mach kernel as client, but we also
+  // have to deal with malicious clients.
+
+  // check to see if this client has any outstanding pages
+
+  // XXX reorganize code to do this faster than searching
+  // through the entire pagemap
+
+  bool removed_from_ACCESSLIST = false;
+  bool removed_from_WAITLIST = false;
+
+  for (auto pm: pagemap) {
+    if (pm->is_client_on_ACCESSLIST(control)) {
+      tmp_pagemap_entry = pm;
+      tmp_pagemap_entry.remove_client_from_ACCESSLIST(control);
+      tmp_pagemap_entry.set_WRITE_ACCESS_GRANTED(false);
+      pm = tmp_pagemap_entry;
+      removed_from_ACCESSLIST = true;
+    }
+    for (auto wl: pm->WAITLIST_clients()) {
+      if (wl.client == control) {
+        tmp_pagemap_entry = pm;
+        auto wl2 = tmp_pagemap_entry.WAITLIST_clients();
+        wl2.erase(std::remove_if(wl2.begin(), wl2.end(),
+                                 [control](pagemap_entry::WAITLIST_client & x){return x.client == control;}),
+                  wl2.end());
+        pm = tmp_pagemap_entry;
+        removed_from_WAITLIST = true;
+        break;
+      }
+    }
+  }
+
+  if (removed_from_ACCESSLIST) {
+    fprintf(stderr, "libpager: warning: client called object_terminate with outstanding pages\n");
+  }
+  if (removed_from_WAITLIST) {
+    fprintf(stderr, "libpager: warning: client called object_terminate with outstanding waits\n");
+  }
+
+  // check to see if any messages are outstanding on control port
+
+  mach_port_status_t status;
+  mach_port_get_receive_status(mach_task_self(), control, &status);
+  if (status.mps_msgcount > 0) {
+    fprintf(stderr, "libpager: warning: client called object_terminate with outstanding messages\n");
+  }
 
   // drop a client - destroy (or drop send and receive rights) on control and name
 
