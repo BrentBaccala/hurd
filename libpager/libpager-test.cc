@@ -81,13 +81,9 @@ const char * targetPath = NULL;
 
 const int timeout = 1000;   /* 1 second timeout on almost all our operations */
 
-mach_port_t memobj;         /* this is the libpager memory object we'll use for all of our tests */
-                            /* this is how the pager is seen from the client */
-                            /* it needs to be initialized before calling any of these test routines! */
-
 struct pager * pager;       /* this is the libpager pager object */
                             /* this is how the pager is seen from the translator */
-                            /* it also needs to be initialized early! */
+                            /* it needs to be initialized before calling any of these test routines! */
                             /* if we operate in the mode where we're talking to a disk file, this never gets used */
 
 /***** SYNCHRONIZATION *****/
@@ -152,6 +148,7 @@ int buffer_write_count[2];
 
 class client {
 public:
+  mach_port_t memobj;         /* this is the libpager memory object we talk to */
   std::mutex lock;
   std::condition_variable cv;
   struct page {
@@ -412,8 +409,12 @@ public:
       });
   }
 
-  client(void)
+  client(mach_port_t memobj) : memobj(memobj)
   {
+    /* create a new send right on memobj; it will be destroyed in our destructor */
+
+    mach_call (mach_port_insert_right (mach_task_self (), memobj, memobj,
+                                       MACH_MSG_TYPE_MAKE_SEND));
 
     /* Create two receive rights */
 
@@ -447,6 +448,7 @@ public:
 
   ~client()
   {
+    // remove this to test object_terminate() code for outstanding pages
     wait_for_all_pages();
 
     {
@@ -462,6 +464,7 @@ public:
       }
 
       // return our receive rights
+      // also destroys our send right for memobj
 
       mach_call (memory_object_terminate (memobj, memory_control, memory_object_name));
     }
@@ -594,9 +597,9 @@ pager_notify_evict (struct user_pager_info *pager,
 /**** BUG TESTS ****/
 
 
-void test_bug1(void)
+void test_bug1(mach_port_t memobj)
 {
-  client cl;  /* creating the client does the m_o_init / m_o_ready exchange */
+  client cl(memobj);  /* creating the client does the m_o_init / m_o_ready exchange */
 
   cl.request_write_access(0, 0);
   translator_complete_operation();
@@ -626,9 +629,9 @@ void test_bug1(void)
   // assert(cl.pageptrs[0].count == *((int *) buffer));
 }
 
-void test_bug1_asynchronous(void)
+void test_bug1_asynchronous(mach_port_t memobj)
 {
-  client cl;  /* creating the client does the m_o_init / m_o_ready exchange */
+  client cl(memobj);  /* creating the client does the m_o_init / m_o_ready exchange */
 
   cl.request_write_access(0);
 
@@ -639,9 +642,9 @@ void test_bug1_asynchronous(void)
   pager_sync(pager, 1);
 }
 
-void test_bug3(void)
+void test_bug3(mach_port_t memobj)
 {
-  client cl;  /* creating the client does the m_o_init / m_o_ready exchange */
+  client cl(memobj);  /* creating the client does the m_o_init / m_o_ready exchange */
 
   cl.request_write_access(0, 1);   /* old code: error here, as it doesn't support multi-page operations */
   //translator_complete_operation();   /* old code: never attempts the read that would be completed here */
@@ -667,11 +670,11 @@ void test_bug3(void)
   cl.service_message();  /* service the page 1 data supply */
 }
 
-void test_bug3a(void)
+void test_bug3a(mach_port_t memobj)
 {
   /* "Test" bug 3 in a way compatible with the old code */
 
-  client cl;  /* creating the client does the m_o_init / m_o_ready exchange */
+  client cl(memobj);  /* creating the client does the m_o_init / m_o_ready exchange */
 
   cl.request_write_access(0, 0);   /* old code: doesn't support multi-page operations */
   cl.request_write_access(1, 1);
@@ -766,11 +769,11 @@ void test_bug3b(void)
                        timeout, MACH_PORT_NULL));
 }
 
-void test_bug3_asynchronous(void)
+void test_bug3_asynchronous(mach_port_t memobj)
 {
   /* "Test" bug 3 in a way compatible with the old code */
 
-  client cl;  /* creating the client does the m_o_init / m_o_ready exchange */
+  client cl(memobj);  /* creating the client does the m_o_init / m_o_ready exchange */
 
   cl.request_write_access(0);   /* old code: doesn't support multi-page operations */
   cl.request_write_access(1);
@@ -867,7 +870,7 @@ main (int argc, char **argv)
 
     printf("%lu %lu\n", memobjrd, memobjwt);
 
-    memobj = memobjwt;
+    // memobj = memobjwt;
 
   } else {
 
@@ -889,15 +892,11 @@ main (int argc, char **argv)
 
     pager = pager_create(NULL, bucket, MAY_CACHE, MEMORY_OBJECT_COPY_DELAY, NOTIFY_ON_EVICT);
 
-    memobj = pager_get_port(pager);
+    mach_port_t memobj = pager_get_port(pager);
 
-    /* pager_get_port() gave us a receive right; we need to create a send right */
+    test_bug1_asynchronous(memobj);
 
-    mach_call (mach_port_insert_right (mach_task_self (), memobj, memobj,
-                                       MACH_MSG_TYPE_MAKE_SEND));
-
-    //test_bug1_asynchronous();
-    test_bug3_asynchronous();
+    test_bug3_asynchronous(memobj);
 
     pager_shutdown(pager);
 
