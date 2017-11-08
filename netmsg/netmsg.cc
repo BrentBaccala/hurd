@@ -179,11 +179,19 @@ bool serverMode = false;
 
 /* Normally, we run multi threaded, with each port given a separate
  * thread, to better handle slow operations (both IPC and network
- * sends, and OOL data backed by slow memory managers).  Sometimes,
- * for debugging purposes, we want to run single threaded.
+ * sends, and OOL data backed by slow memory managers).
+ *
+ * Also, some kernel RPCs block until other RPCs complete, for
+ * example, vm_map will block until memory manager RPCs complete, so
+ * we need to run multi threaded to handle the memory manager RPCs
+ * while one thread remains blocked on the vm_map.
+ *
+ * See http://lists.gnu.org/archive/html/bug-hurd/2016-09/msg00002.html
+ *
+ * Sometimes, for debugging purposes, we run single threaded.
  */
 
-bool multi_threaded = false;
+const bool multi_threaded = true;
 
 unsigned int debugLevel = 0;
 
@@ -552,10 +560,22 @@ std::string porttype2str(mach_port_type_t type)
   return result;
 }
 
-/* XXX add some locking here so this works multi-threaded */
+/* auditPorts
+ *
+ * examine our ports to insure that our invariants are satisfied
+ *
+ * Specifically, for each active netmsg class, ensure that:
+ *
+ * - portset is actually a port set
+ * - every port in local_port_type exists and is of the correct type
+ *
+ * XXX add some locking here so this works multi-threaded
+ */
 
 void auditPorts(void)
 {
+  if (multi_threaded) return;
+
   mach_port_array_t names;
   mach_port_type_array_t types;
   mach_msg_type_number_t ncount;
