@@ -1726,7 +1726,7 @@ netmsg::translatePort2(const mach_port_t port, const unsigned int type)
         {
           const mach_port_t newport = local_ports_by_remote[port];
 
-          assert(local_port_type.at(newport) == MACH_MSG_TYPE_PORT_SEND);
+          assert(local_port_type.at(newport) == MACH_MSG_TYPE_PORT_RECEIVE);
 
           /* it already exists; create a new send right to relay on */
           mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
