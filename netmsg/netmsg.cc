@@ -928,7 +928,12 @@ netmsg::translateForTransmission(machMessage & msg, bool translatePortNames)
                                                                MACH_NOTIFY_DEAD_NAME, 0,
                                                                notification_port,
                                                                MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
-                    assert(old == MACH_PORT_NULL);
+
+                    // If we've already seen this send right in an earlier message, 'old'
+                    // will be an existing SEND ONCE right targeted at notification_port,
+                    // so this assert might fail.
+
+                    // assert(old == MACH_PORT_NULL);
                   }
               }
           }
