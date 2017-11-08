@@ -12,15 +12,15 @@ running in a Linux virtual machine.
 
 ## Repository Contents
 
-1. (The netmsg server)[netmsg]
+1. [The netmsg server](netmsg)
 
    **netmsg** is a Hurd translator that transports Mach messages over
-   TCP/IP.  (Mach is Hurd's underlying kernel)
+   TCP/IP; Mach is Hurd's underlying kernel.
 
    **netmsg** currently provides no authentication, and presents a
    Hurd system's root filesystem to any client connecting on TCP port 2345.
 
-2. (A multi-client libpager)[libpager]
+2. [Multi-client libpager](libpager)
 
    **libpager** is the Hurd library responsible for managing access
    to memory mapped files.  The standard **libpager** only allows
@@ -38,7 +38,7 @@ running in a Linux virtual machine.
 
 ## Installation Instructions
 
-1. Follow (Debian's installation instructions)[https://www.debian.org/ports/hurd/hurd-install]
+1. Follow [Debian's installation instructions](https://www.debian.org/ports/hurd/hurd-install)
    to install and boot Debian GNU/Hurd in a virtual machine.
 
 2. Run `apt source hurd` to download and extract the Hurd source code.
@@ -52,9 +52,12 @@ running in a Linux virtual machine.
 
 6. In the repository's **netmsg** directory, run `make`
 
-7. In one window, run `netmsg -s` to start **netmsg** in *server mode*.
+6. You may wish to now run two different virtual machines and connect between them.
+   I usually just connect from one VM to itself for testing purposes.
 
-8. In another window, run `settrans -a mnt netmsg localhost` to connect to **netmsg** in *client mode*.
+7. On one machine, run `netmsg -s` to start **netmsg** in *server mode*.
+
+8. On the other machine (or in another window), run `touch mnt; settrans -a mnt netmsg *HOSTNAME*`
 
 9. You can now work with files on the remotely mounted system.
 
@@ -66,6 +69,6 @@ running in a Linux virtual machine.
 
 3. Use a sequenced datagram protocol for **netmsg** transport
 
-4. Rework Hurd authentication along the lines of [http://lists.gnu.org/archive/html/bug-hurd/2016-09/msg00012.html]
+4. Rework Hurd authentication along the lines of http://lists.gnu.org/archive/html/bug-hurd/2016-09/msg00012.html
 
 5. 64-bit user space
