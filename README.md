@@ -17,7 +17,7 @@ running in a Linux virtual machine.
    **netmsg** is a Hurd translator that transports Mach messages over
    TCP/IP; Mach is Hurd's underlying kernel.
 
-   **netmsg** currently provides no authentication, and presents a
+   **netmsg** currently provides no encryption or authentication, and presents a
    Hurd system's root filesystem to any client connecting on TCP port 2345.
 
 2. [Multi-client libpager](libpager)
