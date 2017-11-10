@@ -144,7 +144,9 @@ void translator_complete_all_operations(void)
 
 /* A "class client" is a client of the memory object; i.e, a kernel */
 
-int buffer_write_count[2];
+const int num_pages = 20;
+
+int buffer_write_count[num_pages];
 
 class client {
 public:
@@ -204,11 +206,6 @@ public:
                                          VM_PROT_READ | VM_PROT_WRITE));
   }
 
-  void request_write_access(int page)
-  {
-    request_write_access(page, page);
-  }
-
   void wait_for_page(int page)
   {
     std::unique_lock<std::mutex> client_lock(lock);
@@ -250,6 +247,21 @@ public:
     mach_call(memory_object_data_unlock(memobj, memory_control,
                                         start_page * page_size, (end_page - start_page + 1) * page_size,
                                         VM_PROT_READ | VM_PROT_WRITE));
+  }
+
+  void request_read_access(int page)
+  {
+    request_read_access(page, page);
+  }
+
+  void request_write_access(int page)
+  {
+    request_write_access(page, page);
+  }
+
+  void request_unlock(int page)
+  {
+    request_unlock(page, page);
   }
 
 #if 0
@@ -299,6 +311,12 @@ public:
 
     mach_call(memory_object_data_return(memobj, memory_control, page * page_size,
                                         (vm_offset_t) pageptrs[page].ptr, page_size, dirty, kcopy));
+
+    if (! kcopy) {
+      // XXX seems to generate seg faults
+      // mach_call(vm_deallocate(mach_task_self(), (vm_address_t) pageptrs[page].ptr, page_size));
+      pageptrs[page].ptr = nullptr;
+    }
   }
 
   kern_return_t service_message(bool block = true)
@@ -365,11 +383,6 @@ public:
           if (pageptrs[page].ptr != nullptr) {
             if (should_return && (pageptrs[page].access | VM_PROT_WRITE)) {
               return_page(page, dirty, kcopy);
-            }
-            if (should_flush) {
-              // XXX seems to generate seg faults
-              // mach_call(vm_deallocate(mach_task_self(), (vm_address_t) pageptrs[page].ptr, page_size));
-              pageptrs[page].ptr = nullptr;
             }
           }
         }
@@ -459,7 +472,6 @@ public:
       for (int page = 0; page < pageptrs.size(); page ++) {
         if ((pageptrs[page].ptr != nullptr) && (pageptrs[page].access | VM_PROT_WRITE)) {
           return_page(page, 1, 0);
-          pageptrs[page].ptr = nullptr;
         }
       }
 
@@ -481,7 +493,7 @@ public:
  * memory-backed object that can be used as a testing target.
  */
 
-#define BUFFER_SIZE (2*4096)
+const int BUFFER_SIZE = (num_pages * 4096);
 
 char buffer[BUFFER_SIZE];
 
@@ -793,11 +805,45 @@ void test_bug3_asynchronous(mach_port_t memobj)
   cl.request_write_access(1);
 }
 
+void random_test_asynchronous(mach_port_t memobj)
+{
+  client cl(memobj);  /* creating the client does the m_o_init / m_o_ready exchange */
+
+  for (int i=0; i < 100; i++) {
+    int page = rand() % num_pages;
+    if (rand() & 1) {
+      cl.wait_for_page(page);
+      if (cl.pageptrs[page].ptr == nullptr) {
+        if (rand() & 1) {
+          cl.request_read_access(page);
+        } else {
+          cl.request_write_access(page);
+        }
+      } else if (cl.pageptrs[page].access & VM_PROT_WRITE) {
+        cl.return_page(page, 1, 0);
+      } else {
+        if (rand() & 1) {
+          cl.request_unlock(page);
+        } else {
+          cl.return_page(page, 0, 0);
+        }
+      }
+    } else {
+      if (rand() & 1) {
+        pager_return_some(pager, page * vm_page_size, vm_page_size, 1);
+      } else {
+        pager_sync_some(pager, page * vm_page_size, vm_page_size, 1);
+      }
+    }
+  }
+}
+
 /***** COMMAND-LINE OPTIONS *****/
 
 static const struct argp_option options[] =
   {
     { "debug", 'd', 0, 0, "debug messages" },
+    { "seed", 's', "SEED", 0, "random number seed" },
     { 0 }
   };
 
@@ -812,6 +858,10 @@ parse_opt (int key, char *arg, struct argp_state *state)
     {
     case 'd':
       debugLevel ++;
+      break;
+
+    case 's':
+      srand(atoi(arg));
       break;
 
     case ARGP_KEY_ARG:
@@ -898,9 +948,13 @@ main (int argc, char **argv)
 
     test_bug3_asynchronous(memobj);
 
+    random_test_asynchronous(memobj);
+    random_test_asynchronous(memobj);
+    random_test_asynchronous(memobj);
+
     pager_shutdown(pager);
 
-    for (int page = 0; page <= 1; page ++) {
+    for (int page = 0; page < num_pages; page ++) {
       int buffer_count = * (int *) (buffer + page * __vm_page_size);
       //assert(cl.pageptrs[page].ptr == nullptr);
       fprintf(stderr, "%d %d\n", buffer_write_count[page], buffer_count);
