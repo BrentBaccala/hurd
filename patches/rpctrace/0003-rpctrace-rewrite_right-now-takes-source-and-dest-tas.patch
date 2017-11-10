@@ -1,0 +1,123 @@
+From 13d4c961692b2de12a29144d466d70106bb11eef Mon Sep 17 00:00:00 2001
+From: Brent Baccala <cosine@freesoft.org>
+Date: Tue, 25 Oct 2016 19:41:03 -1000
+Subject: [PATCH 3/8] rpctrace: rewrite_right() now takes source and dest
+ task_t arguments, instead of taking an entire RPC request structure, which
+ sometimes needs to be fabricated in order to use rewrite_right()
+To: bug-hurd@gnu.org
+
+also, drop special handling of mach_port_extract_right RPC
+---
+ utils/rpctrace.c | 38 ++++++++++----------------------------
+ 1 file changed, 10 insertions(+), 28 deletions(-)
+
+diff --git a/utils/rpctrace.c b/utils/rpctrace.c
+index e33265f..caa77b0 100644
+--- a/utils/rpctrace.c
++++ b/utils/rpctrace.c
+@@ -590,32 +590,16 @@ get_send_wrapper (struct receiver_info *receiver_info,
+ /* Rewrite a port right in a message with an appropriate wrapper port.  */
+ static char *
+ rewrite_right (mach_port_t *right, mach_msg_type_name_t *type,
+-	       struct req_info *req)
++	       task_t source, task_t dest)
+ {
+   error_t err;
+   struct receiver_info *receiver_info;
+   struct sender_info *send_wrapper;
+-  task_t dest = unknown_task;
+-  task_t source = unknown_task;
+ 
+   /* We can never do anything special with a null or dead port right.  */
+   if (!MACH_PORT_VALID (*right))
+     return 0;
+ 
+-  if (req)
+-    {
+-      if (req->is_req)    /* It's a RPC request. */
+-	{
+-	  source = req->from;
+-	  dest = req->to;
+-	}
+-      else
+-	{
+-	  source = req->to;
+-	  dest = req->from;
+-	}
+-    }
+-
+   switch (*type)
+     {
+     case MACH_MSG_TYPE_PORT_SEND:
+@@ -654,10 +638,8 @@ rewrite_right (mach_port_t *right, mach_msg_type_name_t *type,
+ 	  return TRACED_INFO (send_wrapper)->name;
+ 	}
+ 
+-      if (req && req->req_id == 3216)	    /* mach_port_extract_right */
+-	receiver_info = discover_receive_right (*right, dest);
+-      else
+-	receiver_info = discover_receive_right (*right, source);
++      receiver_info = discover_receive_right (*right, source);
++
+       if (receiver_info == NULL)
+ 	{
+ 	  /* It's unusual to see an unknown send right from a traced task.
+@@ -707,7 +689,6 @@ rewrite_right (mach_port_t *right, mach_msg_type_name_t *type,
+        * We wrap the receive right A in the send wrapper and move the receive
+        * right B to the destination task.  */
+       {
+-	assert (req);
+ 	receiver_info = hurd_ihash_find (&traced_names, *right);
+ 	if (receiver_info)
+ 	  {
+@@ -803,8 +784,8 @@ rewrite_right (mach_port_t *right, mach_msg_type_name_t *type,
+ }
+ 
+ static void
+-print_contents (mach_msg_header_t *inp,
+-		void *msg_buf_ptr, struct req_info *req)
++print_contents (mach_msg_header_t *inp, void *msg_buf_ptr,
++		task_t source, task_t dest)
+ {
+   error_t err;
+ 
+@@ -874,7 +855,7 @@ print_contents (mach_msg_header_t *inp,
+ 
+ 	      newtypes[i] = name;
+ 
+-	      str = rewrite_right (&portnames[i], &newtypes[i], req);
++	      str = rewrite_right (&portnames[i], &newtypes[i], source, dest);
+ 
+ 	      putc ((i == 0 && nelt > 1) ? '{' : ' ', ostream);
+ 
+@@ -1217,7 +1198,8 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+ 	switch (reply_type)
+ 	  {
+ 	  case MACH_MSG_TYPE_PORT_SEND:
+-	    rewrite_right (&inp->msgh_local_port, &reply_type, NULL);
++	    rewrite_right (&inp->msgh_local_port, &reply_type,
++			   TRACED_INFO (info)->task, unknown_task);
+ 	    break;
+ 
+ 	  case MACH_MSG_TYPE_PORT_SEND_ONCE:;
+@@ -1293,7 +1275,7 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+ 	  print_reply_header ((struct send_once_info *) info, rh, req);
+ 	  putc (' ', ostream);
+ 	  fflush (ostream);
+-	  print_contents (&rh->Head, rh + 1, req);
++	  print_contents (&rh->Head, rh + 1, req->to, req->from);
+ 	  putc ('\n', ostream);
+ 
+ 	  if (inp->msgh_id == 2161)/* the reply message for thread_create */
+@@ -1333,7 +1315,7 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+ 
+ 	  /* If it's the notification message, req is NULL.
+ 	   * TODO again, it's difficult to handle mach_notify_port_destroyed */
+-	  print_contents (inp, inp + 1, req);
++	  print_contents (inp, inp + 1, TRACED_INFO (info)->task, to);
+ 	  if (inp->msgh_local_port == MACH_PORT_NULL) /* simpleroutine */
+ 	    {
+ 	      /* If it's a simpleroutine,
+-- 
+2.6.4
+

@@ -1,0 +1,58 @@
+From cb5a727cea83ec32bba985e066b7c80d74aec68c Mon Sep 17 00:00:00 2001
+From: Brent Baccala <cosine@freesoft.org>
+Date: Wed, 26 Oct 2016 19:41:03 -1000
+Subject: [PATCH 6/8] rpctrace: handle unknown send rights from tasks that
+ don't hold the matching receive right, and eliminate dummy_wrapper
+To: bug-hurd@gnu.org
+
+---
+ utils/rpctrace.c | 24 +++++++++++++++---------
+ 1 file changed, 15 insertions(+), 9 deletions(-)
+
+diff --git a/utils/rpctrace.c b/utils/rpctrace.c
+index c587736..015f765 100644
+--- a/utils/rpctrace.c
++++ b/utils/rpctrace.c
+@@ -230,7 +230,7 @@ remove_request (mach_msg_id_t req_id, mach_port_t reply_port)
+ struct port_info *notify_pi;
+ /* The list of receiver infos, but only the ones for the traced tasks. */
+ struct receiver_info *receive_right_list;
+-static struct traced_info dummy_wrapper;
++
+ static struct send_once_info *freelist;
+ 
+ struct hurd_ihash traced_names
+@@ -643,16 +643,22 @@ rewrite_right (mach_port_t *right, mach_msg_type_name_t *type,
+ 
+       if (receiver_info == NULL)
+ 	{
+-	  /* It's unusual to see an unknown send right from a traced task.
+-	   * We ignore it. */
+-	  if (source != unknown_task)
++	  /* We couldn't find the receive right in the task that sent
++	   * the message.  Search the other traced tasks.
++	   */
++
++	  HURD_IHASH_ITERATE_ITEMS (&task_ihash, ti)
+ 	    {
+-	      /* TODO: this happens on fork() when the new process does not
+-	         have the send right yet (it is about to get inserted).  */
+-	      error (0, 0, "get an unknown send right from process %d",
+-		     task2pid (source));
+-	      return dummy_wrapper.name;
++	      if (ti->key != source)
++		{
++		  receiver_info = discover_receive_right(*right, ti->key);
++		  if (receiver_info) break;
++		}
+ 	    }
++	}
++
++      if (receiver_info == NULL)
++	{
+ 	  /* The receive right is owned by an unknown task. */
+ 	  receiver_info = new_receiver_info (*right, unknown_task);
+ 	  mach_port_mod_refs (mach_task_self (), *right,
+-- 
+2.6.4
+

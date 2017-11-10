@@ -1,0 +1,65 @@
+From 251d19fb55f99a358ad5cf2097be07a50a9a3057 Mon Sep 17 00:00:00 2001
+From: Brent Baccala <cosine@freesoft.org>
+Date: Tue, 1 Nov 2016 01:09:21 -1000
+Subject: [PATCH 2/2] rpctrace: don't use reply code unless we've found a
+ matching request, and remove unused is_req field from request structure
+
+---
+ utils/rpctrace.c | 13 +++++--------
+ 1 file changed, 5 insertions(+), 8 deletions(-)
+
+diff --git a/utils/rpctrace.c b/utils/rpctrace.c
+index 6eb9892..2664ffd 100644
+--- a/utils/rpctrace.c
++++ b/utils/rpctrace.c
+@@ -189,7 +189,6 @@ struct send_once_info
+ /* This structure stores the information of the RPC requests. */
+ struct req_info
+ {
+-  boolean_t is_req;
+   mach_msg_id_t req_id;
+   mach_port_t reply_port;
+   task_t from;
+@@ -210,7 +209,6 @@ add_request (mach_msg_id_t req_id, mach_port_t reply_port,
+   req->from = from;
+   req->to = to;
+   req->reply_port = reply_port;
+-  req->is_req = TRUE;
+ 
+   req->next = req_head;
+   req_head = req;
+@@ -1322,18 +1320,18 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+ 
+   if (msgid_display (msgid))
+     {
++      struct req_info *req = NULL;
++
+       if (inp->msgh_local_port == MACH_PORT_NULL
+ 	  && info->type == MACH_MSG_TYPE_MOVE_SEND_ONCE
+ 	  && inp->msgh_size >= sizeof (mig_reply_header_t)
+ 	  /* The notification message is considered as a request. */
+ 	  && (inp->msgh_id > 72 || inp->msgh_id < 64)
+           && !memcmp(&((mig_reply_header_t *) inp)->RetCodeType,
+-                     &RetCodeType, sizeof (RetCodeType)))
++                     &RetCodeType, sizeof (RetCodeType))
++	  && (req = remove_request (inp->msgh_id - 100,
++				    inp->msgh_remote_port)))
+ 	{
+-	  struct req_info *req = remove_request (inp->msgh_id - 100,
+-						 inp->msgh_remote_port);
+-	  assert (req);
+-	  req->is_req = FALSE;
+ 	  /* This sure looks like an RPC reply message.  */
+ 	  mig_reply_header_t *rh = (void *) inp;
+ 	  print_reply_header ((struct send_once_info *) info, rh, req);
+@@ -1352,7 +1350,6 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+       else
+ 	{
+ 	  struct task_info *task_info;
+-	  struct req_info *req = NULL;
+ 
+ 	  /* Print something about the message header.  */
+ 	  print_request_header ((struct sender_info *) info, inp);
+-- 
+2.6.4
+

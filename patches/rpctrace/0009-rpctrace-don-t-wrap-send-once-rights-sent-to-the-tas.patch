@@ -1,0 +1,45 @@
+From 10a2a49e370ca55b6cea4cdc4a54ae106b243817 Mon Sep 17 00:00:00 2001
+From: Brent Baccala <cosine@freesoft.org>
+Date: Tue, 1 Nov 2016 01:07:52 -1000
+Subject: [PATCH 1/2] rpctrace: don't wrap send-once rights sent to the task
+ owning the receive right
+
+---
+ utils/rpctrace.c | 21 ++++++++++++++++-----
+ 1 file changed, 16 insertions(+), 5 deletions(-)
+
+diff --git a/utils/rpctrace.c b/utils/rpctrace.c
+index 72ca614..6eb9892 100644
+--- a/utils/rpctrace.c
++++ b/utils/rpctrace.c
+@@ -708,11 +708,22 @@ rewrite_right (mach_port_t *right, mach_msg_type_name_t *type,
+       /* There is no way to know if this send-once right is to the same
+ 	 receive right as any other send-once or send right we have seen.
+ 	 Fortunately, it doesn't matter, since the recipient of the
+-	 send-once right we pass along can't tell either.  We always just
+-	 make a new send-once wrapper object, that will trace the one
+-	 message it receives, and then die.  */
+-      *type = MACH_MSG_TYPE_MAKE_SEND_ONCE;
+-      return TRACED_INFO (new_send_once_wrapper (*right, right, source))->name;
++	 send-once right we pass along can't tell either.  We make a new
++	 send-once wrapper object, that will trace the one message it
++	 receives, and then die, unless the source and destination tasks
++	 are the same.  This can only happen for the reply message to a
++	 mach_port RPC, a special case detected in trace_and_forward(),
++	 in which case we leave the send-once right alone, since we're
++	 passing it to the owner of its corresponding receive right. */
++      if (source == dest)
++	{
++	  return NULL;
++	}
++      else
++	{
++	  *type = MACH_MSG_TYPE_MAKE_SEND_ONCE;
++	  return TRACED_INFO (new_send_once_wrapper (*right, right, source))->name;
++	}
+ 
+     case MACH_MSG_TYPE_PORT_RECEIVE:
+       /* We have got a receive right, call it A and the send wrapper for
+-- 
+2.6.4
+

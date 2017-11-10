@@ -1,0 +1,60 @@
+From a234b22cf12a797413397e56487db224fc1bc8ff Mon Sep 17 00:00:00 2001
+From: Brent Baccala <cosine@freesoft.org>
+Date: Tue, 1 Nov 2016 08:45:45 -1000
+Subject: [PATCH] rpctrace: Don't allocate an unneeded structure
+To: bug-hurd@gnu.org
+
+* utils/rpctrace.c (trace_and_forward): Don't allocate request
+structure 'req' unless we actually expect a reply
+---
+ utils/rpctrace.c | 28 +++++++++++++---------------
+ 1 file changed, 13 insertions(+), 15 deletions(-)
+
+diff --git a/utils/rpctrace.c b/utils/rpctrace.c
+index 2664ffd..6086ab6 100644
+--- a/utils/rpctrace.c
++++ b/utils/rpctrace.c
+@@ -1365,27 +1365,25 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+ 
+ 	  /* If it's mach_port RPC,
+ 	   * the port rights in the message will be moved to the target task. */
+-	  else if (inp->msgh_id >= 3200 && inp->msgh_id <= 3218)
++	  if (inp->msgh_id >= 3200 && inp->msgh_id <= 3218)
+ 	    to = SEND_INFO (info)->receive_right->forward;
+ 
+-	  if (info->type == MACH_MSG_TYPE_MOVE_SEND)
+-	    req = add_request (inp->msgh_id, reply_port,
+-			       TRACED_INFO (info)->task, to);
+-
+-	  /* If it's the notification message, req is NULL.
+-	   * TODO again, it's difficult to handle mach_notify_port_destroyed */
+ 	  print_contents (inp, inp + 1, TRACED_INFO (info)->task, to);
+-	  if (inp->msgh_local_port == MACH_PORT_NULL) /* simpleroutine */
++
++	  if ((info->type == MACH_MSG_TYPE_MOVE_SEND)
++	      && (inp->msgh_local_port != MACH_PORT_NULL))
+ 	    {
+-	      /* If it's a simpleroutine,
+-	       * we don't need the request information any more. */
+-	      req = remove_request (inp->msgh_id, reply_port);
+-	      free (req);
+-	      fprintf (ostream, ");\n");
++	      /* looks like we're expecting a reply */
++	      req = add_request (inp->msgh_id, reply_port,
++				 TRACED_INFO (info)->task, to);
++	      /* Leave a partial line that will be finished later.  */
++	      fprintf (ostream, ")");
+ 	    }
+ 	  else
+-	    /* Leave a partial line that will be finished later.  */
+-	    fprintf (ostream, ")");
++	    {
++	      fprintf (ostream, ");\n");
++	    }
++
+ 	  fflush (ostream);
+ 
+ 	  /* If it's the first request from the traced task,
+-- 
+2.6.4
+

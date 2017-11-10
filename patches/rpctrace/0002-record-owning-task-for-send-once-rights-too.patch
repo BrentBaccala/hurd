@@ -1,0 +1,147 @@
+From 4dae6711d018bd6502d54ccf02190e6f415c9ef1 Mon Sep 17 00:00:00 2001
+From: Brent Baccala <cosine@freesoft.org>
+Date: Mon, 24 Oct 2016 21:39:31 -1000
+Subject: [PATCH 2/8] record owning task for send-once rights, too
+To: bug-hurd@gnu.org
+
+---
+ utils/rpctrace.c | 37 +++++++++++++++++++------------------
+ 1 file changed, 19 insertions(+), 18 deletions(-)
+
+diff --git a/utils/rpctrace.c b/utils/rpctrace.c
+index 8aef88d..e33265f 100644
+--- a/utils/rpctrace.c
++++ b/utils/rpctrace.c
+@@ -130,6 +130,7 @@ struct traced_info
+   struct port_info pi;
+   mach_msg_type_name_t type;
+   char *name;			/* null or a string describing this */
++  task_t task;			/* The task who has the right. */
+ };
+ 
+ /* Each traced port has one receiver info and multiple send wrappers.
+@@ -152,7 +153,6 @@ struct receiver_info
+ struct sender_info
+ {
+   struct traced_info pi;
+-  task_t task;			/* The task who has the right. */
+ 
+   /* It is used to form the list of send rights for different tasks.
+    * The head is the receive right. */
+@@ -359,7 +359,7 @@ new_send_wrapper (struct receiver_info *receive, task_t task,
+   easprintf (&TRACED_INFO (info)->name, "  %lu<--%lu(pid%d)",
+ 	     receive->forward, TRACED_INFO (info)->pi.port_right, task2pid (task));
+   TRACED_INFO (info)->type = MACH_MSG_TYPE_MOVE_SEND;
+-  info->task = task;
++  TRACED_INFO (info)->task = task;
+   info->receive_right = receive;
+   info->next = receive->next;
+   receive->next = info;
+@@ -372,7 +372,7 @@ new_send_wrapper (struct receiver_info *receive, task_t task,
+ 
+ /* Create a new wrapper port and do `ports_get_right' on it.  */
+ static struct send_once_info *
+-new_send_once_wrapper (mach_port_t right, mach_port_t *wrapper_right)
++new_send_once_wrapper (mach_port_t right, mach_port_t *wrapper_right, task_t task)
+ {
+   error_t err;
+   struct send_once_info *info;
+@@ -394,6 +394,7 @@ new_send_once_wrapper (mach_port_t right, mach_port_t *wrapper_right)
+ 
+   info->forward = right;
+   TRACED_INFO (info)->type = MACH_MSG_TYPE_MOVE_SEND_ONCE;
++  TRACED_INFO (info)->task = task;
+   info->nextfree = NULL;
+ 
+   /* Send-once rights never compare equal to any other right (even
+@@ -575,7 +576,7 @@ get_send_wrapper (struct receiver_info *receiver_info,
+   
+   while (info)
+     {
+-      if (info->task == task)
++      if (TRACED_INFO (info)->task == task)
+ 	{
+ 	  *right = ports_get_right (info);
+ 	  return info;
+@@ -696,7 +697,7 @@ rewrite_right (mach_port_t *right, mach_msg_type_name_t *type,
+ 	 make a new send-once wrapper object, that will trace the one
+ 	 message it receives, and then die.  */
+       *type = MACH_MSG_TYPE_MAKE_SEND_ONCE;
+-      return TRACED_INFO (new_send_once_wrapper (*right, right))->name;
++      return TRACED_INFO (new_send_once_wrapper (*right, right, source))->name;
+ 
+     case MACH_MSG_TYPE_PORT_RECEIVE:
+       /* We have got a receive right, call it A and the send wrapper for
+@@ -731,7 +732,7 @@ rewrite_right (mach_port_t *right, mach_msg_type_name_t *type,
+ 	      error (2, err, "ports_import_port");
+ 
+ 	    TRACED_INFO (send_wrapper)->type = MACH_MSG_TYPE_MOVE_SEND;
+-	    send_wrapper->task = source;
++	    TRACED_INFO (send_wrapper)->task = source;
+ 	    TRACED_INFO (send_wrapper)->name = receiver_info->name;
+ 	    /* Initialize them in case that the source task doesn't
+ 	     * have the send right to the port, and the port will
+@@ -1220,21 +1221,21 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+ 	    break;
+ 
+ 	  case MACH_MSG_TYPE_PORT_SEND_ONCE:;
+-	    struct send_once_info *info;
+-	    info = new_send_once_wrapper (inp->msgh_local_port,
+-					  &inp->msgh_local_port);
++	    struct send_once_info *info2;
++	    info2 = new_send_once_wrapper (inp->msgh_local_port,
++					   &inp->msgh_local_port, TRACED_INFO (info)->task);
+ 	    reply_type = MACH_MSG_TYPE_MAKE_SEND_ONCE;
+ 	    assert (inp->msgh_local_port);
+ 
+-	    if (TRACED_INFO (info)->name == 0)
++	    if (TRACED_INFO (info2)->name == 0)
+ 	      {
+ 		if (msgid == 0)
+-		  easprintf (&TRACED_INFO (info)->name, "reply(%u:%u)",
+-			     (unsigned int) TRACED_INFO (info)->pi.port_right,
++		  easprintf (&TRACED_INFO (info2)->name, "reply(%u:%u)",
++			     (unsigned int) TRACED_INFO (info2)->pi.port_right,
+ 			     (unsigned int) inp->msgh_id);
+ 		else
+-		  easprintf (&TRACED_INFO (info)->name, "reply(%u:%s)",
+-			     (unsigned int) TRACED_INFO (info)->pi.port_right,
++		  easprintf (&TRACED_INFO (info2)->name, "reply(%u:%s)",
++			     (unsigned int) TRACED_INFO (info2)->pi.port_right,
+ 			     msgid->name);
+ 	      }
+ 	    break;
+@@ -1328,7 +1329,7 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+ 	    to = SEND_INFO (info)->receive_right->task;
+ 	  if (info->type == MACH_MSG_TYPE_MOVE_SEND)
+ 	    req = add_request (inp->msgh_id, reply_port,
+-			       SEND_INFO (info)->task, to);
++			       TRACED_INFO (info)->task, to);
+ 
+ 	  /* If it's the notification message, req is NULL.
+ 	   * TODO again, it's difficult to handle mach_notify_port_destroyed */
+@@ -1348,10 +1349,10 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+ 
+ 	  /* If it's the first request from the traced task,
+ 	   * wrap the all threads in the task. */
+-	  task_info = hurd_ihash_find (&task_ihash, SEND_INFO (info)->task);
++	  task_info = hurd_ihash_find (&task_ihash, TRACED_INFO (info)->task);
+ 	  if (task_info && !task_info->threads_wrapped)
+ 	    {
+-	      wrap_all_threads (SEND_INFO (info)->task);
++	      wrap_all_threads (TRACED_INFO (info)->task);
+ 	      task_info->threads_wrapped = TRUE;
+ 	    }
+ 	}
+@@ -1649,7 +1650,7 @@ traced_spawn (char **argv, char **envp)
+   receive_ti = new_receiver_info (traced_task, unknown_task);
+   /* Create a trace wrapper for the task port.  */
+   ti = new_send_wrapper (receive_ti, traced_task, &task_wrapper);
+-  ti->task = traced_task;
++  TRACED_INFO (ti)->task = traced_task;
+   free (TRACED_INFO (ti)->name);
+   easprintf (&TRACED_INFO (ti)->name, "task%lu(pid%d)", traced_task, pid);
+ 
+-- 
+2.6.4
+

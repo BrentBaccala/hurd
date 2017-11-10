@@ -1,0 +1,124 @@
+From 8f7f79220691d9ee4d32514bb7ac63aef91b3860 Mon Sep 17 00:00:00 2001
+From: Brent Baccala <cosine@freesoft.org>
+Date: Thu, 20 Oct 2016 20:46:32 -1000
+Subject: [PATCH] remove warning messages on rpctrace from 'asprintf'
+
+---
+ utils/rpctrace.c | 50 ++++++++++++++++++++++++++++++++------------------
+ 1 file changed, 32 insertions(+), 18 deletions(-)
+
+diff --git a/utils/rpctrace.c b/utils/rpctrace.c
+index 25d9bc6..3582df5 100644
+--- a/utils/rpctrace.c
++++ b/utils/rpctrace.c
+@@ -59,6 +59,19 @@ static const struct argp_option options[] =
+ 
+ static const char args_doc[] = "COMMAND [ARG...]";
+ static const char doc[] = "Trace Mach Remote Procedure Calls.";
++
++void easprintf(char **strp, const char *fmt, ...)
++{
++  va_list argptr;
++  int retval;
++
++  va_start(argptr, fmt);
++  retval = vasprintf(strp, fmt, argptr);
++  va_end(argptr);
++
++  assert_perror(retval == -1);
++}
++
+ 
+ /* This structure stores the information of the traced task. */
+ struct task_info
+@@ -353,8 +366,8 @@ new_send_wrapper (struct receiver_info *receive, task_t task,
+   assert_perror (err);
+ 
+   TRACED_INFO (info)->name = 0;
+-  asprintf (&TRACED_INFO (info)->name, "  %lu<--%lu(pid%d)", 
+-	    receive->forward, TRACED_INFO (info)->pi.port_right, task2pid (task));
++  easprintf (&TRACED_INFO (info)->name, "  %lu<--%lu(pid%d)",
++	     receive->forward, TRACED_INFO (info)->pi.port_right, task2pid (task));
+   TRACED_INFO (info)->type = MACH_MSG_TYPE_MOVE_SEND;
+   info->task = task;
+   info->receive_right = receive;
+@@ -978,8 +991,8 @@ wrap_all_threads (task_t task)
+ 	  thread_send_wrapper = new_send_wrapper (thread_receiver_info,
+ 						  task, &new_thread_port);
+ 	  free (TRACED_INFO (thread_send_wrapper)->name);
+-	  asprintf (&TRACED_INFO (thread_send_wrapper)->name,
+-		    "thread%lu(pid%d)", threads[i], task2pid (task));
++	  easprintf (&TRACED_INFO (thread_send_wrapper)->name,
++		     "thread%lu(pid%d)", threads[i], task2pid (task));
+ 
+ 	  err = mach_port_insert_right (mach_task_self (),
+ 					new_thread_port, new_thread_port,
+@@ -1031,8 +1044,8 @@ wrap_new_thread (mach_msg_header_t *inp, struct req_info *req)
+   mach_port_deallocate (mach_task_self (), reply->child_thread);
+ 
+   free (TRACED_INFO (send_wrapper)->name);
+-  asprintf (&TRACED_INFO (send_wrapper)->name, "thread%lu(pid%d)",
+-	    thread_port, task2pid (req->from));
++  easprintf (&TRACED_INFO (send_wrapper)->name, "thread%lu(pid%d)",
++	     thread_port, task2pid (req->from));
+   ports_port_deref (send_wrapper);
+ }
+ 
+@@ -1078,11 +1091,11 @@ wrap_new_task (mach_msg_header_t *inp, struct req_info *req)
+ 
+   pid = task2pid (task_port);
+   free (TRACED_INFO (task_wrapper1)->name);
+-  asprintf (&TRACED_INFO (task_wrapper1)->name, "task%lu(pid%d)",
+-	    task_port, task2pid (req->from));
++  easprintf (&TRACED_INFO (task_wrapper1)->name, "task%lu(pid%d)",
++	     task_port, task2pid (req->from));
+   free (TRACED_INFO (task_wrapper2)->name);
+-  asprintf (&TRACED_INFO (task_wrapper2)->name, "task%lu(pid%d)",
+-	    task_port, pid);
++  easprintf (&TRACED_INFO (task_wrapper2)->name, "task%lu(pid%d)",
++	     task_port, pid);
+   ports_port_deref (task_wrapper1);
+ }
+ 
+@@ -1226,13 +1239,13 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+ 	    if (TRACED_INFO (info)->name == 0)
+ 	      {
+ 		if (msgid == 0)
+-		  asprintf (&TRACED_INFO (info)->name, "reply(%u:%u)",
+-			    (unsigned int) TRACED_INFO (info)->pi.port_right,
+-			    (unsigned int) inp->msgh_id);
++		  easprintf (&TRACED_INFO (info)->name, "reply(%u:%u)",
++			     (unsigned int) TRACED_INFO (info)->pi.port_right,
++			     (unsigned int) inp->msgh_id);
+ 		else
+-		  asprintf (&TRACED_INFO (info)->name, "reply(%u:%s)",
+-			    (unsigned int) TRACED_INFO (info)->pi.port_right,
+-			    msgid->name);
++		  easprintf (&TRACED_INFO (info)->name, "reply(%u:%s)",
++			     (unsigned int) TRACED_INFO (info)->pi.port_right,
++			     msgid->name);
+ 	      }
+ 	    break;
+ 
+@@ -1307,7 +1320,8 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+ 
+ 	  /* Print something about the message header.  */
+ 	  print_request_header ((struct sender_info *) info, inp);
+-	  /* It's a nofication message. */
++
++	  /* It's a notification message. */
+ 	  if (inp->msgh_id <= 72 && inp->msgh_id >= 64)
+ 	    {
+ 	      assert (info->type == MACH_MSG_TYPE_MOVE_SEND_ONCE);
+@@ -1647,7 +1661,7 @@ traced_spawn (char **argv, char **envp)
+   ti = new_send_wrapper (receive_ti, traced_task, &task_wrapper);
+   ti->task = traced_task;
+   free (TRACED_INFO (ti)->name);
+-  asprintf (&TRACED_INFO (ti)->name, "task%lu(pid%d)", traced_task, pid);
++  easprintf (&TRACED_INFO (ti)->name, "task%lu(pid%d)", traced_task, pid);
+ 
+   /* Replace the task's kernel port with the wrapper.  When this task calls
+      `mach_task_self ()', it will get our wrapper send right instead of its
+-- 
+2.6.4
+

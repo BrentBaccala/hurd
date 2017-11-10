@@ -1,0 +1,184 @@
+From d89c1aee558a2b83270db908e923d9f3395adcb5 Mon Sep 17 00:00:00 2001
+From: Brent Baccala <cosine@freesoft.org>
+Date: Tue, 1 Nov 2016 03:55:27 -1000
+Subject: [PATCH 1/2] add rpctrace documentation to info file
+
+---
+ doc/hurd.texi | 147 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 147 insertions(+)
+
+diff --git a/doc/hurd.texi b/doc/hurd.texi
+index 8428a77..06b5a61 100644
+--- a/doc/hurd.texi
++++ b/doc/hurd.texi
+@@ -162,6 +162,7 @@ into another language, under the above conditions for modified versions.
+ * Networking::                  Interconnecting with other machines.
+ * Terminal Handling::           Helping people interact with the Hurd.
+ * Running Programs::            Program execution and process management.
++* Debugging Programs::          Tracing and debugging programs.
+ * Authentication::              Verifying user and server privileges.
+ * Index::                       Guide to concepts, functions, and files.
+ 
+@@ -319,6 +320,10 @@ Networking
+ * libpipe::
+ * Socket Interface::            Network communication I/O protocol.
+ 
++Debugging Programs
++
++* rpctrace::                    Trace Mach Remote Procedure Calls
++
+ Authentication
+ 
+ * Auth Interface::              Auth ports implement the auth interface.
+@@ -4647,6 +4652,148 @@ FIXME: finish
+ @section proc
+ @section crash
+ 
++@node Debugging Programs
++@chapter Debugging Programs
++
++@menu
++* rpctrace::                    Trace Mach Remote Procedure Calls
++@end menu
++
++@node rpctrace
++@section rpctrace
++@pindex rpctrace
++
++@command{rpctrace}
++runs a specified program until it exits, intercepting and tracing its Remote Procedure Calls.
++Child processes are also traced.  Synopsis:
++
++@example
++rpctrace [-E var[=value]] [-i FILE] [-I DIR] [--nostdinc] [-o FILE] [-s SIZE] command [args]
++@end example
++
++Each line in the trace begins with the port to which the RPC is being sent, followed
++by the name of the RPC, its arguments in parenthesis, an equal sign, and then the reply.
++
++Mach ports are identified using port numbers internal to @command{rpctrace}
++(not the program being traced),
++and are printed in the format
++@code{@var{DEST}<--@var{SRC}(@var{PID})},
++where @var{SRC} is the port number @command{rpctrace} received the message on,
++@var{DEST} is the port number it is forwarding the message to, and
++@var{PID} identifies which task the source port is associated with.
++Only traced processes are identified by PID; ports sourced from untraced processes
++(and the kernel) are tagged with PID -1.
++
++Consider the following line from @command{rpctrace}:
++
++@example
++110<--536(pid1290)->dir_lookup ("etc/ld.so.cache" 1 0) = 0 1 ""    530<--540(pid1290)
++@end example
++
++Process 1290 has transmitted a @samp{dir_lookup} RPC, which was received by
++@command{rpctrace}
++on port 536 and forwarded to port 110, containing three arguments: a string and two integers.
++A reply message was received containing two integers, a null string, and a send right to
++a Mach port.  If process 1290 now transmits a message to its new send right, it will
++be received by @command{rpctrace} on port 540 and forwarded to port 530.
++
++Task ports and thread ports are recognized by @command{rpctrace}
++and printed in special formats:
++@code{@var{TASK}(@var{PID})} and @code{@var{THREAD}(@var{PID})}.
++Thus, the following line shows process 1290 making an RPC to its own task port
++(though this association is not obvious) and allocating a new receive right,
++which appears on port number 17 (in process 1290's port space, not
++@command{rpctrace}'s).
++
++@example
++task523(pid1290)->mach_port_allocate (1) = 0 pn@{ 17@}
++@end example
++
++If the message immediately following an RPC is not a reply to that RPC, a continuation
++line is printed, using a number that is the port @command{rpctrace}
++is expecting the reply on.  The following sequence shows process 1290 making two
++RPCs (probably from two different threads), and then the two replies being received:
++
++@example
++task523(pid1290)->vm_allocate (0 4096 1) ...525
++task523(pid1290)->task_set_special_port (3    530<--544(pid-1)) ...543
++525... = 0 19619840
++543... = 0
++@end example
++
++Some RPCs (called @dfn{simpleroutines})
++have no reply message, and are printed with a terminating semicolon, i.e:
++
++@example
++68<--70(pid1731)->memory_object_lock_request (0 4096 2 0 8   98);
++@end example
++
++Port numbers for send-once rights are printed without any additional
++identifying information.  In the previous example, 98 is a send-once
++right, not an integer, and the notification that the lock request has
++completed is printed as follows:
++
++@example
++98->device_pager_lock_completed (   68<--70(pid1731) 0 4096);
++@end example
++
++@unnumberedsubsec Options
++
++@table @samp
++
++@item -E @var{var[=value]}
++Set/change (var=value) or remove (var) an
++environment variable among the ones inherited by
++the executed process.
++
++@item -i @var{FILE}
++@itemx --rpc-list=@var{FILE}
++Read @var{FILE} for assocations of message ID numbers to names.
++
++@item -I @var{DIR}
++Add the directory @var{DIR} to the list of directories
++to be searched for @samp{.msgids} files.
++
++@item --nostdinc
++Do not search inside the standard system
++directory for @samp{.msgids} files.
++
++@item -o @var{FILE}
++@itemx --output=@var{FILE}
++Send trace output to FILE instead of stderr.
++
++@item -s @var{SIZE}
++Specify the maximum string size to print (the default is 80)
++
++@item -?
++@itemx --help
++Print help
++
++@item --usage
++Give a short usage message
++
++@item -V
++@itemx --version
++Print program version
++@end table
++
++@unnumberedsubsec Caveats
++
++@indent
++@command{rpctrace}
++is currently unable to trace messages sent to a process's host port.
++
++@command{rpctrace}
++prints its own port numbers, not the port numbers used by the traced process,
++since it handles port rights before they are relayed to the traced process,
++so the traced process may not yet have any port number assigned.
++
++@command{rpctrace}
++is unable to attach to a running process.  Implementing this feature would
++not be difficult, but detaching from a running process is currently
++impossible without allowing messages to be reordered (breaking
++Mach's guarantee of in-order delivery).
++
+ 
+ @node Authentication
+ @chapter Authentication
+-- 
+2.6.4
+

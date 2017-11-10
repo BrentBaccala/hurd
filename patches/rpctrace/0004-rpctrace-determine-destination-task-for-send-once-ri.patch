@@ -1,0 +1,67 @@
+From 7e2f7e0173362eabf3c1e3d542f41c70145ead28 Mon Sep 17 00:00:00 2001
+From: Brent Baccala <cosine@freesoft.org>
+Date: Tue, 25 Oct 2016 19:41:03 -1000
+Subject: [PATCH 4/8] rpctrace: determine destination task for send-once rights
+To: bug-hurd@gnu.org
+
+---
+ utils/rpctrace.c | 15 +++++++++++----
+ 1 file changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/utils/rpctrace.c b/utils/rpctrace.c
+index caa77b0..6922c70 100644
+--- a/utils/rpctrace.c
++++ b/utils/rpctrace.c
+@@ -1102,6 +1102,8 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+   struct traced_info *info;
+   mach_msg_bits_t complex;
+ 
++  task_t to;
++
+   /* Look up our record for the receiving port.  There is no need to check
+      the class, because our port bucket only ever contains one class of
+      ports (traced_class).  */
+@@ -1182,6 +1184,13 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+ 
+   msgid = msgid_info (inp->msgh_id);
+ 
++  /* Determine message's destination task */
++
++  if (INFO_SEND_ONCE(info))
++    to = TRACED_INFO (info)->task;
++  else
++    to = SEND_INFO (info)->receive_right->task;
++
+   /* Swap the header data like a crossover cable. */
+   {
+     mach_msg_type_name_t this_type = MACH_MSGH_BITS_LOCAL (inp->msgh_bits);
+@@ -1199,7 +1208,7 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+ 	  {
+ 	  case MACH_MSG_TYPE_PORT_SEND:
+ 	    rewrite_right (&inp->msgh_local_port, &reply_type,
+-			   TRACED_INFO (info)->task, unknown_task);
++			   TRACED_INFO (info)->task, to);
+ 	    break;
+ 
+ 	  case MACH_MSG_TYPE_PORT_SEND_ONCE:;
+@@ -1288,7 +1297,6 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+       else
+ 	{
+ 	  struct task_info *task_info;
+-	  task_t to = 0;
+ 	  struct req_info *req = NULL;
+ 
+ 	  /* Print something about the message header.  */
+@@ -1307,8 +1315,7 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+ 	   * the port rights in the message will be moved to the target task. */
+ 	  else if (inp->msgh_id >= 3200 && inp->msgh_id <= 3218)
+ 	    to = SEND_INFO (info)->receive_right->forward;
+-	  else
+-	    to = SEND_INFO (info)->receive_right->task;
++
+ 	  if (info->type == MACH_MSG_TYPE_MOVE_SEND)
+ 	    req = add_request (inp->msgh_id, reply_port,
+ 			       TRACED_INFO (info)->task, to);
+-- 
+2.6.4
+

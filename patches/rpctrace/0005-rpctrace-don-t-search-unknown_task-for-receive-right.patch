@@ -1,0 +1,25 @@
+From 2cc02bc89d560bac8db5dab9da0b96ecba7dc602 Mon Sep 17 00:00:00 2001
+From: Brent Baccala <cosine@freesoft.org>
+Date: Wed, 26 Oct 2016 19:41:03 -1000
+Subject: [PATCH 5/8] rpctrace: don't search unknown_task for receive rights
+To: bug-hurd@gnu.org
+
+---
+ utils/rpctrace.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/utils/rpctrace.c b/utils/rpctrace.c
+index 6922c70..c587736 100644
+--- a/utils/rpctrace.c
++++ b/utils/rpctrace.c
+@@ -498,6 +498,7 @@ discover_receive_right (mach_port_t send, task_t task)
+ 	  && info->portname == UNKNOWN_NAME))
+     return info;
+   
++  if (task != unknown_task)
+     {
+       int j;
+       mach_port_t *portnames = NULL;
+-- 
+2.6.4
+

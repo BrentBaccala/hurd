@@ -1,0 +1,33 @@
+From 47a787bdd6bce57c0e664047df51798bde127455 Mon Sep 17 00:00:00 2001
+From: Brent Baccala <cosine@freesoft.org>
+Date: Tue, 1 Nov 2016 03:56:06 -1000
+Subject: [PATCH 2/2] add direntry to hurd.texi to make info lookup individual
+ utilities
+
+---
+ doc/hurd.texi | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/doc/hurd.texi b/doc/hurd.texi
+index 06b5a61..bcc629a 100644
+--- a/doc/hurd.texi
++++ b/doc/hurd.texi
+@@ -97,6 +97,15 @@
+ * Hurd: (hurd).  Using and programming the Hurd kernel servers.
+ @end direntry
+ 
++@dircategory Individual utilities
++@direntry
++* boot: (hurd)Invoking boot.                    How to use the boot program.
++* fsysopts: (hurd)Invoking fsysopts.            Modifying translation parameters at runtime.
++* rpctrace: (hurd)rpctrace.                     Trace Mach RPCs.
++* settrans: (hurd)Invoking settrans.            Declaring how a node should be translated.
++* showtrans: (hurd)Invoking showtrans.          Displaying how nodes are translated.
++@end direntry
++
+ @copying
+ This file documents the GNU Hurd kernel component.  This edition of the
+ documentation was last updated for version @value{VERSION} of the Hurd.
+-- 
+2.6.4
+
