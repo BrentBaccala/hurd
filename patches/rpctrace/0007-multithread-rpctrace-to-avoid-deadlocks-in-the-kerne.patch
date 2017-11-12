@@ -1,18 +1,26 @@
-From 934b844fa91569e352054d431a2ff6736f143d1c Mon Sep 17 00:00:00 2001
+From f12c28e9b16d7a3c628586b739eee3f4e004f753 Mon Sep 17 00:00:00 2001
 From: Brent Baccala <cosine@freesoft.org>
-Date: Fri, 28 Oct 2016 14:30:02 -1000
-Subject: [PATCH 7/8] multithread rpctrace to avoid deadlocks in the kernel
-To: bug-hurd@gnu.org
+Date: Sun, 30 Oct 2016 16:13:34 -1000
+Subject: [PATCH] multithread rpctrace to avoid deadlocks in the kernel
 
 ---
- utils/rpctrace.c | 24 +++++++++++++++++++++---
- 1 file changed, 21 insertions(+), 3 deletions(-)
+ utils/rpctrace.c | 41 ++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 38 insertions(+), 3 deletions(-)
 
 diff --git a/utils/rpctrace.c b/utils/rpctrace.c
-index 015f765..88b5e38 100644
+index c01f8d4..72ca614 100644
 --- a/utils/rpctrace.c
 +++ b/utils/rpctrace.c
-@@ -240,6 +240,8 @@ struct port_class *other_class;
+@@ -141,6 +141,8 @@ struct traced_info
+   mach_msg_type_name_t type;
+   char *name;			/* null or a string describing this */
+   task_t task;			/* The task who has the right. */
++  mach_port_seqno_t seqno;      /* next RPC to be processed on this port */
++  pthread_cond_t sequencer;     /* used to sequence RPCs when they are processed out-of-order */
+ };
+ 
+ /* Each traced port has one receiver info and multiple send wrappers.
+@@ -250,6 +252,8 @@ struct port_class *other_class;
  struct port_bucket *traced_bucket;
  FILE *ostream;
  
@@ -21,7 +29,7 @@ index 015f765..88b5e38 100644
  /* These are the calls made from the tracing engine into
     the output formatting code.  */
  
-@@ -324,9 +326,13 @@ destroy_receiver_info (struct receiver_info *info)
+@@ -334,9 +338,13 @@ destroy_receiver_info (struct receiver_info *info)
    while (send_wrapper)
      {
        struct sender_info *next = send_wrapper->next;
@@ -35,7 +43,25 @@ index 015f765..88b5e38 100644
        /* Reset the receive_right of the send wrapper in advance to avoid
         * destroy_receiver_info is called when the port info is destroyed. */
        send_wrapper->receive_right = NULL;
-@@ -441,6 +447,8 @@ traced_clean (void *pi)
+@@ -370,6 +378,8 @@ new_send_wrapper (struct receiver_info *receive, task_t task,
+ 	     receive->forward, TRACED_INFO (info)->pi.port_right, task2pid (task));
+   TRACED_INFO (info)->type = MACH_MSG_TYPE_MOVE_SEND;
+   TRACED_INFO (info)->task = task;
++  TRACED_INFO (info)->seqno = 0;
++  pthread_cond_init(& TRACED_INFO(info)->sequencer, NULL);
+   info->receive_right = receive;
+   info->next = receive->next;
+   receive->next = info;
+@@ -400,6 +410,8 @@ new_send_once_wrapper (mach_port_t right, mach_port_t *wrapper_right, task_t tas
+ 			       sizeof *info, &info);
+       assert_perror (err);
+       TRACED_INFO (info)->name = 0;
++      TRACED_INFO (info)->seqno = 0;
++      pthread_cond_init(& TRACED_INFO(info)->sequencer, NULL);
+     }
+ 
+   info->forward = right;
+@@ -451,6 +463,8 @@ traced_clean (void *pi)
  {
    struct sender_info *info = pi;
  
@@ -44,7 +70,7 @@ index 015f765..88b5e38 100644
    assert (TRACED_INFO (info)->type == MACH_MSG_TYPE_MOVE_SEND);
    free (TRACED_INFO (info)->name);
  
-@@ -456,6 +464,8 @@ traced_clean (void *pi)
+@@ -466,6 +480,8 @@ traced_clean (void *pi)
  
        info->receive_right = NULL;
      }
@@ -53,7 +79,7 @@ index 015f765..88b5e38 100644
  }
  
  /* Check if the receive right has been seen. */
-@@ -1134,6 +1144,8 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+@@ -1144,6 +1160,8 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
  
    assert (info);
  
@@ -62,7 +88,7 @@ index 015f765..88b5e38 100644
    /* A notification message from the kernel appears to have been sent
       with a send-once right, even if there have never really been any.  */
    if (MACH_MSGH_BITS_LOCAL (inp->msgh_bits) == MACH_MSG_TYPE_MOVE_SEND_ONCE)
-@@ -1160,6 +1172,8 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+@@ -1170,6 +1188,8 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
  	  /* It might be a task port. Remove the dead task from the list. */
  	  remove_task (n->not_port);
  
@@ -71,7 +97,7 @@ index 015f765..88b5e38 100644
  	  return 1;
  	}
        else if (inp->msgh_id == MACH_NOTIFY_NO_SENDERS
-@@ -1172,6 +1186,7 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+@@ -1182,6 +1202,7 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
  	  ports_no_senders (info, n->not_count);
  	  ports_port_deref (info);
  	  ((mig_reply_header_t *) outp)->RetCode = MIG_NO_REPLY;
@@ -79,7 +105,7 @@ index 015f765..88b5e38 100644
  	  return 1;
  	}
        /* Get some unexpected notification for rpctrace itself,
-@@ -1180,6 +1195,7 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+@@ -1190,6 +1211,7 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
  	{
  	  ports_port_deref (info);
  	  ((mig_reply_header_t *) outp)->RetCode = MIG_NO_REPLY;
@@ -87,18 +113,36 @@ index 015f765..88b5e38 100644
  	  return 1;
  	}
      }
-@@ -1354,6 +1370,10 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+@@ -1201,6 +1223,11 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+ 
+   msgid = msgid_info (inp->msgh_id);
+ 
++  while (inp->msgh_seqno != TRACED_INFO (info)->seqno)
++    {
++      pthread_cond_wait (& TRACED_INFO (info)->sequencer, &tracelock);
++    }
++
+   /* Determine message's destination task */
+ 
+   if (INFO_SEND_ONCE(info))
+@@ -1364,6 +1391,16 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
  	}
      }
  
-+  /* Unlock prior to sending message to avoid deadlocks in the kernel */
++  /* Advance our sequence number and signal any other thread waiting
++   * to process the next message on this port.
++   */
++  TRACED_INFO (info)->seqno = inp->msgh_seqno + 1;
++  pthread_cond_broadcast (& TRACED_INFO (info)->sequencer);
++
++  /* Unlock prior to resending message to avoid deadlocks in the kernel */
 +  ports_port_deref (info);
 +  pthread_mutex_unlock(&tracelock);
 +
    /* Resend the message to the tracee.  */
    err = mach_msg (inp, MACH_SEND_MSG, inp->msgh_size, 0,
  		  MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-@@ -1367,8 +1387,6 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+@@ -1377,8 +1414,6 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
    else
      assert_perror (err);
  
@@ -107,7 +151,7 @@ index 015f765..88b5e38 100644
    /* We already sent the message, so the server loop shouldn't do it again.  */
    ((mig_reply_header_t *) outp)->RetCode = MIG_NO_REPLY;
  
-@@ -1380,7 +1398,7 @@ static void *
+@@ -1390,7 +1425,7 @@ static void *
  trace_thread_function (void *arg)
  {
    struct port_bucket *const bucket = arg;
