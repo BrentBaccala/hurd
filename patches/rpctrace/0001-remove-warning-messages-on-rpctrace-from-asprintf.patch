@@ -1,14 +1,5 @@
-From 8f7f79220691d9ee4d32514bb7ac63aef91b3860 Mon Sep 17 00:00:00 2001
-From: Brent Baccala <cosine@freesoft.org>
-Date: Thu, 20 Oct 2016 20:46:32 -1000
-Subject: [PATCH] remove warning messages on rpctrace from 'asprintf'
-
----
- utils/rpctrace.c | 50 ++++++++++++++++++++++++++++++++------------------
- 1 file changed, 32 insertions(+), 18 deletions(-)
-
 diff --git a/utils/rpctrace.c b/utils/rpctrace.c
-index 25d9bc6..3582df5 100644
+index 0aecfc4..bfab8a7 100644
 --- a/utils/rpctrace.c
 +++ b/utils/rpctrace.c
 @@ -59,6 +59,19 @@ static const struct argp_option options[] =
@@ -25,14 +16,14 @@ index 25d9bc6..3582df5 100644
 +  retval = vasprintf(strp, fmt, argptr);
 +  va_end(argptr);
 +
-+  assert_perror(retval == -1);
++  assert_perror_backtrace(retval == -1);
 +}
 +
  
  /* This structure stores the information of the traced task. */
  struct task_info
 @@ -353,8 +366,8 @@ new_send_wrapper (struct receiver_info *receive, task_t task,
-   assert_perror (err);
+   assert_perror_backtrace (err);
  
    TRACED_INFO (info)->name = 0;
 -  asprintf (&TRACED_INFO (info)->name, "  %lu<--%lu(pid%d)", 
@@ -100,17 +91,7 @@ index 25d9bc6..3582df5 100644
  	      }
  	    break;
  
-@@ -1307,7 +1320,8 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
- 
- 	  /* Print something about the message header.  */
- 	  print_request_header ((struct sender_info *) info, inp);
--	  /* It's a nofication message. */
-+
-+	  /* It's a notification message. */
- 	  if (inp->msgh_id <= 72 && inp->msgh_id >= 64)
- 	    {
- 	      assert (info->type == MACH_MSG_TYPE_MOVE_SEND_ONCE);
-@@ -1647,7 +1661,7 @@ traced_spawn (char **argv, char **envp)
+@@ -1647,7 +1660,7 @@ traced_spawn (char **argv, char **envp)
    ti = new_send_wrapper (receive_ti, traced_task, &task_wrapper);
    ti->task = traced_task;
    free (TRACED_INFO (ti)->name);
@@ -119,6 +100,3 @@ index 25d9bc6..3582df5 100644
  
    /* Replace the task's kernel port with the wrapper.  When this task calls
       `mach_task_self ()', it will get our wrapper send right instead of its
--- 
-2.6.4
-

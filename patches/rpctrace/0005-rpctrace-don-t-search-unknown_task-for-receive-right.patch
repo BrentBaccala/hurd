@@ -12,14 +12,16 @@ diff --git a/utils/rpctrace.c b/utils/rpctrace.c
 index 6922c70..c587736 100644
 --- a/utils/rpctrace.c
 +++ b/utils/rpctrace.c
-@@ -498,6 +498,7 @@ discover_receive_right (mach_port_t send, task_t task)
- 	  && info->portname == UNKNOWN_NAME))
+@@ -508,7 +508,8 @@
+          && info->portname == UNKNOWN_NAME))
      return info;
-   
+ 
+-  {
 +  if (task != unknown_task)
-     {
++    {
        int j;
        mach_port_t *portnames = NULL;
+       mach_msg_type_number_t nportnames = 0;
 -- 
 2.6.4
 

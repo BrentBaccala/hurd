@@ -36,7 +36,7 @@ index c01f8d4..72ca614 100644
 +#if 0
 +      if (refcounts_hard_references (&TRACED_INFO (send_wrapper)->pi.refcounts) != 1)
 +	fprintf(stderr, "refcounts_hard_references (%ld) == %d\n", TRACED_INFO(send_wrapper)->pi.port_right, refcounts_hard_references (&TRACED_INFO (send_wrapper)->pi.refcounts));
-       assert (
+       assert_backtrace (
  	refcounts_hard_references (&TRACED_INFO (send_wrapper)->pi.refcounts)
  	== 1);
 +#endif
@@ -54,7 +54,7 @@ index c01f8d4..72ca614 100644
    receive->next = info;
 @@ -400,6 +410,8 @@ new_send_once_wrapper (mach_port_t right, mach_port_t *wrapper_right, task_t tas
  			       sizeof *info, &info);
-       assert_perror (err);
+       assert_perror_backtrace (err);
        TRACED_INFO (info)->name = 0;
 +      TRACED_INFO (info)->seqno = 0;
 +      pthread_cond_init(& TRACED_INFO(info)->sequencer, NULL);
@@ -67,7 +67,7 @@ index c01f8d4..72ca614 100644
  
 +  pthread_mutex_lock(&tracelock);
 +
-   assert (TRACED_INFO (info)->type == MACH_MSG_TYPE_MOVE_SEND);
+   assert_backtrace (TRACED_INFO (info)->type == MACH_MSG_TYPE_MOVE_SEND);
    free (TRACED_INFO (info)->name);
  
 @@ -466,6 +480,8 @@ traced_clean (void *pi)
@@ -81,7 +81,7 @@ index c01f8d4..72ca614 100644
  /* Check if the receive right has been seen. */
 @@ -1144,6 +1160,8 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
  
-   assert (info);
+   assert_backtrace (info);
  
 +  pthread_mutex_lock(&tracelock);
 +
@@ -144,7 +144,7 @@ index c01f8d4..72ca614 100644
  		  MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
 @@ -1377,8 +1414,6 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
    else
-     assert_perror (err);
+     assert_perror_backtrace (err);
  
 -  ports_port_deref (info);
 -

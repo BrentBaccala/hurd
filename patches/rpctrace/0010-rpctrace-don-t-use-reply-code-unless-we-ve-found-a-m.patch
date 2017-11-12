@@ -47,7 +47,7 @@ index 6eb9892..2664ffd 100644
  	{
 -	  struct req_info *req = remove_request (inp->msgh_id - 100,
 -						 inp->msgh_remote_port);
--	  assert (req);
+-	  assert_backtrace (req);
 -	  req->is_req = FALSE;
  	  /* This sure looks like an RPC reply message.  */
  	  mig_reply_header_t *rh = (void *) inp;

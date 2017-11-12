@@ -92,7 +92,7 @@ index 8aef88d..e33265f 100644
 +	    info2 = new_send_once_wrapper (inp->msgh_local_port,
 +					   &inp->msgh_local_port, TRACED_INFO (info)->task);
  	    reply_type = MACH_MSG_TYPE_MAKE_SEND_ONCE;
- 	    assert (inp->msgh_local_port);
+ 	    assert_backtrace (inp->msgh_local_port);
  
 -	    if (TRACED_INFO (info)->name == 0)
 +	    if (TRACED_INFO (info2)->name == 0)
