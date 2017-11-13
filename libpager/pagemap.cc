@@ -305,7 +305,16 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
   mach_port_status_t status;
   mach_port_get_receive_status(mach_task_self(), control, &status);
   if (status.mps_msgcount > 0) {
-    fprintf(stderr, "libpager: warning: client called object_terminate with outstanding messages\n");
+    fprintf(stderr, "libpager: warning: client called object_terminate with outstanding messages:");
+    while (1) {
+      machMessage msg;
+
+      if (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, msg.max_size, control, 0, MACH_PORT_NULL) != KERN_SUCCESS) {
+        break;
+      }
+      fprintf(stderr, " %d", msg->msgh_id);
+    }
+    fprintf(stderr, "\n");
   }
 
   // drop a client - destroy (or drop send and receive rights) on control and name
