@@ -394,7 +394,6 @@ struct pager {
   struct port_info port;
 
   const int page_size = vm_page_size;
-  const mach_port_t flush_reply_to = 0;
 
   bool may_cache;
   memory_object_copy_strategy_t copy_strategy;
