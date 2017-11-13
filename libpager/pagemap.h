@@ -405,6 +405,8 @@ struct pager {
 
   struct user_pager_info * upi;
 
+  std::set<mach_port_t> clients;
+
   std::list<WRITEWAIT_entry> WRITEWAIT;
 
   std::list<NEXTERROR_entry> NEXTERROR;

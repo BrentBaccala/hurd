@@ -241,9 +241,11 @@ void pager::data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFF
 
 void pager::object_init (mach_port_t control, mach_port_t name, vm_size_t pagesize)
 {
-  // std::unique_lock<std::mutex> pager_lock(lock);
-
   assert (pagesize == page_size);
+
+  std::unique_lock<std::mutex> pager_lock(lock);
+
+  clients.insert(control);
 
   memory_object_ready (control, may_cache, copy_strategy);
 
@@ -295,6 +297,8 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
   if (removed_from_WAITLIST) {
     fprintf(stderr, "libpager: warning: client called object_terminate with outstanding waits\n");
   }
+
+  clients.erase(control);
 
   // check to see if any messages are outstanding on control port
 
@@ -396,29 +400,7 @@ void pager::lock_object(vm_offset_t OFFSET, vm_size_t LENGTH, int RETURN, bool F
 
 void pager::change_attributes(boolean_t may_cache, memory_object_copy_strategy_t copy_strategy, int sync)
 {
-  // for all clients...
-
-  // memory_object_change_attributes (p->memobjcntl, may_cache, copy_strategy,
-  //				   wait ? p->port.port_right : MACH_PORT_NULL);
-
-  // XXX allocates on heap.  Would be faster to allocate on stack
-  std::set<memory_object_control_t> clients;
-
-  {
-    std::unique_lock<std::mutex> pager_lock(lock);
-
-    // XXX need to make a list of clients here
-#if 0
-    vm_offset_t page = OFFSET / page_size;
-    for (int i = 0; i < npages; i ++, page ++) {
-      for (auto client: pagemap[page]->ACCESSLIST_clients()) {
-        if (! only_signal_WRITE_clients || pagemap[page]->get_WRITE_ACCESS_GRANTED()) {
-          clients.insert(client);
-        }
-      }
-    }
-#endif
-  }
+  std::unique_lock<std::mutex> pager_lock(lock);
 
   if (! sync) {
 
