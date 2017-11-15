@@ -413,6 +413,22 @@ struct pager {
 
   std::map<std::pair<vm_offset_t, vm_size_t>, outstanding_lock> outstanding_locks;
 
+  struct outstanding_change_request {
+    mach_port_t client;
+    mach_port_t reply;
+
+    outstanding_change_request(mach_port_t client, mach_port_t reply)
+      : client(client), reply(reply) { }
+
+    bool operator<(const outstanding_change_request & rhs) const
+    {
+      return std::tie(client, reply)
+	< std::tie(rhs.client, rhs.reply);
+    }
+  };
+
+  std::set<outstanding_change_request> outstanding_change_requests;
+
   pagemap_vector pagemap;
 
   pagemap_entry::data tmp_pagemap_entry;

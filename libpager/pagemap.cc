@@ -24,6 +24,9 @@
 
 extern "C" {
 #include <mach/mach_interface.h>
+
+// this is here for a single call to m_o_change_completed in object_terminate()
+#include <mach/memory_object_user.h>
 }
 
 // 1. create an empty pagemap entry
@@ -322,7 +325,16 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
   mach_port_destroy (mach_task_self (), control);
   mach_port_destroy (mach_task_self (), name);
 
-  // XXX pending locks and attribute changes - return immediately
+  // pending attribute changes - signal them with "fake" change completed messages
+
+  for (auto it = outstanding_change_requests.begin(); it != outstanding_change_requests.end(); it ++) {
+    if (it->client == control) {
+      fprintf(stderr, "sending an m_o_change_completed\n");
+      memory_object_change_completed(it->reply, MACH_MSG_TYPE_MAKE_SEND, 0, 0);
+    }
+  }
+
+  // XXX pending locks - return immediately
 
   // XXX if we lose our last client, we can free the pagemap
 }
@@ -350,6 +362,9 @@ void pager::shutdown (void)
 
 void pager::lock_object(vm_offset_t OFFSET, vm_size_t LENGTH, int RETURN, bool FLUSH, bool sync)
 {
+  fprintf(stderr, "lock_object(OFFSET=%d, LENGTH=%d, RETURN=%d, FLUSH=%d, SYNC=%d)\n",
+          OFFSET, LENGTH, RETURN, FLUSH, sync);
+
   // sync: flush=false, return=MEMORY_OBJECT_RETURN_DIRTY
   // return: flush=true, return=MEMORY_OBJECT_RETURN_ALL
   // flush: flush=true, return=MEMORY_OBJECT_RETURN_NONE
@@ -405,10 +420,13 @@ void pager::lock_object(vm_offset_t OFFSET, vm_size_t LENGTH, int RETURN, bool F
       }
     }
   }
+  fprintf(stderr, "lock_object exiting\n");
 }
 
 void pager::change_attributes(boolean_t may_cache, memory_object_copy_strategy_t copy_strategy, int sync)
 {
+  fprintf(stderr, "change_attributes(may_cache=%d, copy_strategy=%d, sync=%d)\n", may_cache, copy_strategy, sync);
+
   std::unique_lock<std::mutex> pager_lock(lock);
 
   if (! sync) {
@@ -419,28 +437,55 @@ void pager::change_attributes(boolean_t may_cache, memory_object_copy_strategy_t
 
   } else {
 
-    mach_port_t reply;
+    mach_port_t portset;
     int locks_outstanding = 0;
 
-    mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &reply);
+    fprintf(stderr, "entering change_attributes\n");
+
+    mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_PORT_SET, &portset);
 
     for (auto client: clients) {
+      mach_port_t reply;
+      mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &reply);
       memory_object_change_attributes (client, may_cache, copy_strategy, reply);
+      mach_port_move_member (mach_task_self (), reply, portset);
+      outstanding_change_requests.emplace(client, reply);
       locks_outstanding ++;
     }
 
     while (locks_outstanding) {
       machMessage msg;
 
-      // XXX should we check to make sure that the message is a change_completed?
-      mach_msg (msg, MACH_RCV_MSG, 0, msg.max_size, reply, 0, MACH_PORT_NULL);
+      lock.unlock();
+      mach_msg (msg, MACH_RCV_MSG, 0, msg.max_size, portset, 0, MACH_PORT_NULL);
+      lock.lock();
+
+      // make sure that the message is a m_o_change_completed
+      assert(msg->msgh_id == 2209);
+
+      // C++ doesn't have an easy bi-direction map class, so just
+      // search through a set for a matching client
+
+      //for (auto it: outstanding_change_requests) {
+      for (auto it = outstanding_change_requests.begin(); it != outstanding_change_requests.end(); it ++) {
+        if (it->reply == msg->msgh_local_port) {
+          outstanding_change_requests.erase(it);
+          break;
+        }
+      }
+
+      // XXX perhaps we should use deallocate or mod_refs instead?
+      mach_port_destroy (mach_task_self (), msg->msgh_local_port);
+
+      fprintf(stderr, "change_completed from port %d\n", msg->msgh_local_port);
 
       locks_outstanding --;
     }
 
     // XXX perhaps we should use deallocate or mod_refs instead?
-    mach_port_destroy (mach_task_self (), reply);
+    mach_port_destroy (mach_task_self (), portset);
 
+    fprintf(stderr, "leaving change_attributes\n");
   }
 }
 
