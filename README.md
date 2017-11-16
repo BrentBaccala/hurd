@@ -1,4 +1,4 @@
-# Brent Baccala's Hurd Repository
+# freesoft.org Hurd Repository
 
 This repository contains software to build a POSIX
 [single system image](https://en.wikipedia.org/wiki/Single_system_image)
@@ -35,6 +35,26 @@ running in a Linux virtual machine.
    Once the Hurd filesystem servers have been linked with
    this library, remote program execution is possible
    between machines linked via **netmsg**.
+
+3. [patches](patches)
+
+   This section contains patches to software in the main Hurd
+   repository at git://git.sv.gnu.org/hurd/hurd.git
+
+   **rpctrace** is the Hurd equivalent of strace.  rpctrace
+   has a serious problem because some Hurd RPCs block the
+   sender while waiting for other RPCs to complete, even
+   if non-blocking behavior has been requested.  A major
+   offender here is **vm_map**, which blocks while waiting
+   for a memory object init/ready exchange.  This causes
+   rpctrace to hang when tracing ext2fs, the primary Hurd
+   filesystem translator.
+
+   The **rpctrace** patches fix this problem, as well as
+   a few others, and also improves **rpctrace**'s
+   documentation.  They should be applied, in order,
+   against a current version of either the main Hurd
+   repository, or the Debianized source tree.
 
 ## Installation Instructions
 
