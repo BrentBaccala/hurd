@@ -66,9 +66,13 @@ running in a Linux virtual machine.
 3. In the Hurd source directory, replace the **libpager** directory with
    a symbolic link to the **libpager** directory from this repository.
 
-4. In the Hurd source directory, run `dpkg-buildpackage -b` to re-build the Hurd packages.
+3. In the Hurd source directory, apply `patches/libpager.patch` to make everything linked with libpager
+   link with stdc++, since the new libpager is written in C++.
 
-5. Install the new Hurd packages and reboot the Hurd virtual machine.
+4. In the Hurd source directory, run either `dpkg-buildpackage -b` to re-build the Hurd packages,
+   or `dpkg-buildpackage -T build` to build the binaries without making a new Debian package.
+
+5. Install the new Hurd packages (or just the `/hurd/ext2fs.static` binary) and reboot the Hurd virtual machine.
 
 6. In the repository's **netmsg** directory, run `make`
 

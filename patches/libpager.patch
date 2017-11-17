@@ -1,0 +1,75 @@
+--- ./console/Makefile~	2017-05-07 07:41:26.000000000 -0400
++++ ./console/Makefile	2017-09-15 18:27:07.000000000 -0400
+@@ -27,7 +27,7 @@
+ MIGSTUBS = notifyServer.o tioctlServer.o fs_notifyUser.o
+ 
+ HURDLIBS = netfs fshelp iohelp pager ports ihash shouldbeinlibc
+-LDLIBS = -lpthread
++LDLIBS = -lpthread -lstdc++
+ OBJS = $(sort $(SRCS:.c=.o) $(MIGSTUBS))
+ 
+ MIGSFLAGS += -imacros $(srcdir)/mutations.h
+--- ./ext2fs/pager.c~	2017-05-07 07:41:26.000000000 -0400
++++ ./ext2fs/pager.c	2017-09-15 18:26:21.000000000 -0400
+@@ -26,7 +26,7 @@
+ #include "ext2fs.h"
+ 
+ /* XXX */
+-#include "../libpager/priv.h"
++/* #include "../libpager/priv.h" */
+ 
+ /* A ports bucket to hold disk pager ports.  */
+ struct port_bucket *disk_pager_bucket;
+--- ./ext2fs/Makefile~	2017-05-07 07:41:26.000000000 -0400
++++ ./ext2fs/Makefile	2017-09-15 18:26:28.000000000 -0400
+@@ -25,7 +25,7 @@
+        xattr.c
+ OBJS = $(SRCS:.c=.o)
+ HURDLIBS = diskfs pager iohelp fshelp store ports ihash shouldbeinlibc
+-LDLIBS = -lpthread $(and $(HAVE_LIBBZ2),-lbz2) $(and $(HAVE_LIBZ),-lz)
++LDLIBS = -lpthread $(and $(HAVE_LIBBZ2),-lbz2) $(and $(HAVE_LIBZ),-lz) -lstdc++
+ 
+ include ../Makeconf
+ 
+--- ./fatfs/Makefile~	2017-05-07 07:41:26.000000000 -0400
++++ ./fatfs/Makefile	2017-09-15 18:26:37.000000000 -0400
+@@ -23,7 +23,7 @@
+ 
+ OBJS = $(SRCS:.c=.o)
+ HURDLIBS = diskfs iohelp fshelp store pager ports ihash shouldbeinlibc
+-LDLIBS = -lpthread $(and $(HAVE_LIBBZ2),-lbz2) $(and $(HAVE_LIBZ),-lz)
++LDLIBS = -lpthread $(and $(HAVE_LIBBZ2),-lbz2) $(and $(HAVE_LIBZ),-lz) -lstdc++
+ 
+ include ../Makeconf
+ 
+--- ./isofs/Makefile~	2017-05-07 07:41:26.000000000 -0400
++++ ./isofs/Makefile	2017-09-15 18:26:45.000000000 -0400
+@@ -22,7 +22,7 @@
+ 
+ OBJS = $(SRCS:.c=.o)
+ HURDLIBS = diskfs iohelp fshelp store pager ports ihash shouldbeinlibc
+-LDLIBS = -lpthread $(and $(HAVE_LIBBZ2),-lbz2) $(and $(HAVE_LIBZ),-lz)
++LDLIBS = -lpthread $(and $(HAVE_LIBBZ2),-lbz2) $(and $(HAVE_LIBZ),-lz) -lstdc++
+ 
+ include ../Makeconf
+ 
+--- ./storeio/Makefile~	2017-05-07 07:41:26.000000000 -0400
++++ ./storeio/Makefile	2017-09-15 18:28:12.000000000 -0400
+@@ -24,6 +24,6 @@
+ 
+ OBJS = $(SRCS:.c=.o)
+ HURDLIBS = trivfs pager fshelp iohelp store ports ihash shouldbeinlibc
+-LDLIBS = -lpthread
++LDLIBS = -lpthread -lstdc++
+ 
+ include ../Makeconf
+--- ./tmpfs/Makefile~	2017-05-07 07:41:26.000000000 -0400
++++ ./tmpfs/Makefile	2017-09-15 18:27:50.000000000 -0400
+@@ -24,6 +24,6 @@
+ OBJS = $(SRCS:.c=.o) default_pagerUser.o
+ # XXX The shared libdiskfs requires libstore even though we don't use it here.
+ HURDLIBS = diskfs pager iohelp fshelp store ports ihash shouldbeinlibc
+-LDLIBS = -lpthread
++LDLIBS = -lpthread -lstdc++
+ 
+ include ../Makeconf
