@@ -273,7 +273,7 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
   bool removed_from_ACCESSLIST = false;
   bool removed_from_WAITLIST = false;
 
-  for (auto pm: pagemap) {
+  for (auto & pm: pagemap) {
     if (pm->is_client_on_ACCESSLIST(control)) {
       tmp_pagemap_entry = pm;
       tmp_pagemap_entry.remove_client_from_ACCESSLIST(control);
