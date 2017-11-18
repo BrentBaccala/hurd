@@ -67,7 +67,7 @@ void pager::internal_flush_request(memory_object_control_t client, vm_offset_t O
   record.internal_lock_outstanding = true;
   record.locks_outstanding ++;
 
-  memory_object_lock_request(client, OFFSET, page_size, MEMORY_OBJECT_RETURN_ALL, true, VM_PROT_NO_CHANGE, pager_port());
+  mach_call(memory_object_lock_request(client, OFFSET, page_size, MEMORY_OBJECT_RETURN_ALL, true, VM_PROT_NO_CHANGE, pager_port()));
 }
 
 
@@ -87,7 +87,7 @@ void pager::service_WAITLIST(vm_offset_t offset, vm_offset_t data, bool allow_wr
   // std::cerr << "service_WAITLIST " << tmp_pagemap_entry;
 
   if (allow_write_access && first_client.write_access_requested) {
-    memory_object_data_supply(first_client.client, offset, data, page_size, deallocate, 0, PRECIOUS, 0);
+    mach_call(memory_object_data_supply(first_client.client, offset, data, page_size, deallocate, 0, PRECIOUS, 0));
     tmp_pagemap_entry.add_client_to_ACCESSLIST(first_client.client);
     tmp_pagemap_entry.pop_first_WAITLIST_client();
     tmp_pagemap_entry.set_WRITE_ACCESS_GRANTED(true);
@@ -97,16 +97,16 @@ void pager::service_WAITLIST(vm_offset_t offset, vm_offset_t data, bool allow_wr
       tmp_pagemap_entry.pop_first_WAITLIST_client();
 
       if (tmp_pagemap_entry.is_WAITLIST_empty()) {
-        memory_object_data_supply(first_client.client, offset, data, page_size,
-                                  deallocate, VM_PROT_WRITE, PRECIOUS, 0);
+        mach_call(memory_object_data_supply(first_client.client, offset, data, page_size,
+                                            deallocate, VM_PROT_WRITE, PRECIOUS, 0));
         break;
       }
 
       auto next_client = tmp_pagemap_entry.first_WAITLIST_client();
 
-      memory_object_data_supply(first_client.client, offset, data, page_size,
-                                next_client.write_access_requested ? deallocate : false,
-                                VM_PROT_WRITE, PRECIOUS, 0);
+      mach_call(memory_object_data_supply(first_client.client, offset, data, page_size,
+                                          next_client.write_access_requested ? deallocate : false,
+                                          VM_PROT_WRITE, PRECIOUS, 0));
       first_client = next_client;
     } while (! first_client.write_access_requested);
     tmp_pagemap_entry.set_WRITE_ACCESS_GRANTED(false);
@@ -130,7 +130,7 @@ void pager::send_error_to_WAITLIST(vm_offset_t OFFSET)
       internal_flush_request(client.client, OFFSET);
       NEXTERROR.emplace_back(client.client, OFFSET, tmp_pagemap_entry.get_ERROR());
     } else {
-      memory_object_data_error(client.client, OFFSET, page_size, tmp_pagemap_entry.get_ERROR());
+      mach_call(memory_object_data_error(client.client, OFFSET, page_size, tmp_pagemap_entry.get_ERROR()));
     }
   }
   tmp_pagemap_entry.clear_WAITLIST();
@@ -147,7 +147,7 @@ void pager::finalize_unlock(vm_offset_t OFFSET, kern_return_t ERROR)
   tmp_pagemap_entry.pop_first_WAITLIST_client();
 
   if (ERROR == KERN_SUCCESS) {
-    memory_object_lock_request(client, OFFSET, page_size, false, false, VM_PROT_NONE, 0);
+    mach_call(memory_object_lock_request(client, OFFSET, page_size, false, false, VM_PROT_NONE, 0));
     tmp_pagemap_entry.set_WRITE_ACCESS_GRANTED(true);
     if (! tmp_pagemap_entry.is_WAITLIST_empty()) {
       internal_flush_request(client, OFFSET);
@@ -173,7 +173,7 @@ void pager::data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFF
 
   for (auto ne = NEXTERROR.cbegin(); ne != NEXTERROR.cend(); ne ++) {
     if ((ne->client == MEMORY_CONTROL) && (ne->offset == OFFSET)) {
-      memory_object_data_error(MEMORY_CONTROL, OFFSET, LENGTH, ne->error);
+      mach_call(memory_object_data_error(MEMORY_CONTROL, OFFSET, LENGTH, ne->error));
       tmp_pagemap_entry.set_ERROR(ne->error);
       NEXTERROR.erase(ne);
       return;
@@ -216,7 +216,7 @@ void pager::data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFF
   }
 
   if (tmp_pagemap_entry.get_INVALID()) {
-    memory_object_data_error(MEMORY_CONTROL, OFFSET, LENGTH, tmp_pagemap_entry.get_ERROR());
+    mach_call(memory_object_data_error(MEMORY_CONTROL, OFFSET, LENGTH, tmp_pagemap_entry.get_ERROR()));
   }
 
   tmp_pagemap_entry.add_client_to_WAITLIST(MEMORY_CONTROL, DESIRED_ACCESS & VM_PROT_WRITE);
@@ -244,14 +244,15 @@ void pager::data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFF
 
 void pager::object_init (mach_port_t control, mach_port_t name, vm_size_t pagesize)
 {
+  // fprintf(stderr, "object_init entering\n");
   assert (pagesize == page_size);
 
   std::unique_lock<std::mutex> pager_lock(lock);
 
   clients.insert(control);
 
-  memory_object_ready (control, may_cache, copy_strategy);
-
+  mach_call(memory_object_ready (control, may_cache, copy_strategy));
+  // fprintf(stderr, "object_init exiting\n");
 }
 
 void pager::object_terminate (mach_port_t control, mach_port_t name)
@@ -306,13 +307,14 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
   // check to see if any messages are outstanding on control port
 
   mach_port_status_t status;
-  mach_port_get_receive_status(mach_task_self(), control, &status);
+  mach_call(mach_port_get_receive_status(mach_task_self(), control, &status));
   if (status.mps_msgcount > 0) {
     fprintf(stderr, "libpager: warning: client called object_terminate with outstanding messages:");
     while (1) {
       machMessage msg;
 
-      if (mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, msg.max_size, control, 0, MACH_PORT_NULL) != KERN_SUCCESS) {
+      if (mach_call(mach_msg (msg, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, msg.max_size, control, 0, MACH_PORT_NULL),
+                    MACH_RCV_TIMED_OUT) != KERN_SUCCESS) {
         break;
       }
       fprintf(stderr, " %d", msg->msgh_id);
@@ -322,21 +324,23 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
 
   // drop a client - destroy (or drop send and receive rights) on control and name
 
-  mach_port_destroy (mach_task_self (), control);
-  mach_port_destroy (mach_task_self (), name);
+  mach_call(mach_port_destroy (mach_task_self (), control));
+  mach_call(mach_port_destroy (mach_task_self (), name));
 
   // pending attribute changes - signal them with "fake" change completed messages
 
   for (auto it = outstanding_change_requests.begin(); it != outstanding_change_requests.end(); it ++) {
     if (it->client == control) {
-      fprintf(stderr, "sending an m_o_change_completed\n");
-      memory_object_change_completed(it->reply, MACH_MSG_TYPE_MAKE_SEND, 0, 0);
+      // fprintf(stderr, "sending an m_o_change_completed\n");
+      mach_call(memory_object_change_completed(it->reply, MACH_MSG_TYPE_MAKE_SEND, 0, 0));
     }
   }
 
   // XXX pending locks - return immediately
 
   // XXX if we lose our last client, we can free the pagemap
+
+  // fprintf(stderr, "object_terminate done\n");
 }
 
 void pager::shutdown (void)
@@ -362,8 +366,8 @@ void pager::shutdown (void)
 
 void pager::lock_object(vm_offset_t OFFSET, vm_size_t LENGTH, int RETURN, bool FLUSH, bool sync)
 {
-  fprintf(stderr, "lock_object(OFFSET=%d, LENGTH=%d, RETURN=%d, FLUSH=%d, SYNC=%d)\n",
-          OFFSET, LENGTH, RETURN, FLUSH, sync);
+  // fprintf(stderr, "lock_object(OFFSET=%d, LENGTH=%d, RETURN=%d, FLUSH=%d, SYNC=%d)\n",
+  //         OFFSET, LENGTH, RETURN, FLUSH, sync);
 
   // sync: flush=false, return=MEMORY_OBJECT_RETURN_DIRTY
   // return: flush=true, return=MEMORY_OBJECT_RETURN_ALL
@@ -393,7 +397,7 @@ void pager::lock_object(vm_offset_t OFFSET, vm_size_t LENGTH, int RETURN, bool F
     if (! sync) {
 
       for (auto client: clients) {
-        memory_object_lock_request(client, OFFSET, LENGTH, RETURN, FLUSH, VM_PROT_NO_CHANGE, 0);
+        mach_call(memory_object_lock_request(client, OFFSET, LENGTH, RETURN, FLUSH, VM_PROT_NO_CHANGE, 0));
       }
 
     } else {
@@ -401,7 +405,7 @@ void pager::lock_object(vm_offset_t OFFSET, vm_size_t LENGTH, int RETURN, bool F
       auto & record = outstanding_locks[{OFFSET, LENGTH}];
 
       for (auto client: clients) {
-        memory_object_lock_request(client, OFFSET, LENGTH, RETURN, FLUSH, VM_PROT_NO_CHANGE, pager_port());
+        mach_call(memory_object_lock_request(client, OFFSET, LENGTH, RETURN, FLUSH, VM_PROT_NO_CHANGE, pager_port()));
         record.locks_outstanding ++;
       }
 
@@ -420,19 +424,19 @@ void pager::lock_object(vm_offset_t OFFSET, vm_size_t LENGTH, int RETURN, bool F
       }
     }
   }
-  fprintf(stderr, "lock_object exiting\n");
+  // fprintf(stderr, "lock_object exiting\n");
 }
 
 void pager::change_attributes(boolean_t may_cache, memory_object_copy_strategy_t copy_strategy, int sync)
 {
-  fprintf(stderr, "change_attributes(may_cache=%d, copy_strategy=%d, sync=%d)\n", may_cache, copy_strategy, sync);
+  // fprintf(stderr, "change_attributes(may_cache=%d, copy_strategy=%d, sync=%d)\n", may_cache, copy_strategy, sync);
 
   std::unique_lock<std::mutex> pager_lock(lock);
 
   if (! sync) {
 
     for (auto client: clients) {
-      memory_object_change_attributes (client, may_cache, copy_strategy, MACH_PORT_NULL);
+      mach_call(memory_object_change_attributes (client, may_cache, copy_strategy, MACH_PORT_NULL));
     }
 
   } else {
@@ -440,15 +444,15 @@ void pager::change_attributes(boolean_t may_cache, memory_object_copy_strategy_t
     mach_port_t portset;
     int locks_outstanding = 0;
 
-    fprintf(stderr, "entering change_attributes\n");
+    // fprintf(stderr, "entering change_attributes\n");
 
-    mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_PORT_SET, &portset);
+    mach_call(mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_PORT_SET, &portset));
 
     for (auto client: clients) {
       mach_port_t reply;
-      mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &reply);
-      memory_object_change_attributes (client, may_cache, copy_strategy, reply);
-      mach_port_move_member (mach_task_self (), reply, portset);
+      mach_call(mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &reply));
+      mach_call(memory_object_change_attributes (client, may_cache, copy_strategy, reply));
+      mach_call(mach_port_move_member (mach_task_self (), reply, portset));
       outstanding_change_requests.emplace(client, reply);
       locks_outstanding ++;
     }
@@ -456,9 +460,9 @@ void pager::change_attributes(boolean_t may_cache, memory_object_copy_strategy_t
     while (locks_outstanding) {
       machMessage msg;
 
-      lock.unlock();
-      mach_msg (msg, MACH_RCV_MSG, 0, msg.max_size, portset, 0, MACH_PORT_NULL);
-      lock.lock();
+      pager_lock.unlock();
+      mach_call(mach_msg (msg, MACH_RCV_MSG, 0, msg.max_size, portset, 0, MACH_PORT_NULL));
+      pager_lock.lock();
 
       // make sure that the message is a m_o_change_completed
       assert(msg->msgh_id == 2209);
@@ -475,17 +479,17 @@ void pager::change_attributes(boolean_t may_cache, memory_object_copy_strategy_t
       }
 
       // XXX perhaps we should use deallocate or mod_refs instead?
-      mach_port_destroy (mach_task_self (), msg->msgh_local_port);
+      mach_call(mach_port_destroy (mach_task_self (), msg->msgh_local_port));
 
-      fprintf(stderr, "change_completed from port %d\n", msg->msgh_local_port);
+      // fprintf(stderr, "change_completed from port %d\n", msg->msgh_local_port);
 
       locks_outstanding --;
     }
 
     // XXX perhaps we should use deallocate or mod_refs instead?
-    mach_port_destroy (mach_task_self (), portset);
+    mach_call(mach_port_destroy (mach_task_self (), portset));
 
-    fprintf(stderr, "leaving change_attributes\n");
+    // fprintf(stderr, "leaving change_attributes\n");
   }
 }
 
@@ -845,5 +849,11 @@ kern_return_t pager::get_error(vm_offset_t OFFSET)
 
 pager::~pager()
 {
+  assert(clients.empty());
+  assert(WRITEWAIT.empty());
+  assert(NEXTERROR.empty());
+  assert(outstanding_locks.empty());
+  assert(outstanding_change_requests.empty());
+
   pager_clear_user_data (upi);
 }
