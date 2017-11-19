@@ -296,10 +296,10 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
   }
 
   if (removed_from_ACCESSLIST) {
-    fprintf(stderr, "libpager: warning: client called object_terminate with outstanding pages\n");
+    fprintf(stderr, "libpager: warning: client %u called object_terminate with outstanding pages\n", control);
   }
   if (removed_from_WAITLIST) {
-    fprintf(stderr, "libpager: warning: client called object_terminate with outstanding waits\n");
+    fprintf(stderr, "libpager: warning: client %u called object_terminate with outstanding waits\n", control);
   }
 
   clients.erase(control);
@@ -309,7 +309,7 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
   mach_port_status_t status;
   mach_call(mach_port_get_receive_status(mach_task_self(), control, &status));
   if (status.mps_msgcount > 0) {
-    fprintf(stderr, "libpager: warning: client called object_terminate with outstanding messages:");
+    fprintf(stderr, "libpager: warning: client %u called object_terminate with outstanding messages:", control);
     while (1) {
       machMessage msg;
 
