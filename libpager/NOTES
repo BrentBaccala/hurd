@@ -622,8 +622,15 @@ m_o_data_request: (kernel requesting a single page)
     if WAITLIST is empty and ACCESSLIST is not, send lock request (internal flush variant) to ACCESSLIST client
        (there should only be one WRITE client on ACCESSLIST - the client that returned the data we're paging out)
     add requesting client to WAITLIST and return
+  if this client is already on ACCESSLIST for WRITE access, print error message and return
+     XXX: what if kernel had WRITE access, but page wasn't dirty, so it didn't get returned?
+  if this client is already on ACCESSLIST for READ access, it flushed and is trying to re-aquire access,
+     so check to see if we've got an outstanding lock w/ flush flag set
+     if so, [ ] add client to WAITLIST and return (flush code will run later)
+            [ ] clear flush flag and run flush code now (more complicated but a bit faster)
+            [X] add client to WAITLIST, run flush code, and return
+     otherwise, remove client from ACCESSLIST and proceed (kernel flushed without being asked)
   if WAITLIST is not empty, add requesting client to WAITLIST and return
-  if this client is already on ACCESSLIST, print error message and return
   if another client has WRITE access (WAITLIST is empty), add requesting client to WAITLIST,
      send lock request (internal flush variant) and return
   if WRITE access is requested and ACCESSLIST is not empty (other clients have access),
@@ -949,6 +956,49 @@ RACE CONDITION:
                   so this doesn't work if client B is requesting READ access and the lock
                   request is only to revoke WRITE access
   [X] SOLUTION 2: when we request a flush, wait for a lock_completed message
+
+
+LOCK SEQUENCE:
+
+client had READ access
+FLUSH LOCK
+NON-FLUSH LOCK (sync)
+FLUSH LOCK COMPLETED (waits for non-flush lock before processing)
+DATA REQUEST from flushed client for READ access - it's on ACCESSLIST, but has already flushed
+  "if this client is already on ACCESSLIST, print error message and return"
+  if other clients had READ access, pager_read_page() gets called
+NON-FLUSH LOCK COMPLETED
+  only now does the flush get processed
+  if client on ACCESSLIST, stuff happens
+
+client had READ access
+lock_request (FLUSH)
+flush occurs internally to the kernel, but the lock_request requires more processing
+there's another access to the page
+DATA REQUEST from flushed client for READ access - it's on ACCESSLIST, but has already flushed
+  "if this client is already on ACCESSLIST, print error message and return"
+  change to: if this client is already on ACCESSLIST for WRITE access, print error message and return
+                XXX: what if kernel had WRITE access, but page wasn't dirty, so it didn't get returned?
+             if this client is already on ACCESSLIST for READ access, it flushed and is trying to re-aquire access,
+                so check to see if we've got an outstanding lock w/ flush flag set
+                if so, [X] add client to WAITLIST and return (flush code will run later)
+                       [ ] clear flush flag and run flush code now (more complicated but a bit faster)
+                otherwise, remove client from ACCESSLIST and proceed (kernel flushed without being asked)
+  if other clients had READ access, pager_read_page() gets called
+lock_completed message
+  only now does the flush get processed
+  if client on ACCESSLIST, stuff happens
+
+
+multi-page flush (pager_flush or pager_return)
+lock_request sent to a client on a page where that client has no access
+lock_request processed on that page
+client requests access to that page
+
+multi-page flush (pager_flush or pager_return)
+lock_request sent to a client on a page where that client has no access
+client requests access to that page
+lock_request processed on that page
 
 
 USEFUL CHANGES TO THE KERNEL:
