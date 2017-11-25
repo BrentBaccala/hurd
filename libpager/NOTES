@@ -275,9 +275,6 @@ struct pagemap_entry {
       (actual error code is discarded)
       Future requests for this page will get an m_o_data_error (EIO)
       If some clients still have copies of the data, we may be able to operate for a while, then retry the write operation
-    FLUSHING - set FLUSHING when we send lock_request's with the flush flag set to all client on ACCESSLIST,
-      and clear the flag when we get an indication that the flush has completed
-      (either lock_completed messages or new data_request's from all of the clients)
    2 BIT ERROR CODE - ERROR
       ERROR - set to EIO as a result of a read error (actual error code is discarded)
          an unlock error will get propagated from NEXTERROR to ERROR
@@ -586,7 +583,7 @@ service_waitlist: (pass in a pagetable pointer, a data pointer, a read/write fla
   remove those clients from WAITLIST and move them to ACCESSLIST
   what if WAITLIST still has clients on it after sending messages?
      [ ] use a timeout before sending more lock requests?
-     [X] send lock requests right away to everything on ACCESSLIST, and set FLUSHING flag
+     [X] send lock requests right away to everything on ACCESSLIST
 
 send_error_to_WAITLIST (pass in an error and offset):
   XXX: data length must be page_size
@@ -623,23 +620,20 @@ m_o_data_request: (kernel requesting a single page)
         move NEXTERROR to ERROR, remove the NEXTERROR list entry, and return
   if the page is PAGINGOUT:
     if WAITLIST is empty and ACCESSLIST is not, send lock request (internal flush variant) to ACCESSLIST client
-       and set FLUSHING flag
        ASSERT: there should only be one WRITE client on ACCESSLIST - the client that returned the data we're paging out
     add requesting client to WAITLIST and return
   if this client is already on ACCESSLIST for WRITE access, print error message and return
      XXX: what if kernel had WRITE access, but page wasn't dirty, so it didn't get returned?
   if this client is already on ACCESSLIST for READ access, it flushed and is trying to re-aquire access,
-     so check to see if FLUSHING flag is set
-     if so, [ ] add client to WAITLIST and return (flush code will run later)
-            [X] add client to WAITLIST, run internal_lock_completed on this page, and return
-     otherwise, remove client from ACCESSLIST and proceed (kernel flushed without being asked)
-        (don't run flush code because nothing's on WAITLIST; otherwise FLUSHING would be set)
+     so check to see if WAITLIST is empty
+     if so, remove client from ACCESSLIST and proceed (kernel flushed without being asked)
+     if not, we're flushing, so add client to WAITLIST, run internal_lock_completed on this page, and return
   if WAITLIST is not empty, add requesting client to WAITLIST and return
   if another client has WRITE access (WAITLIST is empty), add requesting client to WAITLIST,
-     send lock request (internal flush variant), set FLUSHING flag, and return
+     send lock request (internal flush variant) and return
   if WRITE access is requested and ACCESSLIST is not empty (other clients have access),
      add requesting client to WAITLIST (it's empty),
-     send lock requests (internal flush variant), set FLUSHING flag, and return
+     send lock requests (internal flush variant) and return
      (we could give out the page with READ access and wait for a unlock request, but I think not)
   else
      (ACCESSLIST is empty or READ access is requested and only READ clients are on ACCESSLIST)
@@ -664,14 +658,12 @@ internal_lock_completed: (internal flush variant)
     else:
       remove client from ACCESSLIST
       if ACCESSLIST is empty but WAITLIST is not:
-        clear FLUSHING flag
         if INVALID is not set: set PAGEIN flag
         else (INVALID set): call send_error_to_WAITLIST
           XXX: assumes that ERROR is correctly set whenever INVALID is set
 
       if ACCESSLIST has a single client with READ access and it's also the first client on WAITLIST requesting WRITE access,
         set UNLOCK flag
-        clear FLUSHING flag
       otherwise, if ACCESSLIST has multiple clients, or a single client that's not first on WAITLIST,
         then we're still waiting for them to answer their locks, so do nothing
   unlock pager
@@ -705,7 +697,7 @@ m_o_data_unlock: (kernel requesting write access when it's already got read acce
       (ACCESSLIST contains only READ clients and WAITLIST contains only READ clients)
       (so we're waiting for a page in to finish, as it will trigger a flush that will answer this unlock)
     otherwise, if there's other clients on ACCESSLIST, add client to WAITLIST for WRITE (it's empty)
-      and send lock requests to other clients (internal flush variant), set FLUSHING flag, and return
+      and send lock requests to other clients (internal flush variant) and return
     otherwise, we're the only client on ACCESSLIST and WAITLIST is empty:
       add client to WAITLIST for WRITE
       set UNLOCK flag
@@ -1005,6 +997,32 @@ multi-page flush (pager_flush or pager_return)
 lock_request sent to a client on a page where that client has no access
 client requests access to that page
 lock_request processed on that page
+
+
+
+FLUSHING:
+
+Because of the kernel's ability to proactively flush pages (unless PRECIOUS is specified),
+we can't be certain that a client on a page's ACCESSLIST actually possesses that page.
+All we know for sure is that a client not on ACCESSLIST does not possess the page.
+
+Examining the Mach kernel code for m_o_lock_request, we see that the kernel might block
+while looping over the pages (and unlocks the memory object while doing so), so for a
+multi-page lock request, we need to consider the possibility that part of the page range
+might be processed, then other kernel operations happen (including VM page operations)
+before the remaining part of the page range is processed and the lock request completes.
+
+
+Scenario A
+- five clients have read access to page 50 and are on its ACCESSLIST (WAITLIST is empty)
+- pager_flush is called on pages 0-100
+- page 50 flushes on client A
+- client A re-requests access to page 50, and it is supplied (ACCESSLIST and WAITLIST don't change)
+- the flushes complete
+- only client A now has access to page 50 and should be alone on its ACCESSLIST
+
+Scenario A shows that ACCESSLIST, WAITLIST and a FLUSHING flag aren't enough; we have to track
+which clients requested access during the flush to correctly compute ACCESSLIST at the end.
 
 
 USEFUL CHANGES TO THE KERNEL:
