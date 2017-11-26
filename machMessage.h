@@ -53,7 +53,11 @@
     
 */
 
+#ifndef MACHMESSAGE_H
+#define MACHMESSAGE_H
+
 #include <set>
+#include <cassert>
 
 extern "C" {
 #include <mach.h>
@@ -68,6 +72,7 @@ extern "C" {
  * (that's the preprocessor trick).
  */
 
+static
 kern_return_t
 _mach_call(const char * file, int line, kern_return_t err, std::set<kern_return_t> ignores)
 {
@@ -339,7 +344,10 @@ public:
   const static mach_msg_size_t max_size = 4096;
   char buffer[max_size];
 
-  mach_msg_header_t * const msg = reinterpret_cast<mach_msg_header_t *> (buffer);
+  mach_msg_header_t * const msg;
+
+  machMessage() : msg(reinterpret_cast<mach_msg_header_t *> (buffer)) { }
+  machMessage(mach_msg_header_t * inp) : msg(inp) { }
 
   /* This conversion lets us pass a machMessage directly to mach_msg() */
   operator mach_msg_header_t * () { return msg; }
@@ -358,3 +366,5 @@ public:
     return result;
   }
 };
+
+#endif
