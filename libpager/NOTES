@@ -645,9 +645,13 @@ m_o_data_request: (kernel requesting a single page)
      if pager_read_page() returned an error, mark page with ERROR and call send_error_to_WAITLIST
      if no error, service_waitlist(deallocate=true) (read/write status supplied by filesystem), clear ERROR
 
-m_o_lock_completed: (external variant)
-  m_o_lock_completed could have been sent in response to a fs flush, sync, return
-  find lock in list of lock requests, decrement locks_pending, wake up waiter if no more locks_pending or pending_writes
+m_o_lock_completed:
+  m_o_lock_completed could have been sent in response to an internal lock request, or a fs flush, sync, return
+  find client/offset/length in list of lock requests and decrement locks_pending
+  if locks_pending is zero:
+    if internal_lock_outstanding, and WAITLIST is not empty, then call internal_lock_completed
+    remove client/offset/length from list
+  if no more clients for this offset/length, wake up any waiting thread
 
 internal_lock_completed: (internal flush variant)
   use alloca() to allocate an array of flags, one set (in a uint8) for each page in current message:
@@ -655,6 +659,7 @@ internal_lock_completed: (internal flush variant)
   for all pages covered by message:
     [ if this client had WRITE access, print error (should have used m_o_data_return instead of m_o_lock_completed) ]
     if this client isn't on ACCESSLIST, do nothing (m_o_data_return already processed the data)
+    if WAITLIST is empty, do nothing (m_o_data_request already called internal_lock_completed)
     else:
       remove client from ACCESSLIST
       if ACCESSLIST is empty but WAITLIST is not:

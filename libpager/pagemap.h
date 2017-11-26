@@ -381,10 +381,35 @@ class NEXTERROR_entry {
   {}
 };
 
-struct outstanding_lock {
-  int locks_outstanding = 0;
+/* outstanding locks
+ *
+ * All of our lock_completed messages have to come in on the memory object port,
+ * because we need to synchronize them with data_return messages, i.e, we need
+ * to make sure we've at least started processing any data_return's that were
+ * triggered by a lock request before we process its lock_completed message.
+ * So, we can't use any other port for lock_completed messages.
+ *
+ * Also, if we get a dead name notification on a client, we need to know if
+ * it has any outstanding lock requests; otherwise, we'll wait forever for
+ * a reply that will never come.
+ *
+ * However, lock_completed messages don't include the lock parameters, so
+ * we can't match them precisely with lock_request messages.
+ *
+ * Instead, we track how many outstanding locks we have for each
+ * client/offset/length combination.  We also need to find all outstanding
+ * locks for a given client.  We also need to wait for all outstanding
+ * locks on a given offset/length combination.
+ */
+
+struct outstanding_client_lock {
+  int count = 0;
   bool internal_lock_outstanding = false;
+};
+
+struct outstanding_lock {
   std::condition_variable waiting_threads;
+  std::map<mach_port_t, outstanding_client_lock> locks;
 };
 
 struct pager {

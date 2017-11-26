@@ -62,10 +62,10 @@ std::ostream& operator<< (std::ostream &out, const pagemap_entry::data &entry)
 
 void pager::internal_flush_request(memory_object_control_t client, vm_offset_t OFFSET)
 {
-  auto & record = outstanding_locks[{OFFSET, page_size}];
+  auto & record = outstanding_locks[{OFFSET, page_size}].locks[client];
 
   record.internal_lock_outstanding = true;
-  record.locks_outstanding ++;
+  record.count ++;
 
   mach_call(memory_object_lock_request(client, OFFSET, page_size, MEMORY_OBJECT_RETURN_ALL, true, VM_PROT_NO_CHANGE, pager_port()));
 }
@@ -189,6 +189,18 @@ void pager::data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFF
     tmp_pagemap_entry.add_client_to_WAITLIST(MEMORY_CONTROL, DESIRED_ACCESS & VM_PROT_WRITE);
     pagemap[OFFSET / page_size] = tmp_pagemap_entry;
     return;
+  }
+
+  if (tmp_pagemap_entry.is_client_on_ACCESSLIST(MEMORY_CONTROL)) {
+    assert(! tmp_pagemap_entry.get_WRITE_ACCESS_GRANTED());
+    if (! tmp_pagemap_entry.is_WAITLIST_empty()) {
+      tmp_pagemap_entry.add_client_to_WAITLIST(MEMORY_CONTROL, DESIRED_ACCESS & VM_PROT_WRITE);
+      pagemap[OFFSET / page_size] = tmp_pagemap_entry;
+      internal_lock_completed(MEMORY_CONTROL, OFFSET, page_size, pager_lock);
+      return;
+    } else {
+      tmp_pagemap_entry.remove_client_from_ACCESSLIST(MEMORY_CONTROL);
+    }
   }
 
   if (! tmp_pagemap_entry.is_WAITLIST_empty()) {
@@ -406,7 +418,7 @@ void pager::lock_object(vm_offset_t OFFSET, vm_size_t LENGTH, int RETURN, bool F
 
       for (auto client: clients) {
         mach_call(memory_object_lock_request(client, OFFSET, LENGTH, RETURN, FLUSH, VM_PROT_NO_CHANGE, pager_port()));
-        record.locks_outstanding ++;
+        record.locks[client].count ++;
       }
 
       record.waiting_threads.wait(pager_lock);
@@ -509,19 +521,17 @@ void pager::internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
   vm_offset_t page = OFFSET / page_size;
   for (int i = 0; i < npages; i ++, page ++) {
     operation[i] = 0;
-    if (pagemap[page]->is_client_on_ACCESSLIST(MEMORY_CONTROL)) {
+    assert(! pagemap[page]->get_WRITE_ACCESS_GRANTED());
+    if (pagemap[page]->is_client_on_ACCESSLIST(MEMORY_CONTROL) && ! pagemap[page]->is_WAITLIST_empty()) {
       tmp_pagemap_entry = pagemap[page];
       tmp_pagemap_entry.remove_client_from_ACCESSLIST(MEMORY_CONTROL);
-      tmp_pagemap_entry.set_WRITE_ACCESS_GRANTED(false);
-      if (tmp_pagemap_entry.is_ACCESSLIST_empty() && ! tmp_pagemap_entry.is_WAITLIST_empty()) {
+      if (tmp_pagemap_entry.is_ACCESSLIST_empty()) {
         if (! tmp_pagemap_entry.get_INVALID()) {
           operation[i] = PAGEIN;
         } else {
           send_error_to_WAITLIST(page * page_size);
         }
       } else if ((tmp_pagemap_entry.ACCESSLIST_num_clients() == 1)
-                 && ! tmp_pagemap_entry.get_WRITE_ACCESS_GRANTED()
-                 && ! tmp_pagemap_entry.is_WAITLIST_empty()
                  && tmp_pagemap_entry.is_client_on_ACCESSLIST(tmp_pagemap_entry.first_WAITLIST_client().client)) {
         operation[i] = UNLOCK;
       }
@@ -576,26 +586,27 @@ void pager::lock_completed(memory_object_control_t MEMORY_CONTROL,
 
   auto & record = it->second;
 
-  assert(record.locks_outstanding > 0);
+  bool internal_lock_required = false;
 
-  record.locks_outstanding --;
+  assert(record.locks[MEMORY_CONTROL].count > 0);
 
-  if (record.locks_outstanding == 0) {
+  record.locks[MEMORY_CONTROL].count --;
 
-    if (record.internal_lock_outstanding) {
-      record.internal_lock_outstanding = false;
-      internal_lock_completed(MEMORY_CONTROL, OFFSET, LENGTH, pager_lock);
-    }
+  if (record.locks[MEMORY_CONTROL].count == 0) {
+    internal_lock_required = record.locks[MEMORY_CONTROL].internal_lock_outstanding;
+    record.locks.erase(MEMORY_CONTROL);
+  }
 
+  if (record.locks.empty()) {
     record.waiting_threads.notify_all();
+    outstanding_locks.erase(it);
+  }
 
-    // the internal_lock_completed() calls could have triggered new
-    // lock requests, so check again to see if locks_outstanding
-    // is zero before erasing
+  // wait until the end of the function to call internal_lock_completed,
+  // because it might send more lock requests and thus modify outstanding_locks
 
-    if (record.locks_outstanding == 0) {
-      outstanding_locks.erase(it);
-    }
+  if (internal_lock_required) {
+    internal_lock_completed(MEMORY_CONTROL, OFFSET, LENGTH, pager_lock);
   }
 }
 
