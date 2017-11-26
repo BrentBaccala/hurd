@@ -84,6 +84,14 @@ struct pager_requests
   struct worker workers[WORKER_COUNT];
 };
 
+mig_routine_t _pager_dead_name_notify;
+
+static mig_routine_t _pager_dead_name_notify_routine(mach_msg_header_t *inp)
+{
+  if (inp->msgh_id == MACH_NOTIFY_DEAD_NAME) return _pager_dead_name_notify;
+  else return NULL;
+}
+
 /* Demultiplex a single message directed at a pager port; INP is the
    message received; fill OUTP with the reply.  */
 static int
@@ -95,6 +103,7 @@ pager_demuxer (struct pager_requests *requests,
 
   mig_routine_t routine;
   if (! ((routine = _pager_memory_object_server_routine (inp)) ||
+	 (routine = _pager_dead_name_notify_routine (inp)) ||
 	 (routine = ports_notify_server_routine (inp))))
     return FALSE;
 

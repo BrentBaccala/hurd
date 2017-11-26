@@ -504,6 +504,8 @@ struct pager {
                    vm_offset_t DATA, vm_size_t DATA_COUNT, boolean_t DIRTY,
                    boolean_t KERNEL_COPY);
 
+  void dead_name(mach_port_t DEADNAME);
+
   // Internal routines used by other methods
 
   mach_port_t pager_port(void) {
@@ -514,6 +516,8 @@ struct pager {
     // return ports_get_right(&port);
     return port.port_right;
   }
+
+  void drop_client(mach_port_t control, const char * const reason);
 
   void internal_flush_request(memory_object_control_t client, vm_offset_t OFFSET);
 

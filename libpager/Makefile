@@ -22,7 +22,7 @@ makemode := library
 
 libname = libpager
 SRCS = data-request.cc data-return.cc data-unlock.cc pager-port.cc \
-	lock-completed.cc get-error.cc \
+	lock-completed.cc get-error.cc dead-name.cc \
 	object-init.cc object-terminate.cc pagemap.cc \
 	pager-create.cc pager-flush.cc pager-shutdown.cc pager-sync.cc \
 	stubs.c demuxer.c pager-attr.cc clean.cc \

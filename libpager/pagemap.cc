@@ -263,11 +263,17 @@ void pager::object_init (mach_port_t control, mach_port_t name, vm_size_t pagesi
 
   clients.insert(control);
 
+  mach_port_t old;
+  mach_call(mach_port_request_notification(mach_task_self(), control,
+                                           MACH_NOTIFY_DEAD_NAME, 0,
+                                           pager_port(),
+                                           MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+
   mach_call(memory_object_ready (control, may_cache, copy_strategy));
   // fprintf(stderr, "object_init exiting\n");
 }
 
-void pager::object_terminate (mach_port_t control, mach_port_t name)
+void pager::drop_client (mach_port_t control, const char * const reason)
 {
   std::unique_lock<std::mutex> pager_lock(lock);
 
@@ -276,6 +282,33 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
   // had both outstanding pages and outstanding messages.  Doubt this
   // would happen with an actual Mach kernel as client, but we also
   // have to deal with malicious clients.
+
+  // pending locks - treat them as if they returned immediately
+
+  bool some_locks_cleared = false;
+
+  for (auto it = outstanding_locks.begin(); it != outstanding_locks.end();) {
+
+    bool internal_lock_required = false;
+
+    vm_offset_t OFFSET = it->first.first;
+    vm_size_t LENGTH = it->first.second;
+
+    if (it->second.locks.count(control) > 0) {
+      some_locks_cleared = true;
+      internal_lock_required = it->second.locks[control].internal_lock_outstanding;
+      it->second.locks.erase(control);
+    }
+    if (it->second.locks.empty()) {
+      it->second.waiting_threads.notify_all();
+      it = outstanding_locks.erase(it);
+    } else {
+      it ++;
+    }
+    if (internal_lock_required) {
+      internal_lock_completed(control, OFFSET, LENGTH, pager_lock);
+    }
+  }
 
   // check to see if this client has any outstanding pages
 
@@ -307,14 +340,31 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
     }
   }
 
+  if (some_locks_cleared) {
+    fprintf(stderr, "libpager: warning: dropping client %u (%s) with outstanding locks\n", control, reason);
+  }
   if (removed_from_ACCESSLIST) {
-    fprintf(stderr, "libpager: warning: client %u called object_terminate with outstanding pages\n", control);
+    fprintf(stderr, "libpager: warning: dropping client %u (%s) with outstanding pages\n", control, reason);
   }
   if (removed_from_WAITLIST) {
-    fprintf(stderr, "libpager: warning: client %u called object_terminate with outstanding waits\n", control);
+    fprintf(stderr, "libpager: warning: dropping client %u (%s) with outstanding waits\n", control, reason);
+  }
+
+  // pending attribute changes - signal them with "fake" change completed messages
+
+  for (auto it = outstanding_change_requests.begin(); it != outstanding_change_requests.end(); it ++) {
+    if (it->client == control) {
+      // fprintf(stderr, "sending an m_o_change_completed\n");
+      mach_call(memory_object_change_completed(it->reply, MACH_MSG_TYPE_MAKE_SEND, 0, 0));
+    }
   }
 
   clients.erase(control);
+}
+
+void pager::object_terminate (mach_port_t control, mach_port_t name)
+{
+  drop_client(control, "object_terminate");
 
   // check to see if any messages are outstanding on control port
 
@@ -338,17 +388,6 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
 
   mach_call(mach_port_destroy (mach_task_self (), control));
   mach_call(mach_port_destroy (mach_task_self (), name));
-
-  // pending attribute changes - signal them with "fake" change completed messages
-
-  for (auto it = outstanding_change_requests.begin(); it != outstanding_change_requests.end(); it ++) {
-    if (it->client == control) {
-      // fprintf(stderr, "sending an m_o_change_completed\n");
-      mach_call(memory_object_change_completed(it->reply, MACH_MSG_TYPE_MAKE_SEND, 0, 0));
-    }
-  }
-
-  // XXX pending locks - return immediately
 
   // XXX if we lose our last client, we can free the pagemap
 
@@ -856,6 +895,11 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
 kern_return_t pager::get_error(vm_offset_t OFFSET)
 {
   return pagemap[OFFSET / page_size]->get_ERROR();
+}
+
+void pager::dead_name(mach_port_t DEADNAME)
+{
+  drop_client(DEADNAME, "dead name");
 }
 
 pager::~pager()
