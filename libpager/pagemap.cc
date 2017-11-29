@@ -315,11 +315,15 @@ void pager::drop_client (mach_port_t control, const char * const reason)
   // XXX reorganize code to do this faster than searching
   // through the entire pagemap
 
+  bool WRITE_pages_removed_from_ACCESSLIST = false;
   bool removed_from_ACCESSLIST = false;
   bool removed_from_WAITLIST = false;
 
   for (auto & pm: pagemap) {
     if (pm->is_client_on_ACCESSLIST(control)) {
+      if (pm->get_WRITE_ACCESS_GRANTED()) {
+        WRITE_pages_removed_from_ACCESSLIST = true;
+      }
       tmp_pagemap_entry = pm;
       tmp_pagemap_entry.remove_client_from_ACCESSLIST(control);
       tmp_pagemap_entry.set_WRITE_ACCESS_GRANTED(false);
@@ -343,8 +347,8 @@ void pager::drop_client (mach_port_t control, const char * const reason)
   if (some_locks_cleared) {
     fprintf(stderr, "libpager: warning: dropping client %u (%s) with outstanding locks\n", control, reason);
   }
-  if (removed_from_ACCESSLIST) {
-    fprintf(stderr, "libpager: warning: dropping client %u (%s) with outstanding pages\n", control, reason);
+  if (WRITE_pages_removed_from_ACCESSLIST) {
+    fprintf(stderr, "libpager: warning: dropping client %u (%s) with outstanding WRITE pages\n", control, reason);
   }
   if (removed_from_WAITLIST) {
     fprintf(stderr, "libpager: warning: dropping client %u (%s) with outstanding waits\n", control, reason);
