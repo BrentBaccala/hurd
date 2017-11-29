@@ -10,7 +10,6 @@ extern "C" {
 #include "machMessage.h"
 
 extern "C"
-__attribute__((aligned(4)))
 void _pager_dead_name_notify(mach_msg_header_t *inp, mach_msg_header_t *reply)
 {
   pager_t memory_object;

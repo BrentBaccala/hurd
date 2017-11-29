@@ -475,10 +475,17 @@ public:
         }
       }
 
+#if 0
       // return our receive rights
       // also destroys our send right for memobj
 
       mach_call (memory_object_terminate (memobj, memory_control, memory_object_name));
+#else
+      // destroy receive rights
+      // should trigger a DEAD NAME notification
+      mach_call(mach_port_mod_refs (mach_task_self (), memory_control, MACH_PORT_RIGHT_RECEIVE, -1));
+      mach_call(mach_port_mod_refs (mach_task_self (), memory_object_name, MACH_PORT_RIGHT_RECEIVE, -1));
+#endif
     }
 
     if (service_thread.joinable()) {

@@ -84,7 +84,7 @@ struct pager_requests
   struct worker workers[WORKER_COUNT];
 };
 
-mig_routine_t _pager_dead_name_notify;
+void _pager_dead_name_notify(mach_msg_header_t *inp, mach_msg_header_t *reply);
 
 static mig_routine_t _pager_dead_name_notify_routine(mach_msg_header_t *inp)
 {
