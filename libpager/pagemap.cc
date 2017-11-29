@@ -192,7 +192,6 @@ void pager::data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFF
   }
 
   if (tmp_pagemap_entry.is_client_on_ACCESSLIST(MEMORY_CONTROL)) {
-    assert(! tmp_pagemap_entry.get_WRITE_ACCESS_GRANTED());
     if (! tmp_pagemap_entry.is_WAITLIST_empty()) {
       tmp_pagemap_entry.add_client_to_WAITLIST(MEMORY_CONTROL, DESIRED_ACCESS & VM_PROT_WRITE);
       pagemap[OFFSET / page_size] = tmp_pagemap_entry;
@@ -200,6 +199,7 @@ void pager::data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFF
       return;
     } else {
       tmp_pagemap_entry.remove_client_from_ACCESSLIST(MEMORY_CONTROL);
+      tmp_pagemap_entry.set_WRITE_ACCESS_GRANTED(false);
     }
   }
 

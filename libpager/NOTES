@@ -622,9 +622,7 @@ m_o_data_request: (kernel requesting a single page)
     if WAITLIST is empty and ACCESSLIST is not, send lock request (internal flush variant) to ACCESSLIST client
        ASSERT: there should only be one WRITE client on ACCESSLIST - the client that returned the data we're paging out
     add requesting client to WAITLIST and return
-  if this client is already on ACCESSLIST for WRITE access, print error message and return
-     XXX: what if kernel had WRITE access, but page wasn't dirty, so it didn't get returned?
-  if this client is already on ACCESSLIST for READ access, it flushed and is trying to re-aquire access,
+  if this client is already on ACCESSLIST, it flushed and is trying to re-aquire access,
      so check to see if WAITLIST is empty
      if so, remove client from ACCESSLIST and proceed (kernel flushed without being asked)
      if not, we're flushing, so add client to WAITLIST, run internal_lock_completed on this page, and return
