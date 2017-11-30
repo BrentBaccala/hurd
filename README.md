@@ -96,3 +96,47 @@ running in a Linux virtual machine.
 4. Rework Hurd authentication along the lines of http://lists.gnu.org/archive/html/bug-hurd/2016-09/msg00012.html
 
 5. 64-bit user space
+
+6. Patch glibc so that spawn() and fork() can create processes on other nodes
+
+   spawn() should be fairly easy; fork() will be more difficult without vm_attach()
+
+7. Add a vm_attach() system RPC to attach a memory manager to a previously unmanaged region of memory.
+
+   This would greatly facilitate implementation of fork().  Unmanaged regions of memory that require
+   shared-memory semantics after a fork() could simply be attached to a libpager-based memory manager.
+
+8. Modify the kernel so that a default memory manager can be associated with a task.
+
+   The task's default memory manager would receive a notification whenever the task allocated unmanaged memory.
+
+   This would allow tasks to span nodes, which would facilitate programs that spawn a lot of threads to achieve parallelism.
+
+   To avoid a race condition if tasks on different nodes allocated the same region of memory near-simultaneously,
+   a handshake between the kernel and the default memory manager would be required whenever a vm_allocate() is attempted.
+
+9. Persistence
+
+   Checkpointing tasks to allow recovery in the event of node failure
+
+## Test Cases
+
+1. Long, complex compile runs - Hurd, Mach, Linux, glibc, gcc, gdb
+
+   Demonstrates performance improvement even with 32-bit user space
+
+2. [Hoffman](http://www.freesoft.org/software/hoffman/) - Brent's endgame analysis engine
+
+   Demonstrate support for standard C++ memory management and threading
+
+3. [Meep](https://meep.readthedocs.io/en/latest/) - MIT's FDTD electromagnetic simulation software
+
+   Demonstrates support for the MPI standard
+
+4. MySQL
+
+   Demonstrates support for database applications
+
+5. some kind of Hadoop project
+
+   Demonstrates support for the current cluster computing standard
