@@ -1,0 +1,10 @@
+--- libdiskfs/console.c~	2017-09-10 18:48:17.000000000 -0400
++++ libdiskfs/console.c	2017-11-30 18:40:03.000000000 -0500
+@@ -66,6 +66,7 @@
+       assert_perror_backtrace (err);
+       stdin = mach_open_devstream (cons, "r");
+       stdout = stderr = mach_open_devstream (cons, "w");
++      setbuf(stderr, NULL);
+       mach_port_deallocate (mach_task_self (), cons);
+     }
+ }
