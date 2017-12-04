@@ -27,6 +27,10 @@ void _pager_dead_name_notify(mach_msg_header_t *inp, mach_msg_header_t *reply)
   else
     memory_object = begin_using_pager(inp->msgh_local_port);
 
+  if (!memory_object
+      || memory_object->port.port_class != _pager_class)
+    return;
+
   memory_object->dead_name(machMessage(inp)[0][0]);
 
   OutP->RetCode = MIG_NO_REPLY;
