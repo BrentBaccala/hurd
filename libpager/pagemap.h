@@ -246,6 +246,7 @@ public:
 // pager its pagemap_entry belongs to.
 
 extern std::set<pagemap_entry_data> pagemap_set;
+extern std::mutex pagemap_set_mutex;
 
 // empty_page_ptr is a pointer to the empty page in pagemap_set,
 // which is the only item in pagemap_set when we initialize.
@@ -330,6 +331,7 @@ public:
   // https://stackoverflow.com/a/2160319/1493790
 
   void operator= (pagemap_entry_data & data) {
+    std::unique_lock<std::mutex> lock(pagemap_set_mutex);
     entry = &* pagemap_set.insert(std::move(data)).first;
   }
 

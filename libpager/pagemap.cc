@@ -40,6 +40,7 @@ extern "C" {
 // 2. extract a pointer to that entry and save it as empty_page_ptr
 
 std::set<pagemap_entry::data> pagemap_set {pagemap_entry::data()};
+std::mutex pagemap_set_mutex;
 const pagemap_entry::data * empty_page_ptr = &* pagemap_set.begin();
 
 std::ostream& operator<< (std::ostream &out, const pagemap_entry::data &entry)
