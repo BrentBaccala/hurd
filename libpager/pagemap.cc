@@ -39,8 +39,8 @@ extern "C" {
 // 1. create pagemap_set and initialize it with a single empty pagemap entry
 // 2. extract a pointer to that entry and save it as empty_page_ptr
 
-std::set<pagemap_entry::data> pagemap_entry::pagemap_set {pagemap_entry::data()};
-const pagemap_entry::data * pagemap_entry::empty_page_ptr = &* pagemap_entry::pagemap_set.begin();
+std::set<pagemap_entry::data> pagemap_set {pagemap_entry::data()};
+const pagemap_entry::data * empty_page_ptr = &* pagemap_set.begin();
 
 std::ostream& operator<< (std::ostream &out, const pagemap_entry::data &entry)
 {
@@ -337,7 +337,7 @@ void pager::drop_client (mach_port_t control, const char * const reason)
         tmp_pagemap_entry = pm;
         auto wl2 = tmp_pagemap_entry.WAITLIST_clients();
         wl2.erase(std::remove_if(wl2.begin(), wl2.end(),
-                                 [control](pagemap_entry::WAITLIST_client & x){return x.client == control;}),
+                                 [control](WAITLIST_client & x){return x.client == control;}),
                   wl2.end());
         pm = tmp_pagemap_entry;
         removed_from_WAITLIST = true;

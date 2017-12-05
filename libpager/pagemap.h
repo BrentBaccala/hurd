@@ -9,8 +9,6 @@
    written in C++11 (uses move semantics)
 
    TODO:
-   - pagemap[] is statically allocated
-   - update NOTES to reflect code factorization
    - handle multi page operations
 */
 
@@ -63,226 +61,199 @@ extern "C" {
  * The code is NOT thread safe; the pager needs to be locked...
  */
 
+/* First, some nested classes culminating in class pagemap_entry_data */
+
+// ACCESSLISTS's are an unordered set of clients that have access to a page
+
+typedef std::set<mach_port_t> ACCESSLIST_entry;
+
+// WAITLIST's are an ordered set of clients (processed FIFO), along with
+// a flag indicating if they requested read-only or write access.
+
+class WAITLIST_client {
+public:
+  mach_port_t client;
+  boolean_t write_access_requested;
+
+  WAITLIST_client(mach_port_t client, boolean_t write_access_requested)
+    : client(client), write_access_requested(write_access_requested)
+  {}
+
+  bool operator<(const WAITLIST_client & rhs) const
+  {
+    return std::tie(client, write_access_requested)
+      < std::tie(rhs.client, rhs.write_access_requested);
+  }
+};
+
+typedef std::vector<WAITLIST_client> WAITLIST_entry;
+
+// The pagemap data for a single page.
+
+class pagemap_entry_data {
+
+  ACCESSLIST_entry ACCESSLIST;
+  WAITLIST_entry WAITLIST;
+
+  // set PAGINGOUT when we get a data return and start writing it to backing store,
+  // clear the flag when the write is finished
+  boolean_t PAGINGOUT = false;
+
+  // WRITE_ACCESS_GRANTED indicates if the ACCESSLIST client has WRITE access
+  boolean_t WRITE_ACCESS_GRANTED = false;
+
+  // INVALID indicates that the backing store data is invalid because we got an
+  // error return from a write attempt
+  boolean_t INVALID = false;
+
+  // ERROR is the last error code returned from a backing store operation
+  kern_return_t ERROR = KERN_SUCCESS;
+
+public:
+
+  bool operator<(const pagemap_entry_data & rhs) const
+  {
+    return std::tie(ACCESSLIST, WAITLIST, PAGINGOUT, WRITE_ACCESS_GRANTED, INVALID, ERROR)
+      < std::tie(rhs.ACCESSLIST, rhs.WAITLIST, rhs.PAGINGOUT, rhs.WRITE_ACCESS_GRANTED, rhs.INVALID, rhs.ERROR);
+  }
+
+  const ACCESSLIST_entry & ACCESSLIST_clients(void) const
+  {
+    return ACCESSLIST;
+  }
+
+  bool is_ACCESSLIST_empty(void) const
+  {
+    return ACCESSLIST.empty();
+  }
+
+  int ACCESSLIST_num_clients(void) const
+  {
+    return ACCESSLIST.size();
+  }
+
+  bool is_client_on_ACCESSLIST(mach_port_t client) const
+  {
+    return (ACCESSLIST.count(client) == 1);
+  }
+
+  void add_client_to_ACCESSLIST(mach_port_t client)
+  {
+    ACCESSLIST.insert(client);
+  }
+
+  void remove_client_from_ACCESSLIST(mach_port_t client)
+  {
+    ACCESSLIST.erase(client);
+  }
+
+  const WAITLIST_entry & WAITLIST_clients(void) const
+  {
+    return WAITLIST;
+  }
+
+  bool is_WAITLIST_empty(void) const
+  {
+    return WAITLIST.empty();
+  }
+
+  bool is_any_client_waiting_for_write_access(void) const
+  {
+    for (auto client: WAITLIST) {
+      if (client.write_access_requested) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void clear_WAITLIST(void)
+  {
+    WAITLIST.clear();
+  }
+
+  void add_client_to_WAITLIST(mach_port_t client, bool write_access_requested)
+  {
+    WAITLIST.emplace_back(client, write_access_requested);
+  }
+
+  void pop_first_WAITLIST_client(void)
+  {
+    if (WAITLIST.size() == 0) {
+      throw std::out_of_range("WAITLIST is empty");
+    }
+
+    WAITLIST.erase(WAITLIST.cbegin());
+  }
+
+  WAITLIST_client first_WAITLIST_client(void) const
+  {
+    // not WAITLIST.front(), which is undefined if WAITLIST is empty,
+    // but WAITLIST.at(0), which throws std::out_of_range
+    return WAITLIST.at(0);
+  }
+
+  kern_return_t get_ERROR(void) const
+  {
+    return ERROR;
+  }
+
+  void set_ERROR (kern_return_t val)
+  {
+    ERROR = val;
+  }
+
+  bool get_INVALID(void) const
+  {
+    return INVALID;
+  }
+
+  void set_INVALID(bool val)
+  {
+    INVALID = val;
+  }
+
+  bool get_PAGINGOUT(void) const
+  {
+    return PAGINGOUT;
+  }
+
+  void set_PAGINGOUT(bool val)
+  {
+    PAGINGOUT = val;
+  }
+
+  bool get_WRITE_ACCESS_GRANTED(void) const
+  {
+    return WRITE_ACCESS_GRANTED;
+  }
+
+  void set_WRITE_ACCESS_GRANTED(bool val)
+  {
+    WRITE_ACCESS_GRANTED = val;
+  }
+
+};
+
+// This global set contains all of the pagemap data.
+
+// The actual pagemap consists of pointers into this set, which I
+// expect to save memory vs keeping separate pagemap_entry_data
+// structures for each page.
+
+// It's global because of C++'s lack of inner class support, which
+// prevents operator=() in class pagemap_entry from knowing which
+// pager its pagemap_entry belongs to.
+
+extern std::set<pagemap_entry_data> pagemap_set;
+
+// empty_page_ptr is a pointer to the empty page in pagemap_set,
+// which is the only item in pagemap_set when we initialize.
+
+extern const pagemap_entry_data * empty_page_ptr;
+
 class pagemap_entry
 {
-  /* First, some nested classes culminating in class pagemap_entry_data */
-
-  // ACCESSLISTS's are an unordered set of clients that have access to a page
-
-  typedef std::set<mach_port_t> ACCESSLIST_entry;
-
-  // WAITLIST's are an ordered set of clients (processed FIFO), along with
-  // a flag indicating if they requested read-only or write access.
-
-public: // for object_terminate()
-  class WAITLIST_client {
-  public:
-    mach_port_t client;
-    boolean_t write_access_requested;
-
-    WAITLIST_client(mach_port_t client, boolean_t write_access_requested)
-      : client(client), write_access_requested(write_access_requested)
-    {}
-
-    bool operator<(const WAITLIST_client & rhs) const
-    {
-      return std::tie(client, write_access_requested)
-	< std::tie(rhs.client, rhs.write_access_requested);
-    }
-
-  };
-
-  typedef std::vector<WAITLIST_client> WAITLIST_entry;
-
-  // The pagemap data for a single page.
-
-  class pagemap_entry_data {
-
-    ACCESSLIST_entry ACCESSLIST;
-    WAITLIST_entry WAITLIST;
-
-    // set PAGINGOUT when we get a data return and start writing it to backing store,
-    // clear the flag when the write is finished
-    boolean_t PAGINGOUT;
-
-    // WRITE_ACCESS_GRANTED indicates if the ACCESSLIST client has WRITE access
-    boolean_t WRITE_ACCESS_GRANTED;
-
-    // INVALID indicates that the backing store data is invalid because we got an
-    // error return from a write attempt
-    boolean_t INVALID;
-
-    // ERROR is the last error code returned from a backing store operation
-    kern_return_t ERROR;
-
-  public:
-
-    bool operator<(const pagemap_entry_data & rhs) const
-    {
-      return std::tie(ACCESSLIST, WAITLIST, PAGINGOUT, WRITE_ACCESS_GRANTED, INVALID, ERROR)
-	< std::tie(rhs.ACCESSLIST, rhs.WAITLIST, rhs.PAGINGOUT, rhs.WRITE_ACCESS_GRANTED, rhs.INVALID, rhs.ERROR);
-    }
-
-    pagemap_entry_data()
-    {
-      // default constructors produce empty ACCESSLIST and WAITLIST,
-      // but leave other fields undefined
-      ERROR = KERN_SUCCESS;
-      PAGINGOUT = false;
-      WRITE_ACCESS_GRANTED = false;
-      INVALID = false;
-    }
-
-    const ACCESSLIST_entry & ACCESSLIST_clients(void) const
-    {
-      return ACCESSLIST;
-    }
-
-    bool is_ACCESSLIST_empty(void) const
-    {
-      return ACCESSLIST.empty();
-    }
-
-    int ACCESSLIST_num_clients(void) const
-    {
-      return ACCESSLIST.size();
-    }
-
-    bool is_client_on_ACCESSLIST(mach_port_t client) const
-    {
-      return (ACCESSLIST.count(client) == 1);
-    }
-
-    void add_client_to_ACCESSLIST(mach_port_t client)
-    {
-      ACCESSLIST.insert(client);
-    }
-
-    void remove_client_from_ACCESSLIST(mach_port_t client)
-    {
-      ACCESSLIST.erase(client);
-    }
-
-    const WAITLIST_entry & WAITLIST_clients(void) const
-    {
-      return WAITLIST;
-    }
-
-    bool is_WAITLIST_empty(void) const
-    {
-      return WAITLIST.empty();
-    }
-
-    bool is_any_client_waiting_for_write_access(void) const
-    {
-      for (auto client: WAITLIST) {
-        if (client.write_access_requested) {
-          return true;
-        }
-      }
-      return false;
-    }
-
-    void clear_WAITLIST(void)
-    {
-      WAITLIST.clear();
-    }
-
-    void add_client_to_WAITLIST(mach_port_t client, bool write_access_requested)
-    {
-      WAITLIST.emplace_back(client, write_access_requested);
-    }
-
-    void pop_first_WAITLIST_client(void)
-    {
-      if (WAITLIST.size() == 0) {
-        throw std::out_of_range("WAITLIST is empty");
-      }
-
-      WAITLIST.erase(WAITLIST.cbegin());
-    }
-
-    WAITLIST_client first_WAITLIST_client(void) const
-    {
-      // not WAITLIST.front(), which is undefined if WAITLIST is empty,
-      // but WAITLIST.at(0), which throws std::out_of_range
-      return WAITLIST.at(0);
-    }
-
-    kern_return_t get_ERROR(void) const
-    {
-      return ERROR;
-    }
-
-    void set_ERROR (kern_return_t val)
-    {
-      ERROR = val;
-    }
-
-    bool get_INVALID(void) const
-    {
-      return INVALID;
-    }
-
-    void set_INVALID(bool val)
-    {
-      INVALID = val;
-    }
-
-    bool get_PAGINGOUT(void) const
-    {
-      return PAGINGOUT;
-    }
-
-    void set_PAGINGOUT(bool val)
-    {
-      PAGINGOUT = val;
-    }
-
-    bool get_WRITE_ACCESS_GRANTED(void) const
-    {
-      return WRITE_ACCESS_GRANTED;
-    }
-
-    void set_WRITE_ACCESS_GRANTED(bool val)
-    {
-      WRITE_ACCESS_GRANTED = val;
-    }
-
-  };
-
-  static std::set<pagemap_entry_data> pagemap_set;
-
-  // tmp_pagemap_entry
-  //
-  // The idea here is to keep around a pagemap_entry_data with allocated
-  // space that can be copy-assigned into without malloc'ing memory.
-  //
-  // Then, we move-insert it into pagemap_set.
-  //
-  // If the insert failed (because an identical pagemap_entry_data already
-  // exists in pagemap_set), we use the pointer to the existing
-  // entry and leave tmp_pagemap_entry alone for the next operation,
-  // which will probably copy-assign into it without a malloc.
-  //
-  // If the insert succeeded, then
-  // "Moved from objects are left in a valid but unspecified state"
-  // https://stackoverflow.com/questions/7930105
-  //
-  // In this case, the next time we copy-assign tmp_pagemap_entry, it
-  // will probably allocate memory.
-  //
-  // Once a pager is stable, all required pagemap_entry_data's will
-  // exist in pagemap_set, so the inserts will always fail and leave
-  // tmp_pagemap_entry alone.  tmp_pagemap_entry will grow to
-  // accommodate the largest pagemap_entry_data's being processed,
-  // then won't have to do any more malloc's.
-
-  // empty_page_ptr is a pointer to the empty page in pagemap_set,
-  // which is the only item in pagemap_set when we initialize.
-
-  static const pagemap_entry_data * empty_page_ptr;
-
   // this pointer is the only data in an instance of pagemap_entry
   const pagemap_entry_data * entry = empty_page_ptr;
 
@@ -312,6 +283,30 @@ public:
   // reflect changed data.
   //
   // WARNING: this is a move!  the rhs can be altered!
+  //
+  // The idea here is to keep around a pagemap_entry_data with
+  // allocated space that can be copy-assigned into without malloc'ing
+  // memory.
+  //
+  // Then, we move-insert it into pagemap_set.
+  //
+  // If the insert failed (because an identical pagemap_entry_data already
+  // exists in pagemap_set), we use the pointer to the existing
+  // entry and leave the temporary alone for the next operation,
+  // which will probably copy-assign into it without a malloc.
+  //
+  // If the insert succeeded, then
+  // "Moved from objects are left in a valid but unspecified state"
+  // https://stackoverflow.com/questions/7930105
+  //
+  // In this case, the next time we copy-assign the temporary, it
+  // will probably allocate memory.
+  //
+  // Once a pager is stable, all required pagemap_entry_data's will
+  // exist in pagemap_set, so the inserts will always fail and leave
+  // the temporary alone, so it will grow to accommodate the largest
+  // pagemap_entry_data's being processed, then won't have to do any
+  // more malloc's.
   //
   // i.e, "pagemap[n] = entry" might change entry to an "valid but
   // unspecified value"
@@ -412,6 +407,20 @@ struct outstanding_lock {
   std::map<mach_port_t, outstanding_client_lock> locks;
 };
 
+struct outstanding_change_request {
+  mach_port_t client;
+  mach_port_t reply;
+
+  outstanding_change_request(mach_port_t client, mach_port_t reply)
+    : client(client), reply(reply) { }
+
+  bool operator<(const outstanding_change_request & rhs) const
+  {
+    return std::tie(client, reply)
+      < std::tie(rhs.client, rhs.reply);
+  }
+};
+
 struct pager {
 
   // libport implements a pseudo class inheritance scheme
@@ -438,20 +447,6 @@ struct pager {
 
   std::map<std::pair<vm_offset_t, vm_size_t>, outstanding_lock> outstanding_locks;
 
-  struct outstanding_change_request {
-    mach_port_t client;
-    mach_port_t reply;
-
-    outstanding_change_request(mach_port_t client, mach_port_t reply)
-      : client(client), reply(reply) { }
-
-    bool operator<(const outstanding_change_request & rhs) const
-    {
-      return std::tie(client, reply)
-	< std::tie(rhs.client, rhs.reply);
-    }
-  };
-
   std::set<outstanding_change_request> outstanding_change_requests;
 
   pagemap_vector pagemap;
@@ -463,8 +458,6 @@ struct pager {
   { }
 
   ~pager();
-
-  // pager_shutdown
 
   // Rule of Five - since we're defining a destructor, we should
   // define (or delete) copy/move constructors and copy/move
