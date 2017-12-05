@@ -767,55 +767,55 @@ m_o_data_return: (kernel returning pages)
         (XXX pager_sync needs to trigger a write even for pages with active clients)
     [X] for all pages in message:
          set PAGINGOUT in pagemap
-         if any locks are pending on these pages, increment pending_writes in those lock requests
-            and record a pointer to the last lock that we incremented
 
     [ ] if PAGINGOUT was already set for any page, add this message, including kernel_copy flag
         and the pointer to the last lock incremented, to WRITEWAIT list and return
         ( allow simultaneous pager_write_page() calls for different pages )
     [X] if WRITEWAIT list is not empty, add this message (and kernel_copy and pointer) to WRITEWAIT list and return
+        if WRITEWAIT list is empty, add this message (and kernel_copy and pointer) to WRITEWAIT list
+           and process everything on WRITEWAIT list
         ( allow no simultaneous pager_write_page() calls )
-
-    (1):
-    use alloca() to allocated an array of flags, one set (in a uint8) for each page in current message:
-      NOTIFY, ERROR, and PAGEOUT
-      ( perhaps put this is a subroutine so that this array is deallocated after every message is processed )
-    for all pages in current message:
-      search WRITEWAIT list for a matching page
-      if no match, set PAGEOUT flag
-      ( this avoids writing a page if we've got more recent data waiting to write )
-      ( this could be triggered by a rapid succession of pager_sync() calls on a busy page and a slow disk )
-    unlock the pager
-    call pager_write_page() on all pages flagged PAGEOUT
-      set ERROR on any error return (discard actual error code)
-    relock the pager
-    for each page we just wrote:
-      search WRITEWAIT list for matching pages
-      ( can't use PAGEOUT flag because WRITEWAIT list might have changed while pager was unlocked )
-      set INVALID equal to ERROR
-      if something found on WRITEWAIT:
-        ASSERT: kernel_copy is true (else how could there be a later write?)
-        do nothing
-      else if none found and WAITLIST is not empty:
-        clear PAGINGOUT
-        (this client had WRITE access because the page was dirty; so everything on WAITLIST is a data request)
-        if kernel_copy is false: service_waitlist (deallocate = false)
-        (if kernel_copy is true then we're still waiting for a flush to complete)
-      else (none found and WAITLIST is empty):
-        clear PAGINGOUT
-        if kernel_copy is false, set NOTIFY flag and clear ERROR and NEXTERROR
-    munmap() current message
-    for the lock requests we incremented pending_writes on, decrement pending_writes, and signal wakeup
-      if there's no more pending_writes or locks_pending
-      use the stored pointer to limit this pass to locks that existed when the increments occurred
-    unlock the pager
-    if client requested notify_on_evict, call pager_notify_evict() for any page flaged NOTIFY
-      ( the kernel didn't keep a copy and it didn't get shipped back out in an m_o_data_supply message )
-    relock the pager (this can be cleverly wrapped into previous unlock/lock cycle)
-    if WRITEWAIT still has messages on it, pop next message as current message and goto (1)
 
   else (pages are not dirty), munmap() data
     XXX: notify?
+
+service_first_WRITEWAIT_entry:
+  use alloca() to allocated an array of flags, one set (in a uint8) for each page in current message:
+    NOTIFY, ERROR, and PAGEOUT
+    ( perhaps put this is a subroutine so that this array is deallocated after every message is processed )
+  for all pages in current message:
+    search WRITEWAIT list for a matching page
+    if no match, set PAGEOUT flag
+    ( this avoids writing a page if we've got more recent data waiting to write )
+    ( this could be triggered by a rapid succession of pager_sync() calls on a busy page and a slow disk )
+  unlock the pager
+  call pager_write_page() on all pages flagged PAGEOUT
+    set ERROR on any error return (discard actual error code)
+  relock the pager
+  for each page we just wrote:
+    search WRITEWAIT list for matching pages
+    ( can't use PAGEOUT flag because WRITEWAIT list might have changed while pager was unlocked )
+    set INVALID equal to ERROR
+    if something found on WRITEWAIT:
+      ASSERT: kernel_copy is true (else how could there be a later write?)
+      do nothing
+    else if none found and WAITLIST is not empty:
+      clear PAGINGOUT
+      (this client had WRITE access because the page was dirty; so everything on WAITLIST is a data request)
+      if kernel_copy is false: service_waitlist (deallocate = false)
+      (if kernel_copy is true then we're still waiting for a flush to complete)
+    else (none found and WAITLIST is empty):
+      clear PAGINGOUT
+      if kernel_copy is false, set NOTIFY flag and clear ERROR and NEXTERROR
+
+  munmap() current message
+  signal wakeup on anything waiting on this WRITEWAIT entry
+
+  unlock the pager
+  if client requested notify_on_evict, call pager_notify_evict() for any page flaged NOTIFY
+    ( the kernel didn't keep a copy and it didn't get shipped back out in an m_o_data_supply message )
+  relock the pager (this can be cleverly wrapped into previous unlock/lock cycle)
+
 
 pager_sync:
   only needs to do anything if a client has WRITE access

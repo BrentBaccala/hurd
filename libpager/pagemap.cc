@@ -390,7 +390,7 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
   // check to see if any messages are outstanding on control port
 
   // this seems to happen a lot with m_o_change_attributes (2095) messages,
-  // so I no longer bother to run this run
+  // so I no longer bother to run this code
 
   mach_port_status_t status;
   mach_call(mach_port_get_receive_status(mach_task_self(), control, &status));
@@ -808,12 +808,14 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
             // XXX clear ERROR and NEXTERROR
           }
         }
+      } else {
+        assert(current.KERNEL_COPY);
       }
       pagemap[page] = tmp_pagemap_entry;
     }
   }
 
-  munmap((void*) current.DATA, current.LENGTH);
+  munmap((void *) current.DATA, current.LENGTH);
   current.waiting_threads.notify_all();
   WRITEWAIT.pop_front();
   // fprintf(stderr, "service_first_WRITEWAIT_entry pop_front\n");
@@ -869,7 +871,6 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
     }
     if (DIRTY) {
       tmp_pagemap_entry.set_PAGINGOUT(true);
-      // XXX handle pending_writes
     }
     pagemap[page] = tmp_pagemap_entry;
 

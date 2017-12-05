@@ -353,6 +353,15 @@ class pagemap_vector : public std::vector<pagemap_entry>
   }
 };
 
+/* We might get a page returned multiple times in the time it takes to
+ * write it out to disk once, so we queue up our writes in this
+ * structure and thus guarantee that pager_write_page() won't overlap
+ * on a single page.
+ *
+ * Currently, our guarantee is stronger: we don't allow overlapping
+ * pager_write_page() calls at all, even on distinct pages.
+ */
+
 class WRITEWAIT_entry {
 public:
   vm_offset_t OFFSET;
