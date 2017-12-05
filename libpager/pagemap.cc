@@ -310,25 +310,27 @@ void pager::drop_client (mach_port_t control, const char * const reason)
     }
   }
 
+  if (some_locks_cleared) {
+    fprintf(stderr, "libpager: warning: dropping client %u (%s) with outstanding locks\n", control, reason);
+  }
+
   // check to see if this client has any outstanding pages
+
+  // this seems to happen a lot, even for pages with WRITE access, so
+  // no warning messages are in order; just drop the client from the
+  // ACCESSLISTs
 
   // XXX reorganize code to do this faster than searching
   // through the entire pagemap
 
-  bool WRITE_pages_removed_from_ACCESSLIST = false;
-  bool removed_from_ACCESSLIST = false;
   bool removed_from_WAITLIST = false;
 
   for (auto & pm: pagemap) {
     if (pm->is_client_on_ACCESSLIST(control)) {
-      if (pm->get_WRITE_ACCESS_GRANTED()) {
-        WRITE_pages_removed_from_ACCESSLIST = true;
-      }
       tmp_pagemap_entry = pm;
       tmp_pagemap_entry.remove_client_from_ACCESSLIST(control);
       tmp_pagemap_entry.set_WRITE_ACCESS_GRANTED(false);
       pm = tmp_pagemap_entry;
-      removed_from_ACCESSLIST = true;
     }
     for (auto wl: pm->WAITLIST_clients()) {
       if (wl.client == control) {
@@ -344,12 +346,6 @@ void pager::drop_client (mach_port_t control, const char * const reason)
     }
   }
 
-  if (some_locks_cleared) {
-    fprintf(stderr, "libpager: warning: dropping client %u (%s) with outstanding locks\n", control, reason);
-  }
-  if (WRITE_pages_removed_from_ACCESSLIST) {
-    fprintf(stderr, "libpager: warning: dropping client %u (%s) with outstanding WRITE pages\n", control, reason);
-  }
   if (removed_from_WAITLIST) {
     fprintf(stderr, "libpager: warning: dropping client %u (%s) with outstanding waits\n", control, reason);
   }
@@ -370,7 +366,11 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
 {
   drop_client(control, "object_terminate");
 
+#if 0
   // check to see if any messages are outstanding on control port
+
+  // this seems to happen a lot with m_o_change_attributes (2095) messages,
+  // so I no longer bother to run this run
 
   mach_port_status_t status;
   mach_call(mach_port_get_receive_status(mach_task_self(), control, &status));
@@ -387,6 +387,7 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
     }
     fprintf(stderr, "\n");
   }
+#endif
 
   // clear dead name notification
 
