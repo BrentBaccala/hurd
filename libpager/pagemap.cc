@@ -359,6 +359,25 @@ void pager::drop_client (mach_port_t control, const char * const reason)
     }
   }
 
+  // clear dead name notification
+
+  // If we don't do this, then after the pager's destructor is called,
+  // a notification might get generated on the destroyed pager object.
+
+  // Any message, even an ignored notification, will trigger a call
+  // to ports_begin_rpc() and will require the port_info structure
+  // to be valid, so we can't send messages to destroyed objects,
+  // thus the need to clear the notification request now.
+
+  // KERN_INVALID_ARGUMENT will be generated if the name is already dead.
+
+  mach_port_t old;
+  mach_call(mach_port_request_notification(mach_task_self(), control,
+                                           MACH_NOTIFY_DEAD_NAME, 0,
+                                           MACH_PORT_NULL,
+                                           MACH_MSG_TYPE_MAKE_SEND_ONCE, &old),
+            KERN_INVALID_ARGUMENT);
+
   clients.erase(control);
 }
 
@@ -388,28 +407,6 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
     fprintf(stderr, "\n");
   }
 #endif
-
-  // clear dead name notification
-
-  // If we don't do this, then a port deleted notification will be generated when
-  // we destroy the control port in the next block of code.  If this is the
-  // pager's last client and the filesystem code has dropped all references
-  // to the pager, then the pager will now be destroyed and deallocated,
-  // possibly before the notification comes in.
-
-  // Any message, even an ignored message like a port deleted notification,
-  // will trigger a call to ports_begin_rpc() and will require the port_info
-  // structure to be valid.
-
-  // XXX we should do this in ~pager, in case a rogue client drops our pager's
-  // send right without calling object_terminate (triggering the destructor),
-  // then destroys its own control right (triggering a notification).
-
-  mach_port_t old;
-  mach_call(mach_port_request_notification(mach_task_self(), control,
-                                           MACH_NOTIFY_DEAD_NAME, 0,
-                                           MACH_PORT_NULL,
-                                           MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
 
   // drop a client - destroy (or drop send and receive rights) on control and name
 
@@ -931,9 +928,19 @@ void pager::dead_name(mach_port_t DEADNAME)
 
 pager::~pager()
 {
-  // XXX if clients isn't empty, clear the dead name notifications
-  // or we'll get a notification message on the destroyed object
-  assert(clients.empty());
+  if (! clients.empty()) {
+    // This can happen if a rogue client calls m_o_init, then
+    // terminates without calling m_o_terminate.  We'll get both a NO
+    // SENDERS notification on the pager port, and a DEAD NAME
+    // notification on the client's control port.  If the the NO
+    // SENDERS gets processed first, and there are no other clients,
+    // we'll end up here.
+
+    for (auto cl: clients) {
+      drop_client(cl, "~pager");
+    }
+  }
+
   assert(WRITEWAIT.empty());
   assert(NEXTERROR.empty());
   assert(outstanding_locks.empty());
