@@ -809,13 +809,14 @@ service_first_WRITEWAIT_entry:
       if kernel_copy is false, set NOTIFY flag and clear ERROR and NEXTERROR
 
   munmap() current message
-  signal wakeup on anything waiting on this WRITEWAIT entry
 
   unlock the pager
   if client requested notify_on_evict, call pager_notify_evict() for any page flaged NOTIFY
     ( the kernel didn't keep a copy and it didn't get shipped back out in an m_o_data_supply message )
   relock the pager (this can be cleverly wrapped into previous unlock/lock cycle)
 
+  signal wakeup on anything waiting on this WRITEWAIT entry
+  remove this WRITEWAIT entry from WRITEWAIT list
 
 pager_sync:
   only needs to do anything if a client has WRITE access

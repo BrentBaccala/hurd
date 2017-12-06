@@ -816,9 +816,6 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
   }
 
   munmap((void *) current.DATA, current.LENGTH);
-  current.waiting_threads.notify_all();
-  WRITEWAIT.pop_front();
-  // fprintf(stderr, "service_first_WRITEWAIT_entry pop_front\n");
 
   if (notify_on_evict && any_notification_required) {
     pager_lock.unlock();
@@ -832,6 +829,10 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
 
     pager_lock.lock();
   }
+
+  current.waiting_threads.notify_all();
+  WRITEWAIT.pop_front();
+  // fprintf(stderr, "service_first_WRITEWAIT_entry pop_front\n");
 }
 
 void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFSET,
