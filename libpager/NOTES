@@ -739,7 +739,7 @@ m_o_data_return: (kernel returning pages)
     [ ASSERT: these ACCESSLISTs should now be empty ]
     [ ASSERT: this client is not on any of the WAITLISTs (it had WRITE access, so there's nothing for it to wait for) ]
     [ not necessarily - if the pages are precious, they might be coming back with only READ access ]
-    alloca() an array of UNLOCK and ERROR flags, one pair for each page in message
+    alloca() an array of UNLOCK, NOTIFY, and ERROR flags, one set for each page in message
     for all pages:
       if ACCESSLIST is empty and WAITLIST is not empty:
         service_waitlist(deallocate=false)
@@ -747,13 +747,18 @@ m_o_data_return: (kernel returning pages)
       if ACCESSLIST has a single client with READ access and it's also the first client on WAITLIST requesting WRITE access,
         set UNLOCK flag
         (a client with READ access requested WRITE access and had to wait for other clients with READ access to flush)
-    if any pages required UNLOCK:
+      if both ACCESSLIST and WAITLIST are empty and pages are not DIRTY:
+        set NOTIFY flag
+        ( DIRTY pages will get their notifications done after their pager_write_page() calls )
+    if any pages required UNLOCK or NOTIFY:
       ( this can't happen if pages are dirty )
       ASSERT: ! pages_dirty
       XXX: should this code be moved down further?
       unlock pager
       for all pages with UNLOCK set:
         call pager_unlock_page() and set ERROR based on return value
+      for all pages with NOTIFY set:
+        call pager_notify_evict()
       relock pager
       for all pages with UNLOCK set: call finalize_unlock
 

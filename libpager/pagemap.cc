@@ -847,7 +847,8 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
   vm_size_t npages = LENGTH / page_size;
 
   bool * do_unlock = (bool *) alloca(npages * sizeof(bool));
-  bool any_unlocks_required = false;
+  bool * do_notify = (bool *) alloca(npages * sizeof(bool));
+  bool any_unlocks_or_notifies_required = false;
 
   // fprintf(stderr, "data_return(MEMORY_CONTROL=%d, OFFSET=%d, LENGTH=%d, DIRTY=%d, KCOPY=%d, count=%d)\n",
   //         MEMORY_CONTROL, OFFSET, LENGTH, DIRTY, KERNEL_COPY, *((int *)DATA));
@@ -867,7 +868,10 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
                  && ! tmp_pagemap_entry.is_WAITLIST_empty()
                  && tmp_pagemap_entry.is_client_on_ACCESSLIST(tmp_pagemap_entry.first_WAITLIST_client().client)) {
         do_unlock[i] = true;
-        any_unlocks_required = true;
+        any_unlocks_or_notifies_required = true;
+      } else if (tmp_pagemap_entry.is_ACCESSLIST_empty() && tmp_pagemap_entry.is_WAITLIST_empty() && ! DIRTY) {
+        do_notify[i] = true;
+        any_unlocks_or_notifies_required = true;
       }
     }
     if (DIRTY) {
@@ -878,7 +882,7 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
     // std::cerr << pagemap[page];
   }
 
-  if (any_unlocks_required) {
+  if (any_unlocks_or_notifies_required) {
     assert (!DIRTY);
 
     pager_lock.unlock();
@@ -889,6 +893,9 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
     for (int i = 0; i < npages; i ++, page ++) {
       if (do_unlock[i]) {
         err[i] = pager_unlock_page(upi, page * page_size);
+      }
+      if (do_notify[i]) {
+        pager_notify_evict(upi, page * page_size);
       }
     }
 
@@ -915,7 +922,6 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
     }
   } else {
     munmap((void *) DATA, LENGTH);
-    // XXX notify?
   }
 }
 
