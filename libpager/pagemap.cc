@@ -805,7 +805,23 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
           } else {
             do_notify[i] = true;
             any_notification_required = true;
-            // XXX clear ERROR and NEXTERROR
+
+            // At this point, the older libpager code contained the following comment:
+            //
+            // "Clear any error that is left.  Notification on eviction
+            //  is used only to change association of page, so any
+            //  error may no longer be valid."
+            //
+            // I'm not sure just what this means, but mimic this behavior here.
+            //
+            // The old code didn't clear INVALID, but I don't see how it makes sense not to.
+
+            tmp_pagemap_entry.set_INVALID(false);
+            tmp_pagemap_entry.set_ERROR(KERN_SUCCESS);
+
+            NEXTERROR.erase(std::remove_if(NEXTERROR.begin(), NEXTERROR.end(),
+                                           [this, page](NEXTERROR_entry & x){return x.offset == page * page_size;}),
+                            NEXTERROR.end());
           }
         }
       } else {
@@ -872,6 +888,13 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
       } else if (tmp_pagemap_entry.is_ACCESSLIST_empty() && tmp_pagemap_entry.is_WAITLIST_empty() && ! DIRTY) {
         do_notify[i] = true;
         any_unlocks_or_notifies_required = true;
+
+        tmp_pagemap_entry.set_INVALID(false);
+        tmp_pagemap_entry.set_ERROR(KERN_SUCCESS);
+
+        NEXTERROR.erase(std::remove_if(NEXTERROR.begin(), NEXTERROR.end(),
+                                       [this, page](NEXTERROR_entry & x){return x.offset == page * page_size;}),
+                        NEXTERROR.end());
       }
     }
     if (DIRTY) {

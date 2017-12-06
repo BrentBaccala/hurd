@@ -759,6 +759,7 @@ m_o_data_return: (kernel returning pages)
         call pager_unlock_page() and set ERROR based on return value
       for all pages with NOTIFY set:
         call pager_notify_evict()
+        clear INVALID, ERROR, and NEXTERROR for this page
       relock pager
       for all pages with UNLOCK set: call finalize_unlock
 
@@ -781,8 +782,8 @@ m_o_data_return: (kernel returning pages)
            and process everything on WRITEWAIT list
         ( allow no simultaneous pager_write_page() calls )
 
-  else (pages are not dirty), munmap() data
-    XXX: notify?
+  else (pages are not dirty):
+    munmap() data
 
 service_first_WRITEWAIT_entry:
   use alloca() to allocated an array of flags, one set (in a uint8) for each page in current message:
@@ -817,6 +818,7 @@ service_first_WRITEWAIT_entry:
 
   unlock the pager
   if client requested notify_on_evict, call pager_notify_evict() for any page flaged NOTIFY
+    also, clear INVALID, ERROR, and NEXTERROR for these page
     ( the kernel didn't keep a copy and it didn't get shipped back out in an m_o_data_supply message )
   relock the pager (this can be cleverly wrapped into previous unlock/lock cycle)
 
