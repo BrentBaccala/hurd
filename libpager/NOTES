@@ -333,40 +333,6 @@ pointer that points to a more complicated, dynamically allocated
 structure.
 
 
-
-PAGEMAP METHODS
-
-  CONST METHODS
-
-  for_all_clients_on_ACCESSLIST
-    send lock requests
-  for_all_clients_on_WAITLIST
-    send data error or lock
-  get_only_client_on_ACCESSLIST (asserts that there is only one)
-  for_all_clients_on_WAITLIST
-    send data error or lock (if its also on ACCESSLIST)
-  is_WAITLIST_empty
-  is_ACCESSLIST_empty
-  is_ACCESSLIST_read_only
-  is_client_on_ACCESSLIST (testing for error)
-  is_client_only_read_client_on_ACCESSLIST
-  does_WAITLIST_include_a_WRITE_client
-  is_first_client_on_WAITLIST_also_only_client_on_ACCESSLIST
-
-  NON-CONST METHODS
-
-  pop_first_WAITLIST_client
-  pop_first_WAITLIST_client_if_read
-  pop_first_WAITLIST_client_if_write
-  add_client_to_ACCESSLIST
-  append_client_to_WAITLIST
-  ( remove_client_from_WAITLIST )
-  remove_client_from_ACCESSLIST
-  clear_WAITLIST
-
-  pop_first_set_of_WAITLIST_clients_and_move_them_to_ACCESSLIST
-  update_ACCESSLIST_to_WRITE
-
 ACCESS CONTENTION
 
 Putting a client on an empty queue triggers lock requests to all
