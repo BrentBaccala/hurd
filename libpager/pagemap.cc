@@ -83,6 +83,8 @@ void pager::internal_flush_request(memory_object_control_t client, vm_offset_t O
 
 void pager::service_WAITLIST(vm_offset_t offset, vm_offset_t data, bool allow_write_access, bool deallocate)
 {
+  if (terminating) return;
+
   auto first_client = tmp_pagemap_entry.first_WAITLIST_client();
 
   // std::cerr << "service_WAITLIST " << tmp_pagemap_entry;
@@ -166,6 +168,8 @@ void pager::data_request(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFF
 
   assert(LENGTH == page_size);
   assert(OFFSET % page_size == 0);
+
+  if (terminating) return;
 
   // fprintf(stderr, "data_request(MEMORY_CONTROL=%d, OFFSET=%d) page_size=%d\n", MEMORY_CONTROL, OFFSET, page_size);
   // fprintf(stderr, "PAGINGOUT = %d\n", pagemap[OFFSET / page_size]->get_PAGINGOUT());
@@ -262,6 +266,8 @@ void pager::object_init (mach_port_t control, mach_port_t name, vm_size_t pagesi
 
   std::unique_lock<std::mutex> pager_lock(lock);
 
+  if (terminating) return;
+
   clients.insert(control);
 
   mach_port_t old;
@@ -274,10 +280,12 @@ void pager::object_init (mach_port_t control, mach_port_t name, vm_size_t pagesi
   // fprintf(stderr, "object_init exiting\n");
 }
 
-void pager::drop_client (mach_port_t control, const char * const reason)
-{
-  std::unique_lock<std::mutex> pager_lock(lock);
+// drop_client() - call with pager lock held
 
+void pager::drop_client (mach_port_t control, const char * const reason,
+                         std::unique_lock<std::mutex> & pager_lock)
+
+{
   // One of my test cases transmitted a data_request, then called
   // object_terminate before receiving the data_supply in reply, so we
   // had both outstanding pages and outstanding messages.  Doubt this
@@ -384,7 +392,9 @@ void pager::drop_client (mach_port_t control, const char * const reason)
 
 void pager::object_terminate (mach_port_t control, mach_port_t name)
 {
-  drop_client(control, "object_terminate");
+  std::unique_lock<std::mutex> pager_lock(lock);
+
+  drop_client(control, "object_terminate", pager_lock);
 
 #if 0
   // check to see if any messages are outstanding on control port
@@ -421,23 +431,16 @@ void pager::object_terminate (mach_port_t control, mach_port_t name)
 
 void pager::shutdown (void)
 {
-  // XXX set terminating flag
+  terminating = true;
 
-  /* Fetch and flush all pages */
+  /* Fetch and flush all pages
+   *
+   * pager_return() will also wait for all writes to finish.
+   */
+
   pager_return (this, 1);
 
-  // XXX in the meanwhile, we reject any new data requests with ENODEV
-
-  std::unique_lock<std::mutex> pager_lock(lock);
-
-  // XXX send m_o_destroy (error = ENODEV) to all open clients
-  // XXX we expect m_o_terminate replies from the kernels
-
-  // wait for replies to any outstanding locks
-
-  while (! outstanding_locks.empty()) {
-    outstanding_locks.begin()->second.waiting_threads.wait(pager_lock);
-  }
+  ports_destroy_right(this);
 }
 
 void pager::lock_object(vm_offset_t OFFSET, vm_size_t LENGTH, int RETURN, bool FLUSH, bool sync)
@@ -576,6 +579,8 @@ void pager::internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
   assert(LENGTH % page_size == 0);
   assert(OFFSET % page_size == 0);
 
+  if (terminating) return;
+
   vm_size_t npages = LENGTH / page_size;
 
   uint8_t * operation = (uint8_t *) alloca(npages);
@@ -681,6 +686,8 @@ void pager::data_unlock(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
 
   assert(LENGTH % page_size == 0);
   assert(OFFSET % page_size == 0);
+
+  if (terminating) return;
 
   vm_size_t npages = LENGTH / page_size;
 
@@ -882,7 +889,8 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
       } else if ((tmp_pagemap_entry.ACCESSLIST_num_clients() == 1)
                  && ! tmp_pagemap_entry.get_WRITE_ACCESS_GRANTED()
                  && ! tmp_pagemap_entry.is_WAITLIST_empty()
-                 && tmp_pagemap_entry.is_client_on_ACCESSLIST(tmp_pagemap_entry.first_WAITLIST_client().client)) {
+                 && tmp_pagemap_entry.is_client_on_ACCESSLIST(tmp_pagemap_entry.first_WAITLIST_client().client)
+                 && ! terminating) {
         do_unlock[i] = true;
         any_unlocks_or_notifies_required = true;
       } else if (tmp_pagemap_entry.is_ACCESSLIST_empty() && tmp_pagemap_entry.is_WAITLIST_empty() && ! DIRTY) {
@@ -955,11 +963,15 @@ kern_return_t pager::get_error(vm_offset_t OFFSET)
 
 void pager::dead_name(mach_port_t DEADNAME)
 {
-  drop_client(DEADNAME, "dead name");
+  std::unique_lock<std::mutex> pager_lock(lock);
+
+  drop_client(DEADNAME, "dead name", pager_lock);
 }
 
 pager::~pager()
 {
+  std::unique_lock<std::mutex> pager_lock(lock);
+
   if (! clients.empty()) {
     // This can happen if a rogue client calls m_o_init, then
     // terminates without calling m_o_terminate.  We'll get both a NO
@@ -968,13 +980,18 @@ pager::~pager()
     // SENDERS gets processed first, and there are no other clients,
     // we'll end up here.
 
+    // It can also happen after a pager_shutdown() with outstanding
+    // clients.
+
     for (auto cl: clients) {
-      drop_client(cl, "~pager");
+      drop_client(cl, "~pager", pager_lock);
     }
   }
 
-  assert(WRITEWAIT.empty());
-  assert(NEXTERROR.empty());
+  if (! WRITEWAIT.empty()) {
+    WRITEWAIT.back().waiting_threads.wait(pager_lock);
+  }
+
   assert(outstanding_locks.empty());
   assert(outstanding_change_requests.empty());
 

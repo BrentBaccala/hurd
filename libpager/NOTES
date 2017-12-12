@@ -507,7 +507,7 @@ m_o_data_unlock: (kernel requesting write access when it's already got read acce
 lock_object: (several types: flush, sync, return, response to an unlock request)
   NEW MODE NEEDED: asynchronous, but reply requested
   wrapper around m_o_data_lock message
-  if sync requested, add to lock_requests list with locks_pending++ and threads_waiting++
+  if sync requested, add to lock_requests list and increment count
      after m_o_lock_request message sent, wait for locks_pending and pending_writes to drop to zero,
      then decrement threads_waiting and remove lock_requests if zero
 
@@ -590,7 +590,7 @@ service_first_WRITEWAIT_entry:
     ( this could be triggered by a rapid succession of pager_sync() calls on a busy page and a slow disk )
   unlock the pager
   call pager_write_page() on all pages flagged PAGEOUT
-    set ERROR on any error return (discard actual error code)
+    set ERROR on any error return
   relock the pager
   for each page we just wrote:
     search WRITEWAIT list for matching pages
@@ -640,10 +640,27 @@ m_o_terminate:
 pager_shutdown:
   set terminating flag
   send pager_return (flush, return all, sync) to all active clients
-  in the meanwhile, we reject any new data requests with ENODEV
-  send m_o_destroy (error = ENODEV) to all active clients
-  we expect m_o_terminate replies from the kernels
-  call ports_destroy_right, which will blow away our receive right
+  in the meantime:
+    ignore all m_o_data_request and m_o_unlock requests
+    m_o_lock_completed messages: don't do "internal" processing, but do notify threads
+    process m_o_data_return messages, but don't generate any lock requests or data supply messages as a result
+    [ ] handle new m_o_init_object messages by adding them to client list, but not sending m_o_ready
+        that way, they'll get m_o_destroy in response
+    [X] ignore m_o_init_object messages
+  [ "De-allocating the abstract memory object port also has this effect" - Mach Kernel Principles p. 43 ]
+  [ so... we don't have to do this section ]
+  [ send m_o_destroy (error = ENODEV) to all active clients
+  [   now handle new m_o_init_object messages by sending m_o_destroy in response and adding to client list
+  [ wait for m_o_terminate replies from all clients
+  call ports_destroy_right, which will blow away our receive right, and ultimately call the destructor,
+    which will then call drop_client on any remaining clients
+
+SHUTDOWN CODE
+
+Old libpager would flush everything (no special flags set), then
+destroy the receive right and ignore any final messages.  This created
+a minor race condition where clients could request a page while the
+flush was processing, which would then get dropped.
 
 
 MISTAKES AND OMISSIONS IN CURRENT INFO DOCUMENTATION:
