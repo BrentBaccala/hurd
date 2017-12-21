@@ -446,6 +446,8 @@ struct pager {
 
   const bool & PRECIOUS = notify_on_evict;
 
+  bool terminating = false;
+
   std::mutex lock;
 
   struct user_pager_info * upi;
@@ -521,7 +523,8 @@ struct pager {
     return port.port_right;
   }
 
-  void drop_client(mach_port_t control, const char * const reason);
+  void drop_client(mach_port_t control, const char * const reason,
+                   std::unique_lock<std::mutex> & pager_lock);
 
   void internal_flush_request(memory_object_control_t client, vm_offset_t OFFSET);
 
