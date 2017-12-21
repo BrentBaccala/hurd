@@ -73,3 +73,52 @@
 +LDLIBS = -lpthread -lstdc++
  
  include ../Makeconf
+--- ./Makeconf~	2017-11-16 19:36:28.000000000 -0500
++++ ./Makeconf	2017-12-20 22:38:18.000000000 -0500
+@@ -80,6 +80,8 @@
+ 	    $($*-CPPFLAGS)
+ CFLAGS += -std=gnu99 $(gnu89-inline-CFLAGS) -Wall -g -O3 \
+ 	    -fno-strict-aliasing $($*-CFLAGS)
++CXXFLAGS += -std=c++11 -Wall -g -O3 \
++	    -fno-strict-aliasing $($*-CXXFLAGS)
+ 
+ # Include the configure-generated file of parameters.
+ # This sets up variables for build tools and installation directories.
+@@ -513,6 +515,9 @@
+ %_pic.o: %.c
+ 	$(COMPILE.c) $< -DPIC -fPIC -o $@
+ 
++%_pic.o: %.cc
++	$(COMPILE.cc) $< -DPIC -fPIC -o $@
++
+ %_pic.o: %.S
+ 	$(COMPILE.S) $< -DPIC -o $@
+ 
+@@ -520,6 +525,9 @@
+ %_p.o: %.c
+ 	$(COMPILE.c)  $< -DPROF -pg -o $@
+ 
++%_p.o: %.cc
++	$(COMPILE.cc)  $< -DPROF -pg -o $@
++
+ %_p.o: %.S
+ 	$(COMPILE.S) $< -DPROF -o $@
+ 
+@@ -643,8 +651,17 @@
+ mv -f $@.new $@
+ endef
+ 
++define make-deps-cc
++set -e; $(COMPILE.cc) -M -MG $<  | \
++sed > $@.new -e 's%$*\.o:%$*.o $*_pic.o $*_p.o $@: $($*-DEPS)%' \
++	     -e 's% [^ ]*/gcc-lib/[^ ]*\.h%%g'
++mv -f $@.new $@
++endef
++
+ # Here is how to make .d files from .c files
+ %.d: %.c; $(make-deps)
++# Here is how to make .d files from .cc files
++%.d: %.cc; $(make-deps-cc)
+ # Here is how to make .d files from .S files
+ %.d: %.S; $(make-deps)
+ 
