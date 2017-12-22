@@ -39,13 +39,13 @@
 \tikzstyle{message} = [draw, fill=red!20, text width=5em, text depth=2em, text centered,
   minimum width=5em, minimum height=2em, rounded corners]
 
-\newcommand\task[3]{
-\node (#1) [task] at (#2) {#1};
+\newcommand\task[4]{
+\node (#1) [matrix, task] at (#2) {\node {#1}; #4
 
 \IfSubStr{#3}{l}{
 \foreach \i in {-8,...,8}%
 {
-  \draw[xshift=-5em, ultra thick] (#2) +(0,0.2 * \i) -- +(0.2,0.2 * \i) coordinate (#1 Port \i);
+  \draw[xshift=-5em, ultra thick] (0,0.2 * \i) -- (0.2,0.2 * \i) coordinate (#1 Port \i);
 
 }
 }{}
@@ -53,25 +53,30 @@
 \IfSubStr{#3}{r}{
 \foreach \i in {-8,...,8}%
 {
-  \draw[xshift=5em, ultra thick] (#2) +(-0.2,0.2 * \i) -- +(0,0.2 * \i) coordinate (#1 Port \i);
+  \draw[xshift=5em, ultra thick] (-0.2,0.2 * \i) -- (0,0.2 * \i) coordinate (#1 Port \i);
 
 }
 }{}
+
+\\};
 }
 
 \begin{center}
 \begin{tikzpicture}
 
-\task{Task 1}{0,0}{r}
-\task{Task 2}{15 em,0}{l}
-\task{Task 3}{0,-15 em}{r}
+\task{Task 1}{0,0}{r}{
+\node (message1) [message] {Message 1};
+}
+\task{Task 2}{15 em,0}{l}{
+\node (message2) [message] {Message 1};
+\node (message2a) [message] at (1 em, -2 em) {Message 2};
+}
+\task{Task 3}{0,-15 em}{r}{
+\node (message3) [message] {Message 2};
+}
 
-\node (message) [message] at (0,-1 em) {Message 1};
-\node (message2) [message] at (15 em, -1 em) {Message 1};
-\node (message2a) [message] at (16 em, -2.5 em) {Message 2};
-\node (message3) [message] at (0, -15 em) {Message 2};
 
-\draw [color=violet, thick, ->] (node cs:name=message,angle=20) -- +(.3,0) |- (Task 1 Port 3) node [midway, anchor=south, color=black] {27} -- (Task 2 Port 3)
+\draw [color=violet, thick, ->] (node cs:name=message1,angle=20) -- +(.3,0) |- (Task 1 Port 3) node [midway, anchor=south, color=black] {27} -- (Task 2 Port 3)
     -- +(.3,0) node [near end, anchor=south, color=black] {52} |- (node cs:name=message2, angle=160);
 
 \draw [color=violet, thick, ->] (node cs:name=message3,angle=0) -- +(.3,0) |- (Task 3 Port 0) node [midway, anchor=south, color=black] {18} -- +(1,0) |- (Task 2 Port 3)
