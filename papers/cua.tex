@@ -29,43 +29,49 @@
 \usepackage[T1]{fontenc}
 
 \usepackage{tikz}
-\usetikzlibrary{positioning, fit}
+\usetikzlibrary{positioning, fit, backgrounds}
 
 \begin{document}
 
-\tikzstyle{task} = [draw, fill=blue!20, text width=8em, text depth=8em, text centered,
-  minimum width=10em, minimum height=10em, rounded corners]
+\tikzstyle{task} = [draw, fill=blue!20, rounded corners]
 
-\tikzstyle{message} = [draw, fill=red!20, text width=5em, text depth=2em, text centered,
+\tikzstyle{message} = [draw, fill=red!20, text width=5em, text depth=3em, text centered,
   minimum width=5em, minimum height=2em, rounded corners]
 
 \newcommand\task[4]{
-\node (#1) [matrix, task] at (#2) {\node {#1}; #4
+\matrix (#1) [task, inner xsep=0] at (#2) { \node {#1}; \\ #4
 
+% print port tick marks in fill color if they are disabled, in order to make
+% them expand out the dimensions of the task box
+
+\foreach \i in {-8,...,8}
+{
 \IfSubStr{#3}{l}{
-\foreach \i in {-8,...,8}%
-{
   \draw[xshift=-5em, ultra thick] (0,0.2 * \i) -- (0.2,0.2 * \i) coordinate (#1 Port \i);
-
+}{
+  \draw[xshift=-5em, ultra thick, color=blue!20] (0,0.2 * \i) -- (0.2,0.2 * \i) coordinate;
 }
-}{}
-
 \IfSubStr{#3}{r}{
-\foreach \i in {-8,...,8}%
-{
   \draw[xshift=5em, ultra thick] (-0.2,0.2 * \i) -- (0,0.2 * \i) coordinate (#1 Port \i);
-
+}{
+  \draw[xshift=5em, ultra thick, color=blue!20] (-0.2,0.2 * \i) -- (0,0.2 * \i) coordinate;
 }
-}{}
+}
 
 \\};
 }
 
 \begin{center}
+
 \begin{tikzpicture}
 
 \task{Task 1}{0,0}{r}{
-\node (message1) [message] {Message 1};
+% print two sendright nodes, one to fill the message1 box to the correct size,
+% and another one to actually draw it, since message1 will overwrite the
+% first sendright
+\node (sendright) [draw, fill=orange] {Send 41};
+\node (message1) [fit=(sendright), message] {Message 1};
+\node (sendright) [draw, fill=orange] {Send 41};
 }
 \task{Task 2}{15 em,0}{l}{
 \node (message2) [message] {Message 1};
@@ -81,7 +87,6 @@
 
 \draw [color=violet, thick, ->] (node cs:name=message3,angle=0) -- +(.3,0) |- (Task 3 Port 0) node [midway, anchor=south, color=black] {18} -- +(1,0) |- (Task 2 Port 3)
     -- +(.3,0) |- (node cs:name=message2a, angle=160);
-
 
 \end{tikzpicture}
 \end{center}
