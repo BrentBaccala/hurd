@@ -1,0 +1,47 @@
+--- ./libpthread/sysdeps/pthread/bits/condition.h.bak	2017-12-20 12:09:18.000000000 -0500
++++ ./libpthread/sysdeps/pthread/bits/condition.h	2017-12-20 15:26:27.000000000 -0500
+@@ -26,6 +26,7 @@
+ struct __pthread_cond
+   {
+     __pthread_spinlock_t __lock;
++    int __waitcount;
+     struct __pthread *__queue;
+     struct __pthread_condattr *__attr;
+     struct __pthread_condimpl *__impl;
+@@ -34,6 +35,6 @@
+ 
+ /* Initializer for a condition variable.  */
+ #define __PTHREAD_COND_INITIALIZER \
+-  { __PTHREAD_SPIN_LOCK_INITIALIZER, NULL, NULL, NULL, NULL }
++  { __PTHREAD_SPIN_LOCK_INITIALIZER, 0, NULL, NULL, NULL, NULL }
+ 
+ #endif /* bits/condition.h */
+--- ./libpthread/sysdeps/generic/pt-cond-destroy.c.bak	2017-12-20 12:09:18.000000000 -0500
++++ ./libpthread/sysdeps/generic/pt-cond-destroy.c	2017-12-20 12:40:18.000000000 -0500
+@@ -23,6 +23,8 @@
+ int
+ __pthread_cond_destroy (pthread_cond_t *cond)
+ {
++  if (cond->__queue != NULL) return EBUSY;
++  while (cond->__waitcount > 0) sched_yield();
+   return 0;
+ }
+ 
+--- ./libpthread/sysdeps/generic/pt-cond-timedwait.c.bak	2017-12-20 12:09:18.000000000 -0500
++++ ./libpthread/sysdeps/generic/pt-cond-timedwait.c	2017-12-20 15:27:52.000000000 -0500
+@@ -111,6 +111,7 @@
+       __pthread_enqueue (&cond->__queue, self);
+       if (cond->__attr)
+ 	clock_id = cond->__attr->__clock;
++      cond->__waitcount ++;
+       __pthread_spin_unlock (&cond->__lock);
+     }
+   __pthread_mutex_unlock (&self->cancel_lock);
+@@ -153,6 +154,7 @@
+       __pthread_dequeue (self);
+       drain = 0;
+     }
++  cond->__waitcount --;
+   __pthread_spin_unlock (&cond->__lock);
+ 
+   if (drain)
