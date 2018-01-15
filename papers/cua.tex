@@ -10,7 +10,7 @@
 \setbeamertemplate{footline}{}
 \beamertemplatenavigationsymbolsempty
 
-\usepackage{color}
+\usepackage{xcolor}
 \usepackage{comment}
 \usepackage{graphicx}
 
@@ -35,16 +35,6 @@ summarize the speaker's work to realize Hurd's potential as a
 POSIX-compatible operating system that can leverage the power of an
 entire cluster.
 \end{block}
-\end{frame}
-
-\begin{frame}
-\frametitle{Cisco 5108 Blade Server Chassis with eight B200 M2s}
-\includegraphics[width=\textwidth]{ourcisco.jpg}
-\end{frame}
-
-\begin{frame}
-\frametitle{Processor families in TOP500}
-\includegraphics[width=\textwidth]{Processor_families_in_TOP500_supercomputers.png}
 \end{frame}
 
 \newcommand\topfh[7]{
@@ -150,99 +140,14 @@ Source: {\tt https://www.top500.org/}
 }
 \end{frame}
 
-\begin{frame}[fragile]
-\frametitle{Single System Image}
-\begin{definition}
-A single system image (SSI) cluster is a cluster of machines that appears to be one single system.
-
-\hfill Wikipedia
-\end{definition}
-\begin{center}
-\begin{tikzpicture}
-\node (a) [draw] at (0:1) {};
-\node (b) [draw] at (60:1) {} edge (a);
-\node (c) [draw] at (120:1) {} edge (b);
-\node (d) [draw] at (180:1) {} edge (c);
-\node (e) [draw] at (240:1) {} edge (d);
-\node (f) [draw] at (300:1) {} edge (e) edge (a);
-\end{tikzpicture}
-\end{center}
-\begin{semiverbatim}
-\$ nproc
-96
-\$ free -h
-              total        used        free
-Mem:           768G         45G        723G
-Swap:            0B          0B          0B
-
-\end{semiverbatim}
+\begin{frame}
+\frametitle{Cisco 5108 Blade Server Chassis with eight B200 M2s}
+\includegraphics[width=\textwidth]{ourcisco.jpg}
 \end{frame}
 
 \begin{frame}
-\frametitle{Single System Image}
-
-\begin{itemize}
-\item Key Features
-\begin{itemize}
-\item Cluster-wide login
-\item Single Process Space
-\item Process Migration
-\item Single Root Filesystem
-\item Redundant Filesystem
-\item Single I/O Space - block devices
-\item Single IPC Space
-standard Linux inter-process communication mechanisms, shared memory, semaphores, SYSV message queues, pipes and Unix domain sockets.
-\item Cluster-wide IP Addresses
-\end{itemize}
-\item Advantages
-\begin{itemize}
-\item familiar programming and management tools
-\item ease of leveraging additional computing power
-\end{itemize}
-\item Disadvantages
-\begin{itemize}
-\item less fault isolation
-\item node failure more difficult
-\end{itemize}
-\end{itemize}
-\end{frame}
-
-\begin{frame}
-\frametitle{Cluster Computing - History}
-\begin{itemize}
-\item Beowulf
-\item Hadoop
-\item Cluster Linux
-Kerrighed - Latest version is 3.0.0 which was released on 14 June 2010 and based on Linux kernel 2.6.30.
-OpenSSI - last development release 2010; last stable release 2007
-\end{itemize}
-\end{frame}
-
-\begin{frame}
-\frametitle{Single System Image - History}
-\begin{itemize}
-\item VMS
-\item SCALEMP
-\item Cluster Linux
-\end{itemize}
-\end{frame}
-
-\begin{frame}
-\frametitle{GNU Hurd}
-\begin{itemize}
-\item History
-\item Microkernels in general
-\item CMU Mach
-\end{itemize}
-\end{frame}
-
-\begin{frame}
-\frametitle{CMU Mach}
-\begin{itemize}
-\item Tasks / Threads
-\item Interprocess Communication
-\item Memory Management
-\end{itemize}
+\frametitle{Processor families in TOP500}
+\includegraphics[width=\textwidth]{Processor_families_in_TOP500_supercomputers.png}
 \end{frame}
 
 \begin{frame}
@@ -252,10 +157,18 @@ OpenSSI - last development release 2010; last stable release 2007
 \begin{itemize}
 \item Superscalar vector operations
 \item Speculative execution
+\item Co-processors
 \end{itemize}
 \item Thread level parallelism
+\begin{itemize}
+\item Shared memory
+\item Caching
+\item Synchronization
+\end{itemize}
 \item Node level parallelism
 \begin{itemize}
+\item No shared memory
+\item High speed LAN
 \item Clusters
 \end{itemize}
 \end{itemize}
@@ -271,23 +184,24 @@ int c[512];
 
 int main () \{
   for (int i=0; i<512; i++) \{
-    a[i] = b[i] + c[i];
+    c[i] = a[i] + b[i];
   \}
 \}
 
-gcc -O2 -o ex2 ex2.c
+
+baccala@ideapad-S510p:~\$ gcc -O2 -fno-align-loops -o ex1 ex1.c
+
 
 00000000004003e0 <main>:
 4003e0:31 c0                xor    %eax,%eax
-4003e2:66 0f 1f 44 00 00    nopw   0x0(%rax,%rax,1)
-4003e8:8b 90 60 18 60 00    mov    0x601860(%rax),%edx
-4003ee:03 90 60 10 60 00    add    0x601060(%rax),%edx
-4003f4:48 83 c0 04          add    $0x4,%rax
-4003f8:89 90 5c 20 60 00    mov    %edx,0x60205c(%rax)
-4003fe:48 3d 00 08 00 00    cmp    $0x800,%rax
-400404:75 e2                jne    4003e8 <main+0x8>
-400406:31 c0                xor    %eax,%eax
-400408:c3                   retq   
+4003e2:8b 90 60 18 60 00    mov    0x601860(%rax),%edx
+4003e8:03 90 60 10 60 00    add    0x601060(%rax),%edx
+4003ee:48 83 c0 04          add    $0x4,%rax
+4003f2:89 90 5c 20 60 00    mov    %edx,0x60205c(%rax)
+4003f8:48 3d 00 08 00 00    cmp    $0x800,%rax
+4003fe:75 e2                jne    4003e2 <main+0x2>
+400400:31 c0                xor    %eax,%eax
+400402:c3                   retq   
 
 \end{semiverbatim}
 \vskip 0pt plus 100fill
@@ -297,31 +211,30 @@ gcc -O2 -o ex2 ex2.c
 \frametitle{Adding 512 64-bit integers - SSE superscalar instructions}
 \begin{semiverbatim}
 \tiny
-int a[512] __attribute__((aligned(0x10)));
-int b[512] __attribute__((aligned(0x10)));
-int c[512] __attribute__((aligned(0x10)));
+int a[512];
+int b[512];
+int c[512];
 
 int main () \{
   for (int i=0; i<512; i++) \{
-    a[i] = b[i] + c[i];
+    c[i] = a[i] + b[i];
   \}
 \}
 
-gcc -O3 -o ex2 ex2.c
+
+baccala@ideapad-S510p:~$ gcc -O3 -fno-align-loops -o ex1 ex1.c
+
 
 00000000004003e0 <main>:
-4003e0:31 c0                xor    %eax,%eax
-4003e2:66 0f 1f 44 00 00    nopw   0x0(%rax,%rax,1)
-4003e8:66 0f 6f 80 40 10 60 movdqa 0x601040(%rax),%xmm0
-4003ef:00 
-4003f0:48 83 c0 10          add    $0x10,%rax
-4003f4:66 0f fe 80 30 18 60 paddd  0x601830(%rax),%xmm0
-4003fb:00 
-4003fc:0f 29 80 30 20 60 00 movaps %xmm0,0x602030(%rax)
-400403:48 3d 00 08 00 00    cmp    $0x800,%rax
-400409:75 dd                jne    4003e8 <main+0x8>
-40040b:31 c0                xor    %eax,%eax
-40040d:c3                   retq   
+4003e0:31 c0                         xor    %eax,%eax
+4003e2:66 0f 6f 80 60 10 60 00       movdqa 0x601060(%rax),%xmm0
+4003ea:48 83 c0 10                   add    $0x10,%rax
+4003ee:66 0f fe 80 50 18 60 00       paddd  0x601850(%rax),%xmm0
+4003f6:0f 29 80 50 20 60 00          movaps %xmm0,0x602050(%rax)
+4003fd:48 3d 00 08 00 00             cmp    $0x800,%rax
+400403:75 dd                         jne    4003e2 <main+0x2>
+400405:31 c0                         xor    %eax,%eax
+400407:c3                            retq   
 
 \end{semiverbatim}
 \vskip 0pt plus 100fill
@@ -331,33 +244,31 @@ gcc -O3 -o ex2 ex2.c
 \frametitle{Adding 512 64-bit integers - AVX2 superscalar instructions}
 \begin{semiverbatim}
 \tiny
-int a[512] __attribute__((aligned(0x20)));
-int b[512] __attribute__((aligned(0x20)));
-int c[512] __attribute__((aligned(0x20)));
+int a[512] __attribute__((aligned(32)));
+int b[512] __attribute__((aligned(32)));
+int c[512] __attribute__((aligned(32)));
 
 int main () \{
   for (int i=0; i<512; i++) \{
-    a[i] = b[i] + c[i];
+    c[i] = a[i] + b[i];
   \}
 \}
 
-gcc -march=native -O3 -o ex2 ex2.c
+
+baccala@ideapad-S510p:~$ gcc -march=native -O3 -o ex2 ex2.c
+
 
 00000000004003e0 <main>:
-4003e0:31 c0                xor    %eax,%eax
-4003e2:66 0f 1f 44 00 00    nopw   0x0(%rax,%rax,1)
-4003e8:c5 fd 6f 80 60 10 60 vmovdqa 0x601060(%rax),%ymm0
-4003ef:00 
-4003f0:c5 fd fe 80 60 18 60 vpaddd 0x601860(%rax),%ymm0,%ymm0
-4003f7:00 
-4003f8:48 83 c0 20          add    $0x20,%rax
-4003fc:c5 fd 7f 80 40 20 60 vmovdqa %ymm0,0x602040(%rax)
-400403:00 
-400404:48 3d 00 08 00 00    cmp    $0x800,%rax
-40040a:75 dc                jne    4003e8 <main+0x8>
-40040c:c5 f8 77             vzeroupper 
-40040f:31 c0                xor    %eax,%eax
-400411:c3                   retq   
+4003e0:31 c0                         xor    %eax,%eax
+4003e2:c5 fd 6f 80 60 10 60 00       vmovdqa 0x601060(%rax),%ymm0
+4003ea:c5 fd fe 80 60 18 60 00       vpaddd 0x601860(%rax),%ymm0,%ymm0
+4003f2:48 83 c0 20                   add    $0x20,%rax
+4003f6:c5 fd 7f 80 40 20 60 00       vmovdqa %ymm0,0x602040(%rax)
+4003fe:48 3d 00 08 00 00             cmp    $0x800,%rax
+400404:75 dc                         jne    4003e2 <main+0x2>
+400406:c5 f8 77                      vzeroupper 
+400409:31 c0                         xor    %eax,%eax
+40040b:c3                            retq   
 
 \end{semiverbatim}
 \vskip 0pt plus 100fill
@@ -367,36 +278,34 @@ gcc -march=native -O3 -o ex2 ex2.c
 \frametitle{Adding 512 64-bit integers - AVX512 superscalar instrs}
 \begin{semiverbatim}
 \tiny
-int a[512] __attribute__((aligned(0x40)));
-int b[512] __attribute__((aligned(0x40)));
-int c[512] __attribute__((aligned(0x40)));
+int a[512] __attribute__((aligned(64)));
+int b[512] __attribute__((aligned(64)));
+int c[512] __attribute__((aligned(64)));
 
 int main () \{
   for (int i=0; i<512; i++) \{
-    a[i] = b[i] + c[i];
+    c[i] = a[i] + b[i];
   \}
 \}
 
-gcc -mavx512vl -O3 -o ex2 ex2.c
+
+baccala@ideapad-S510p:~$ gcc -mavx512vl -O3 -o ex3 ex3.c
+
 
 00000000004003e0 <main>:
-4003e0:31 c0                xor    %eax,%eax
-4003e2:66 0f 1f 44 00 00    nopw   0x0(%rax,%rax,1)
-4003e8:62 f1 fd 48 6f 80 80 vmovdqa64 0x601080(%rax),%zmm0
-4003ef:10 60 00 
-4003f2:48 83 c0 40          add    $0x40,%rax
-4003f6:62 f1 7d 48 fe 80 40 vpaddd 0x601440(%rax),%zmm0,%zmm0
-4003fd:14 60 00 
-400400:62 f1 fd 48 7f 80 40 vmovdqa64 %zmm0,0x601840(%rax)
-400407:18 60 00 
-40040a:48 3d 00 08 00 00    cmp    $0x800,%rax
-400410:75 d6                jne    4003e8 <main+0x8>
-400412:31 c0                xor    %eax,%eax
-400414:c3                   retq   
+4003e0:31 c0                         xor    %eax,%eax
+4003e2:62 f1 fd 48 6f 80 80 10 60 00 vmovdqa64 0x601080(%rax),%zmm0
+4003ec:48 83 c0 40                   add    $0x40,%rax
+4003f0:62 f1 7d 48 fe 80 40 18 60 00 vpaddd 0x601840(%rax),%zmm0,%zmm0
+4003fa:62 f1 fd 48 7f 80 40 20 60 00 vmovdqa64 %zmm0,0x602040(%rax)
+400404:48 3d 00 08 00 00             cmp    $0x800,%rax
+40040a:75 d6                         jne    4003e2 <main+0x2>
+40040c:31 c0                         xor    %eax,%eax
+40040e:c3                            retq   
 
-baccala@ideapad-S510p:~$ ./ex2
+baccala@ideapad-S510p:~$ ./ex3
 Illegal instruction (core dumped)
-baccala@ideapad-S510p:~$ ./ex2
+baccala@ideapad-S510p:~$ ./ex3
 
 \end{semiverbatim}
 \vskip 0pt plus 100fill
@@ -406,10 +315,10 @@ baccala@ideapad-S510p:~$ ./ex2
 \frametitle{Pointer Aliasing}
 \begin{semiverbatim}
 \tiny
-void operation (int * a, int * b, int * c)
+void operation (int * ap, int * bp, int * cp)
 \{
   for (int i=0; i<16; i++) \{
-    c[i] = a[i] + b[i];
+    cp[i] = ap[i] + bp[i];
   \}
 \}
 \end{semiverbatim}
@@ -468,6 +377,54 @@ gcc -mavx512vl -O3 -c ex3.c
 \huge
 Notice the size of the graphics co-processor!
 \end{center}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{{\tt clDeviceQuery} on an Intel\textsuperscript{\textregistered} Core\texttrademark\ i5-4200U CPU}
+\begin{semiverbatim}
+\tiny
+  CL_DEVICE_NAME:                       Intel(R) HD Graphics Haswell Ultrabook GT2 Mobile
+  CL_DEVICE_VENDOR:                     Intel
+  CL_DRIVER_VERSION:                    1.1.1
+  CL_DEVICE_TYPE:                       CL_DEVICE_TYPE_GPU
+  CL_DEVICE_MAX_COMPUTE_UNITS:          20
+  CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS:   3
+  CL_DEVICE_MAX_WORK_ITEM_SIZES:        512 / 512 / 512 
+  CL_DEVICE_MAX_WORK_GROUP_SIZE:        512
+  CL_DEVICE_MAX_CLOCK_FREQUENCY:        1000 MHz
+  CL_DEVICE_ADDRESS_BITS:               32
+  CL_DEVICE_MAX_MEM_ALLOC_SIZE:         1024 MByte
+  CL_DEVICE_GLOBAL_MEM_SIZE:            2048 MByte
+  CL_DEVICE_ERROR_CORRECTION_SUPPORT:   no
+  CL_DEVICE_LOCAL_MEM_TYPE:             global
+  CL_DEVICE_LOCAL_MEM_SIZE:             64 KByte
+  CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE:   131072 KByte
+  CL_DEVICE_QUEUE_PROPERTIES:           CL_QUEUE_PROFILING_ENABLE
+  CL_DEVICE_IMAGE_SUPPORT:              1
+  CL_DEVICE_MAX_READ_IMAGE_ARGS:        128
+  CL_DEVICE_MAX_WRITE_IMAGE_ARGS:       8
+
+  CL_DEVICE_IMAGE <dim>                 2D_MAX_WIDTH     8192
+                                        2D_MAX_HEIGHT    8192
+                                        3D_MAX_WIDTH     8192
+                                        3D_MAX_HEIGHT    8192
+                                        3D_MAX_DEPTH     2048
+
+  CL_DEVICE_PREFERRED_VECTOR_WIDTH_<t>  CHAR 16, SHORT 8, INT 4, LONG 2, FLOAT 4, DOUBLE 0
+\end{semiverbatim}
+\end{frame}
+
+\begin{frame}
+\frametitle{Cluster Computing - History}
+\begin{itemize}
+\item Beowulf
+\item Hadoop
+\item Cluster Linux
+\begin{itemize}
+\item Kerrighed - Latest version is 3.0.0 which was released on 14 June 2010 and based on Linux kernel 2.6.30.
+\item OpenSSI - last development release 2010; last stable release 2007
+\end{itemize}
+\end{itemize}
 \end{frame}
 
 \begin{comment}
@@ -578,25 +535,112 @@ public class WordCount \{
 \end{semiverbatim}
 \end{frame}
 
+\begin{frame}[fragile]
+\frametitle{Single System Image}
+\begin{definition}
+A single system image (SSI) cluster is a cluster of machines that appears to be one single system.
+
+\hfill Wikipedia
+\end{definition}
+\begin{center}
+\begin{tikzpicture}
+\node (a) [draw] at (0:1) {};
+\node (b) [draw] at (60:1) {} edge (a);
+\node (c) [draw] at (120:1) {} edge (b);
+\node (d) [draw] at (180:1) {} edge (c);
+\node (e) [draw] at (240:1) {} edge (d);
+\node (f) [draw] at (300:1) {} edge (e) edge (a);
+\end{tikzpicture}
+\end{center}
+\begin{semiverbatim}
+\$ nproc
+96
+\$ free -h
+              total        used        free
+Mem:           768G         45G        723G
+Swap:            0B          0B          0B
+
+\end{semiverbatim}
+\end{frame}
+
+\begin{frame}
+\frametitle{Single System Image}
+
+\begin{itemize}
+\item Key Features
+\begin{itemize}
+\item Cluster-wide login
+\item Single Process Space
+\item Process Migration
+\item Single Root Filesystem
+\item Redundant Filesystem
+\item Single I/O Space - block devices
+\item Single IPC Space
+standard Linux inter-process communication mechanisms, shared memory, semaphores, SYSV message queues, pipes and Unix domain sockets.
+\item Cluster-wide IP Addresses
+\end{itemize}
+\item Advantages
+\begin{itemize}
+\item familiar programming and management tools
+\item ease of leveraging additional computing power
+\end{itemize}
+\item Disadvantages
+\begin{itemize}
+\item less fault isolation
+\item node failure more difficult
+\end{itemize}
+\end{itemize}
+\end{frame}
+
+\begin{frame}
+\frametitle{Single System Image - History}
+\begin{itemize}
+\item VMS
+\item SCALEMP
+\item Cluster Linux
+\end{itemize}
+\end{frame}
+
+\begin{frame}
+\frametitle{GNU Hurd}
+\begin{itemize}
+\item History
+\item Microkernels in general
+\item CMU Mach
+\end{itemize}
+\end{frame}
+
+\begin{frame}
+\frametitle{CMU Mach}
+\begin{itemize}
+\item Tasks / Threads
+\item Interprocess Communication
+\item Memory Management
+\end{itemize}
+\end{frame}
+
 % tikz commands to draw task boxes to illustrate Mach IPC concepts
 
 \tikzstyle{task} = [draw, fill=blue!20, rounded corners]
+
+\tikzstyle{kernel} = [draw, fill=blue!20, rounded corners, minimum width=30em, minimum height=8em]
 
 \tikzstyle{message} = [draw, fill=red!20, text width=5em, text depth=3em, text centered,
   minimum width=5em, minimum height=2em, rounded corners]
 
 % \task - takes four arguments
-% 1. name of task
+% 1. name of task (used to refer to it from tikz; maybe printed as a label as well)
 % 2. location of task box's center point
 % 3. "r" or "l", indicating if a set of tick marks representing
 %    ports should drawn on the left or right side of the task box
-%    "u" to make the task unlabled
+%    "u" to label the task "Task" instead of labeling it with its name
+%    "b" to make a "big" node (I wish I knew how to size the tick marks automatically)
 % 4. contents of the task box - other nodes
 %
 % The tick marks will be named "#1 Port #" for future reference
 
 \newcommand\task[4]{
-\matrix (#1) [task, inner xsep=0] at (#2) { \node {\IfSubStr{#3}{u}{}{#1}}; \\ #4
+\matrix (#1) [task, inner xsep=0] at (#2) { \node {\IfSubStr{#3}{u}{Task}{#1}}; \\ #4
 
 % print port tick marks in fill color if they are disabled, in order to make
 % them expand out the dimensions of the task box yet remain invisible
@@ -618,12 +662,43 @@ public class WordCount \{
 \\};
 }
 
+\newcommand\bigtask[4]{
+\matrix (#1) [task, inner xsep=0] at (#2) { \node {\IfSubStr{#3}{u}{Task}{#1}}; \\ #4
+
+% print port tick marks in fill color if they are disabled, in order to make
+% them expand out the dimensions of the task box yet remain invisible
+
+\foreach \i in {-20,...,7}
+{
+\IfSubStr{#3}{l}{
+  \draw[xshift=-5em, ultra thick] (0,0.2 * \i)  coordinate (#1 Port \i) -- (0.2,0.2 * \i);
+}{
+  \draw[xshift=-5em, ultra thick, color=blue!20] (0,0.2 * \i) -- (0.2,0.2 * \i);
+}
+\IfSubStr{#3}{r}{
+  \draw[xshift=5em, ultra thick] (-0.2,0.2 * \i) -- (0,0.2 * \i) coordinate (#1 Port \i);
+}{
+  \draw[xshift=5em, ultra thick, color=blue!20] (-0.2,0.2 * \i) -- (0,0.2 * \i);
+}
+}
+
+\\};
+}
+
+% draw a box with vertical lines to represent a message queue
+% arg 1 is the name of a port to position it to the left of
+% arg 2 is name to be given the box
+
+\newcommand\queue[2]{
+\filldraw (#1) +(-3.1,0) node[rectangle, name=#2, minimum width=1.8cm, minimum height=1cm, draw, pattern=vertical lines] {};
+}
+
 \begin{frame}
 \frametitle{Ports - Mach's Interprocess Communication (IPC)}
 
 \begin{center}
 
-\begin{tikzpicture}[transform canvas={scale=0.4, yshift=10em, xshift=-15em}]
+\begin{tikzpicture}[transform canvas={scale=0.4, yshift=12em, xshift=-15em}]
 
 \task{Task 1 left}{0,0}{ru}{}
 \task{Task 2 left}{0,-11 em}{ru}{}
@@ -634,19 +709,31 @@ public class WordCount \{
 \task{Task 3 right}{30 em,-22 em}{lu}{}
 \task{Task 4 right}{30 em,-33 em}{lu}{}
 
-\draw [color=violet, thick, -triangle 90] (Task 1 left Port 5) -- (Task 1 right Port 5);
-\draw [color=violet, thick] (Task 2 left Port 0) -- +(1,0) |- (Task 1 right Port 5);
-\draw [color=violet, thick, -triangle 90] (Task 2 left Port 5) -- (Task 2 right Port 5);
-\draw [color=violet, thick, triangle 90-] (Task 2 left Port -5) -- (Task 2 right Port -5);
+\queue{Task 1 right Port 5}{queue 1}
+\queue{Task 2 right Port -5}{queue 2a}
+\queue{Task 2 right Port 5}{queue 2b}
+\queue{Task 3 right Port 0}{queue 3}
+\queue{Task 4 right Port 0}{queue 4}
 
-\filldraw[fill=white] (Task 1 right Port 5) ++(-4,-0.5) rectangle +(1.8,1);
-\filldraw[fill=white, pattern=vertical lines] (Task 1 right Port 5) ++(-4,-0.5) rectangle +(1.8,1);
+\draw [color=violet, thick, -triangle 90] (Task 1 left Port 5) -- (queue 1.west);
+\draw [color=violet, thick, -triangle 90] (queue 1.east) -- (Task 1 right Port 5);
+\draw [color=violet, thick] (Task 2 left Port 0) -- +(1,0) |- (queue 1.west);
+\draw [color=violet, thick, -triangle 90] (Task 2 left Port -3) -- +(1,0) |- (queue 4.west);
 
-\filldraw[fill=white] (Task 2 right Port 5) ++(-4,-0.5) rectangle +(1.8,1);
-\filldraw[fill=white, pattern=vertical lines] (Task 2 right Port 5) ++(-4,-0.5) rectangle +(1.8,1);
+\draw [color=violet, thick, -triangle 90] (Task 2 left Port 5) -- (queue 2b.west);
+\draw [color=violet, thick, triangle 90-] (Task 2 left Port -5) -- (queue 2a.west);
+\draw [color=violet, thick, -triangle 90] (queue 2b.east) -- (Task 2 right Port 5);
+\draw [color=violet, thick, triangle 90-] (queue 2a.east) -- (Task 2 right Port -5);
 
-\filldraw[fill=white] (Task 2 right Port -5) ++(-4,-0.5) rectangle +(1.8,1);
-\filldraw[fill=white, pattern=vertical lines] (Task 2 right Port -5) ++(-4,-0.5) rectangle +(1.8,1);
+\draw [color=violet, thick, -triangle 90] (Task 3 left Port 0) -- (queue 3.west);
+\draw [color=violet, thick, -triangle 90] (queue 3.east) -- (Task 3 right Port 0);
+
+\draw [color=violet, thick, -triangle 90] (Task 3 right Port 0) ++(-1,0) |- ++(-4,1) -- ++(0,-1);
+
+\draw [color=violet, thick, -triangle 90] (queue 4.east) -- (Task 4 right Port 0);
+
+\draw [color=violet, thick, -triangle 90] (Task 4 left Port 3) -- +(2,0) |- +(6,5.5) |- (queue 2a.east);
+
 
 \end{tikzpicture}
 \end{center}
@@ -684,99 +771,193 @@ public class WordCount \{
 \end{frame}
 
 \begin{frame}
-
-\frametitle{Send Rights}
-
+\frametitle{Transfering a Send Right}
 \begin{center}
+\begin{tikzpicture}[node distance = .5cm]
 
-\begin{tikzpicture}
-
-\task{Task 1}{0,0}{r}{
+\bigtask{Task 1}{0,0}{r}{
 % print two sendright nodes, one to fill the message1 box to the correct size,
 % and another one to actually draw it, since message1 will overwrite the
 % first sendright
-\node (sendright) [draw, fill=orange] {Send 41};
-\node (message1) [fit=(sendright), message] {Message 1};
-\node (sendright) [draw, fill=orange] {Send 41};
-
-\node (message3) at (0, -7em) [message] {Message 2};
-}
-
-\task{Task 2}{15 em,0}{l}{
-\node (sendright2) [draw, fill=orange] {Send 9};
-\node (message2) [fit=(sendright2), message] {Message 1};
-\node (sendright2) [draw, fill=orange] {Send 9};
-
-\node (message4) at (0, -7em) [message] {Message 2};
-}
-
-
-\draw [color=violet, thick, ->] (node cs:name=message1,angle=20) -- +(.3,0) |- (Task 1 Port 5) node [midway, anchor=south, color=black] {27} -- (Task 2 Port 5)
-    -- +(.5,0) node [at end, anchor=south, color=black] {52} |- (node cs:name=message2, angle=160);
-
-\draw [color=violet, thick, <-] (node cs:name=message3,angle=20) -- +(.3,0) |- (Task 1 Port -5) node [midway, anchor=south, color=black] {41} -- (Task 2 Port -5)
-    -- +(.5,0) node [near end, anchor=south, color=black] {9} |- (node cs:name=message4, angle=160);
-
-\end{tikzpicture}
-\end{center}
-
-\end{frame}
-
-
-
-
-\begin{frame}
-
-\frametitle{Send Rights}
-
-\begin{center}
-
-\begin{tikzpicture}
-
-\task{Task 1}{0,0}{r}{
-% print two sendright nodes, one to fill the message1 box to the correct size,
-% and another one to actually draw it, since message1 will overwrite the
-% first sendright
+\only<2->{
 \node (sendright) [draw, fill=orange] {Send 41};
 \node (message1) [fit=(sendright), message] {Message 1};
 \node (sendright) [draw, fill=orange] {Send 41};
 }
-\task{Task 2}{15 em,0}{l}{
+
+\only<4->{\node (message3) at (0, -7em) [message] {Message 2};}
+}
+
+\bigtask{Task 2}{15 em,0}{l}{
+\only<3->{
 \node (sendright2) [draw, fill=orange] {Send 9};
 \node (message2) [fit=(sendright2), message] {Message 1};
 \node (sendright2) [draw, fill=orange] {Send 9};
-%\node (message2) [message] {Message 1};
-% \node (message2a) [message] at (1 em, -2 em) {Message 2};
-}
-\task{Task 1 }{0,-11 em}{r}{
-\node (message3) [message] {Message 2};
-}
-\task{Task 2 }{15 em,-11 em}{l}{
-\node (message4) [message] {Message 2};
 }
 
+\only<4->{\node (message4) at (0, -7em) [message] {Message 2};}
+}
 
-\draw [color=violet, thick, ->] (node cs:name=message1,angle=20) -- +(.3,0) |- (Task 1 Port 5) node [midway, anchor=south, color=black] {27} -- (Task 2 Port 5)
-    -- +(.5,0) node [at end, anchor=south, color=black] {52} |- (node cs:name=message2, angle=160);
+\only<2->{\node (port 41) [left of=Task 1 Port -10, anchor=south] {41};}
 
-%\draw [color=violet, thick, ->] (node cs:name=message3,angle=0) -- +(.3,0) |- (Task 3 Port 0) node [midway, anchor=south, color=black] {18} -- +(1,0) |- (Task 2 Port 3)
-%    -- +(.3,0) |- (node cs:name=message2a, angle=160);
+\only<2->{\draw [thick, color=red, dotted, ->] (node cs:name=sendright, angle=-20) -- (port 41);}
+
+\node [left of=Task 1 Port 5, anchor=south] {27};
+\node [right of=Task 2 Port 5, anchor=south] {52};
+\only<1,2>{\draw [thick, -triangle 90] (Task 1 Port 5) -- (Task 2 Port 5);}
+
+\only<3->{
+\draw [color=violet, thick, -triangle 90] (node cs:name=message1,angle=20) -- +(.3,0) |- (Task 1 Port 5) -- (Task 2 Port 5)
+    -- +(.5,0) |- (node cs:name=message2, angle=160);
+}
+
+\only<3->{\node [right of=Task 2 Port -10, anchor=south] {9};}
+
+\only<3>{\draw [thick, triangle 90-] (Task 1 Port -10) -- (Task 2 Port -10);}
+
+\only<4->{
+\draw [color=violet, thick, triangle 90-] (node cs:name=message3,angle=20) -- +(.3,0) |- (Task 1 Port -10) -- (Task 2 Port -10)
+    -- +(.5,0) |- (node cs:name=message4, angle=160);
+}
 
 \end{tikzpicture}
 \end{center}
-
 \end{frame}
 
 \begin{frame}
-\frametitle{Right Transfers}
+\frametitle{Transfering a Receive Right}
+\begin{center}
+\begin{tikzpicture}[node distance = .5cm]
+
+\bigtask{Task 1}{0,0}{r}{
+% print two sendright nodes, one to fill the message1 box to the correct size,
+% and another one to actually draw it, since message1 will overwrite the
+% first sendright
+\only<2->{
+\node (sendright) [draw, fill=green] {Recv 41};
+\node (message1) [fit=(sendright), message] {Message 1};
+\node (sendright) [draw, fill=green] {Recv 41};
+}
+
+\only<4->{\node (message3) at (0, -7em) [message] {Message 2};}
+}
+
+\bigtask{Task 2}{15 em,0}{l}{
+\only<3->{
+\node (sendright2) [draw, fill=green] {Recv 9};
+\node (message2) [fit=(sendright2), message] {Message 1};
+\node (sendright2) [draw, fill=green] {Recv 9};
+}
+
+\only<4->{\node (message4) at (0, -7em) [message] {Message 2};}
+}
+
+\only<2->{\node (port 41) [left of=Task 1 Port -10, anchor=south] {41};}
+
+\only<2->{\draw [thick, color=red, dotted, ->] (node cs:name=sendright, angle=-20) -- (port 41);}
+
+\node [left of=Task 1 Port 5, anchor=south] {27};
+\node [right of=Task 2 Port 5, anchor=south] {52};
+\only<1,2>{\draw [thick, -triangle 90] (Task 1 Port 5) -- (Task 2 Port 5);}
+
+\only<3->{
+\draw [color=violet, thick, -triangle 90] (node cs:name=message1,angle=20) -- +(.3,0) |- (Task 1 Port 5) -- (Task 2 Port 5)
+    -- +(.5,0) |- (node cs:name=message2, angle=160);
+}
+
+\only<3->{\node [right of=Task 2 Port -10, anchor=south] {9};}
+
+\only<3>{\draw [thick, -triangle 90] (Task 1 Port -10) -- (Task 2 Port -10);}
+
+\only<4->{
+\draw [color=violet, thick, -triangle 90] (node cs:name=message3,angle=20) -- +(.3,0) |- (Task 1 Port -10) -- (Task 2 Port -10)
+    -- +(.5,0) |- (node cs:name=message4, angle=160);
+}
+
+\end{tikzpicture}
+\end{center}
 \end{frame}
+
 
 \begin{frame}
 \frametitle{Memory Transfers}
+\begin{center}
+
+\begin{tikzpicture}[node distance = .5cm]
+
+\bigtask{Task 1}{0,0}{r}{
+% print two sendright nodes, one to fill the message1 box to the correct size,
+% and another one to actually draw it, since message1 will overwrite the
+% first sendright
+\node (message1) [message] {Message};
+\only<1>{
+\node (memory1) [below=1em, fill=orange!40, minimum size=2cm, dashed, thick, draw] at (message1.south) {Memory};
+\draw [thick, color=red, dotted, -] (message1) -- (memory1);
+}
+}
+
+\bigtask{Task 2}{15 em,0}{l}{
+\only<2->{
+\node (message2) [message] {Message};
+\node (memory2) [below=1em, fill=orange!40, minimum size=2cm, dashed, thick, draw] at (message2.south) {Memory};
+\draw [thick, color=red, dotted, -] (message2) -- (memory2);
+}
+}
+
+%\node [left of=Task 1 Port 5, anchor=south] {27};
+%\node [right of=Task 2 Port 5, anchor=south] {52};
+
+%\only<1>{\draw [thick, -triangle 90] (Task 1 Port 5) -- (Task 2 Port 5);}
+
+\only<2>{
+\draw [color=violet, thick, -triangle 90] (node cs:name=message1,angle=20) -- +(.3,0) |- (Task 1 Port 5) -- (Task 2 Port 5)
+    -- +(.5,0) |- (node cs:name=message2, angle=160);
+}
+\end{tikzpicture}
+\end{center}
 \end{frame}
 
 \begin{frame}
 \frametitle{Hurd Filesystem}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{{\tt rpctrace} of {\tt ls} (9 of 144 RPCs)}
+\begin{semiverbatim}
+\tiny
+task135(pid9403)->task_get_special_port (4) = 0    143(pid9403)
+
+  143(pid9403)->exec_startup_get_info () = 0 134526367 134512692 288 188416 16777216 0 "ls\\0"
+        "LS_COLORS=rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd"
+        \{  140(pid9403)   145(pid9403)   146(pid9403)   147(pid9403)\}
+        \{  148(pid9403)   149(pid9403)   150(pid9403)   151(pid9403)   152(pid9403) (null)\}
+        \{18 0 0 0 0\}
+
+/* Standard port assignments for file_exec_file_name and exec_* */
+enum
+  \{
+    INIT_PORT_CWDIR,
+    INIT_PORT_CRDIR,
+    INIT_PORT_AUTH,
+    INIT_PORT_PROC,
+    INIT_PORT_CTTYID,
+    INIT_PORT_BOOTSTRAP,
+  \};
+
+  145(pid9403)->term_open_ctty (9403 9402) = 0    138(pid9403)
+
+  148(pid9403)->dir_lookup ("./" 2097161 0) = 0 1 "    166(pid9403)
+
+  166(pid9403)->dir_readdir (0 -1 0) = 0 "\\x01\\x9c\\x01\\0\\0\\0\\0\\0\\x10\\0\\0\\x01.\\0\\0\\0P\\xd7\\0\\0\\0\\0\\0\\0\\x10\\0\\0\\x02..\\0\\0\\x03\\x9c\\x01\\0\\0\\0\\0\\0\\x14\\0\\0\\x04.git\\0\\0\\0\\0\\x90_\\a\\0\\0\\0\\0\\0\\x18\\0\\0\\blibpager\\0\\0\\0\\0c\\x9a\\x01\\0" 10
+
+  166(pid9403)->dir_readdir (10 -1 0) = 0 " 0
+
+  145(pid9403)->io_stat () = 0 {14 969 0 0 0 1458877724 0 8397184 1 0 5 0 0 1515530623 0 1515530623 0 1515530623 0 512 8 0 0 0 0 0 1103856 1038 1163584 1039 0 0}
+
+  138(pid9403)->io_write ("junk  libpager machMessage.h  netmsg  papers  patches README.md\\n" -1) = 0 64
+
+task135(pid9403)->task_terminate () = 0 
+\end{semiverbatim}
 \end{frame}
 
 \begin{frame}
@@ -785,10 +966,59 @@ public class WordCount \{
 
 \begin{frame}
 \frametitle{Mach Memory Management}
+\begin{center}
+\begin{tikzpicture}
+
+\task{Filesystem Server}{0,0}{}{
+\node (memory1) [above left=-0.5, fill=white, minimum size=1.5cm, dashed, thick, draw] {};
+}
+\task{ls}{15 em,0}{}{
+%\node (memory1) [above right=-0.5, fill=orange!40, minimum size=1.5cm, dashed, thick, draw] {};
+\node (memory2) [above right=-0.5, fill=white, minimum size=1.5cm, dashed, thick, draw] {};
+\node [below] at (memory2.north) {\tiny addr};
+}
+
+\node (kernel) [kernel] at (7.5 em, -10 em) {};
+\node (kmemory) [fill=white, minimum size=1.5cm, dashed, thick, draw] at (7.5 em, -10 em) {};
+\node [below] at (kernel.north) {Kernel};
+
+\draw [color=red, <-, thick] (2 em,1) -- node [midway, above] {io\_map} (13 em,1);
+\draw [color=red, ->, thick, dotted] (2 em,.9) -- node [midway, below] {\tiny port 153} (13 em,.9);
+
+\draw [color=red, ->, thick] (15 em,-3 em) -- node [midway, left] {vm\_map} (15 em,- 8 em);
+\draw [color=red, <-, thick, dotted] (15.2 em,-3 em) -- node [midway, right] {\tiny addr} (15.2 em,- 8 em);
+
+\draw [color=red, ->, thick] (-1.5 em,-3 em) -- node [midway, right] {m\_o\_ready} (-1.5 em,- 8 em);
+\draw [color=red, <-, thick] (-2 em,-3 em) -- node [midway, left] {m\_o\_init} (-2 em,- 8 em);
+
+\end{tikzpicture}
+\end{center}
 \end{frame}
 
 \begin{frame}
 \frametitle{Example: Shared Libraries}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{{\tt rpctrace} of {\tt ls} (mapping the C library)}
+\begin{semiverbatim}
+\tiny
+  149(pid9403)->dir_lookup ("lib/i386-gnu/libc.so.0.3" 1 0) = 0 1 ""    155(pid9403)
+
+  155(pid9403)->io_read (-1 512) = 0 "\\x7fELF\\x01\\x01\\x01\\0\\0\\0\\0\\0\\0\\0\\0\\0\\x03\\0\\x03\\0\\x01\\0\\0\\0pE\\x05\\04\\0\\0\\0\\xfc\\x19''\\0\\0\\0\\0\\04\\0 \\0\\n\\0(\\0x\\0w\\0\\x06\\0\\0\\04\\0\\0\\04\\0\\0\\04\\0\\0\\0@\\x01\\0\\0@\\x01\\0\\0\\x05\\0\\0\\0"
+
+  155(pid9403)->io_stat () = 0 {23 5 0 158020 0 1513754748 0 33261 1 0 0 2239676 0 1515530623 0 1513435063 0 1513747658 0 8192 4384 0 0 0 0 0 0 0 0 0 0 0}
+
+  155(pid9403)->io_map () = 0    153(pid9403)  (null)
+
+task135(pid9403)->vm_map (0 2245448 0 1    153(pid9403) 0 32 5 7 1) = 0 17039360
+
+
+\end{semiverbatim}
+\end{frame}
+
+\begin{frame}
+\frametitle{The {\tt netmsg} Server}
 \end{frame}
 
 \begin{frame}[fragile]
@@ -826,6 +1056,26 @@ memory_object_data_request: (kernel requesting a single page)
      if pager_read_page() returned an error, mark page with ERROR and call send_error_to_WAITLIST
      if no error, service_waitlist(deallocate=true) (read/write status supplied by filesystem), clear ERROR
 \end{semiverbatim}
+\end{frame}
+
+\begin{frame}
+\frametitle{What kind of bugs have I found?}
+\begin{itemize}
+\item failure to update pagemap entry
+\item FLUSHING flag
+\item DEAD NAME notifications
+\item condition variable
+\item weak refs
+\end{itemize}
+\end{frame}
+
+\begin{frame}
+\frametitle{Work Needed / Help Wanted}
+\begin{itemize}
+\item 64-bit user space
+\item Multiprocessor support
+\item Rewrite of {\tt netmsg}
+\end{itemize}
 \end{frame}
 
 % https://events.ccc.de/congress/2007/Fahrplan/attachments/986_inside_the_mac_osx_kernel.pdf
