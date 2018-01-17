@@ -19,7 +19,7 @@
 \usepackage{xstring}
 
 \usepackage{tikz}
-\usetikzlibrary{positioning, fit, backgrounds, arrows, patterns}
+\usetikzlibrary{positioning, fit, backgrounds, arrows, patterns, trees, shapes}
 
 \begin{document}
 
@@ -141,33 +141,28 @@ Source: {\tt https://www.top500.org/}
 \end{frame}
 
 \begin{frame}
-\frametitle{Cisco 5108 Blade Server Chassis with eight B200 M2s}
-\includegraphics[width=\textwidth]{ourcisco.jpg}
-\end{frame}
-
-\begin{frame}
 \frametitle{Processor families in TOP500}
 \includegraphics[width=\textwidth]{Processor_families_in_TOP500_supercomputers.png}
 \end{frame}
 
 \begin{frame}
-\frametitle{Techniques to exploit parallelism}
+\frametitle{Techniques to exploit parallelism (partial list)}
 \begin{itemize}
 \item Instruction level parallelism
 \begin{itemize}
 \item Superscalar vector operations
-\item Speculative execution
-\item Co-processors
 \end{itemize}
 \item Thread level parallelism
 \begin{itemize}
-\item Shared memory
-\item Caching
-\item Synchronization
+\item Multiple cores with shared memory
+\end{itemize}
+\item Co-processors
+\begin{itemize}
+\item More cores; simpler cores
 \end{itemize}
 \item Node level parallelism
 \begin{itemize}
-\item No shared memory
+\item Multiple cores without shared memory
 \item High speed LAN
 \item Clusters
 \end{itemize}
@@ -370,6 +365,45 @@ gcc -mavx512vl -O3 -c ex3.c
 \end{semiverbatim}
 \end{frame}
 
+\begin{frame}[fragile]
+\frametitle{Adding 512 64-bit integers -- Multi-threaded Code}
+\begin{semiverbatim}
+\tiny
+#include <thread>
+
+int a[512], b[512], c[512];
+
+int operation(int * ap, int * bp, int * cp, int count)
+\{
+  for (int i = 0; i < count; i++) \{
+    cp[i] = ap[i] + bp[i];
+  \}
+\}
+
+int main () \{
+  const int num_threads = 3;
+  int start_index[num_threads+1];
+  std::thread thread[num_threads];
+
+  start_index[0] = 0;
+  for (int i=1; i < num_threads; i++) \{
+    start_index[i] = i*(512/num_threads) & ~15;
+  \}
+  start_index[num_threads] = 512;
+
+  for (int i=0; i < num_threads; i++) \{
+    thread[i] = std::thread(operation,
+                            &a[start_index[i]], &b[start_index[i]], &c[start_index[i]],
+                            start_index[i+1] - start_index[i]);
+  \}
+
+  for (int i=0; i < num_threads; i++) \{
+    thread[i].join();
+  \}
+\}
+\end{semiverbatim}
+\end{frame}
+
 \begin{frame}
 \frametitle{Intel Ivy Bridge Processor}
 \includegraphics[width=\textwidth]{ivybridge.jpg}
@@ -414,16 +448,110 @@ Notice the size of the graphics co-processor!
 \end{semiverbatim}
 \end{frame}
 
+\begin{frame}[fragile]
+\frametitle{Adding 512 64-bit integers -- OpenCL kernel}
+\begin{semiverbatim}
+\tiny
+void kernel simple_add(global const int* A, global const int* B, global int* C,
+                       global const int* N) \{
+    int ID, Nthreads, n, ratio, start, stop;
+
+    ID = get_global_id(0);
+    Nthreads = get_global_size(0);
+    n = N[0];
+
+    ratio = (n / Nthreads);  // number of elements for each thread
+    start = ratio * ID;
+    stop  = ratio * (ID + 1);
+
+    for (int i=start; i<stop; i++)
+        C[i] = A[i] + B[i];
+\}
+\end{semiverbatim}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{Adding 512 64-bit integers -- OpenCL program}
+\begin{semiverbatim}
+\tiny
+const int n = 512;
+int A[n], B[n], C[n];
+
+cl::Program program(context, sources);
+program.build({default_device});
+
+int N[1] = {n};
+
+// create buffers on device (allocate space on GPU)
+cl::Buffer buffer_A(context, CL_MEM_READ_WRITE, sizeof(int) * n);
+cl::Buffer buffer_B(context, CL_MEM_READ_WRITE, sizeof(int) * n);
+cl::Buffer buffer_C(context, CL_MEM_READ_WRITE, sizeof(int) * n);
+cl::Buffer buffer_N(context, CL_MEM_READ_ONLY,  sizeof(int));
+
+// create a queue (a queue of commands that the GPU will execute)
+cl::CommandQueue queue(context, default_device);
+
+// push write commands to queue
+queue.enqueueWriteBuffer(buffer_A, CL_TRUE, 0, sizeof(int)*n, A);
+queue.enqueueWriteBuffer(buffer_B, CL_TRUE, 0, sizeof(int)*n, B);
+queue.enqueueWriteBuffer(buffer_N, CL_TRUE, 0, sizeof(int),   N);
+
+cl::Kernel simple_add(program, "simple_add");
+simple_add.setArg(0, buffer_A);
+simple_add.setArg(1, buffer_B);
+simple_add.setArg(2, buffer_C);
+queue.enqueueNDRangeKernel(simple_add, cl::NullRange, cl::NDRange(20), cl::NullRange);
+
+// read result from GPU to here
+queue.enqueueReadBuffer(buffer_C, CL_TRUE, 0, sizeof(int)*n, C);
+
+\end{semiverbatim}
+\end{frame}
+
 \begin{frame}
-\frametitle{Cluster Computing - History}
+\frametitle{Techniques to exploit parallelism (partial list)}
 \begin{itemize}
-\item Beowulf
-\item Hadoop
-\item Cluster Linux
+\item Instruction level parallelism
 \begin{itemize}
-\item Kerrighed - Latest version is 3.0.0 which was released on 14 June 2010 and based on Linux kernel 2.6.30.
-\item OpenSSI - last development release 2010; last stable release 2007
+\item Superscalar vector operations
+\item \alert{Short {\tt for} loops}
 \end{itemize}
+\item Thread level parallelism
+\begin{itemize}
+\item Multiple cores with shared memory
+\item \alert{Synchronization}
+\end{itemize}
+\item Co-processors
+\begin{itemize}
+\item More cores; simpler cores
+\item \alert{OpenCL}
+\end{itemize}
+\item Node level parallelism
+\begin{itemize}
+\item Multiple cores without shared memory
+\item High speed LAN
+\item Clusters
+\end{itemize}
+\end{itemize}
+\end{frame}
+
+\begin{frame}
+\frametitle{Cisco 5108 Blade Server Chassis with eight B200 M2s}
+\includegraphics[width=\textwidth]{ourcisco.jpg}
+\end{frame}
+
+\begin{frame}
+\frametitle{Cluster Computing - Partial History}
+\begin{itemize}
+\item VMS
+\item Beowulf
+\begin{itemize}
+\item Pioneered in 1994 at NASA
+\item Message Passing Interface (MPI)
+\item Parallel Virtual Machine (PVM)
+\end{itemize}
+\item Hadoop
+\item Single System Image
 \end{itemize}
 \end{frame}
 
@@ -587,36 +715,71 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 \item Disadvantages
 \begin{itemize}
 \item less fault isolation
-\item node failure more difficult
+\item node failure more difficult to handle
 \end{itemize}
 \end{itemize}
 \end{frame}
 
 \begin{frame}
-\frametitle{Single System Image - History}
+\frametitle{POSIX System System Image -- Partial History}
 \begin{itemize}
-\item VMS
-\item SCALEMP
-\item Cluster Linux
+\item Single System Image Linux
+\begin{itemize}
+\item MOSIX
+\begin{itemize}
+\item Developed at Hebrew University at Jerusalem since 1977
+\item Closed source; free download
+\item Latest version works with Linux 4.12.13; released in 2017
+\end{itemize}
+\item OpenMosix
+\begin{itemize}
+\item Forked from last free version of MOSIX in 2001
+\item Last development release 2006 (based on Linux 2.6.15)
+\item Last stable release 2004 (based on Linux 2.4.26; 38,794 line diff)
+\item project terminated in 2008
+\end{itemize}
+\item Kerrighed
+\begin{itemize}
+\item {\it Institut national de recherche en informatique et en automatique}
+\item Latest version (3.0.0) released on 14 June 2010
+\item Based on Linux 2.6.30
+\end{itemize}
+\item OpenSSI
+\begin{itemize}
+\item Funded by SCO; Compaq
+\item Last development release 2010 (based on Linux 2.6.12)
+\item Last stable release 2007 (based on Linux 2.6.11)
+\end{itemize}
+\end{itemize}
+\item ScaleMP
+% \item CMU Mach / GNU Hurd
 \end{itemize}
 \end{frame}
 
 \begin{frame}
-\frametitle{GNU Hurd}
+\frametitle{CMU Mach / GNU Hurd}
 \begin{itemize}
-\item History
-\item Microkernels in general
-\item CMU Mach
+\item{CMU Mach}
+\begin{itemize}
+\item Developed at Carnegie Mellon University from 1985 to 1994
+\item Pioneered the Microkernel concept
+\item Kernel does Tasks / Threads / IPC / Memory Management
+\item Everything else in user space (device drivers; filesystem; networking)
+\item Designed for multi-node clusters
+\end{itemize}
+\item{GNU Hurd}
+\begin{itemize}
+\item Under development since 1990
+\item Runs on top of Mach and implements a full POSIX system
+\item Averages about two releases per year
+\item Available as part of Debian
+\end{itemize}
 \end{itemize}
 \end{frame}
 
 \begin{frame}
-\frametitle{CMU Mach}
-\begin{itemize}
-\item Tasks / Threads
-\item Interprocess Communication
-\item Memory Management
-\end{itemize}
+\frametitle{How many Debian packages build on Hurd?}
+\includegraphics[width=\textwidth]{graph-big.png}
 \end{frame}
 
 % tikz commands to draw task boxes to illustrate Mach IPC concepts
@@ -635,9 +798,13 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 %    ports should drawn on the left or right side of the task box
 %    "u" to label the task "Task" instead of labeling it with its name
 %    "b" to make a "big" node (I wish I knew how to size the tick marks automatically)
+%    "s" to make a "small" node
 % 4. contents of the task box - other nodes
 %
 % The tick marks will be named "#1 Port #" for future reference
+%
+% It's implemented as a tikz matrix with two cells - the task name in the top cell
+% and everything else in the bottom cell
 
 \newcommand\task[4]{
 \matrix (#1) [task, inner xsep=0] at (#2) { \node {\IfSubStr{#3}{u}{Task}{#1}}; \\ #4
@@ -645,41 +812,17 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 % print port tick marks in fill color if they are disabled, in order to make
 % them expand out the dimensions of the task box yet remain invisible
 
-\foreach \i in {-7,...,7}
+\IfSubStr{#3}{b}{\edef\starti{-20}}{\IfSubStr{#3}{s}{\edef\starti{-1}}{\edef\starti{-7}}}
+\IfSubStr{#3}{s}{\edef\endi{1}}{\edef\endi{7}}
+
+\foreach \i in {\starti,...,\endi}
 {
-\IfSubStr{#3}{l}{
-  \draw[xshift=-5em, ultra thick] (0,0.2 * \i)  coordinate (#1 Port \i) -- (0.2,0.2 * \i);
-}{
-  \draw[xshift=-5em, ultra thick, color=blue!20] (0,0.2 * \i) -- (0.2,0.2 * \i);
-}
-\IfSubStr{#3}{r}{
-  \draw[xshift=5em, ultra thick] (-0.2,0.2 * \i) -- (0,0.2 * \i) coordinate (#1 Port \i);
-}{
-  \draw[xshift=5em, ultra thick, color=blue!20] (-0.2,0.2 * \i) -- (0,0.2 * \i);
-}
-}
-
-\\};
-}
-
-\newcommand\bigtask[4]{
-\matrix (#1) [task, inner xsep=0] at (#2) { \node {\IfSubStr{#3}{u}{Task}{#1}}; \\ #4
-
-% print port tick marks in fill color if they are disabled, in order to make
-% them expand out the dimensions of the task box yet remain invisible
-
-\foreach \i in {-20,...,7}
-{
-\IfSubStr{#3}{l}{
-  \draw[xshift=-5em, ultra thick] (0,0.2 * \i)  coordinate (#1 Port \i) -- (0.2,0.2 * \i);
-}{
-  \draw[xshift=-5em, ultra thick, color=blue!20] (0,0.2 * \i) -- (0.2,0.2 * \i);
-}
-\IfSubStr{#3}{r}{
-  \draw[xshift=5em, ultra thick] (-0.2,0.2 * \i) -- (0,0.2 * \i) coordinate (#1 Port \i);
-}{
-  \draw[xshift=5em, ultra thick, color=blue!20] (-0.2,0.2 * \i) -- (0,0.2 * \i);
-}
+  \IfSubStr{#3}{l}{\edef\leftcolor{black}\edef\leftcoord{coordinate (#1 Port \i)}}
+                  {\edef\leftcolor{blue!20}\edef\leftcoord{}}
+  \IfSubStr{#3}{r}{\edef\rightcolor{black}\edef\rightcoord{coordinate (#1 Port \i)}}
+                  {\edef\rightcolor{blue!20}\edef\rightcoord{}}
+  \draw[xshift=-5em, ultra thick, color=\leftcolor] (0,0.2 * \i) \leftcoord -- (0.2,0.2 * \i);
+  \draw[xshift=5em, ultra thick, color=\rightcolor] (-0.2,0.2 * \i) -- (0,0.2 * \i) \rightcoord;
 }
 
 \\};
@@ -775,7 +918,7 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 \begin{center}
 \begin{tikzpicture}[node distance = .5cm]
 
-\bigtask{Task 1}{0,0}{r}{
+\task{Task 1}{0,0}{br}{
 % print two sendright nodes, one to fill the message1 box to the correct size,
 % and another one to actually draw it, since message1 will overwrite the
 % first sendright
@@ -788,7 +931,7 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 \only<4->{\node (message3) at (0, -7em) [message] {Message 2};}
 }
 
-\bigtask{Task 2}{15 em,0}{l}{
+\task{Task 2}{15 em,0}{bl}{
 \only<3->{
 \node (sendright2) [draw, fill=orange] {Send 9};
 \node (message2) [fit=(sendright2), message] {Message 1};
@@ -829,7 +972,7 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 \begin{center}
 \begin{tikzpicture}[node distance = .5cm]
 
-\bigtask{Task 1}{0,0}{r}{
+\task{Task 1}{0,0}{br}{
 % print two sendright nodes, one to fill the message1 box to the correct size,
 % and another one to actually draw it, since message1 will overwrite the
 % first sendright
@@ -842,7 +985,7 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 \only<4->{\node (message3) at (0, -7em) [message] {Message 2};}
 }
 
-\bigtask{Task 2}{15 em,0}{l}{
+\task{Task 2}{15 em,0}{bl}{
 \only<3->{
 \node (sendright2) [draw, fill=green] {Recv 9};
 \node (message2) [fit=(sendright2), message] {Message 1};
@@ -885,7 +1028,7 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 
 \begin{tikzpicture}[node distance = .5cm]
 
-\bigtask{Task 1}{0,0}{r}{
+\task{Task 1}{0,0}{br}{
 % print two sendright nodes, one to fill the message1 box to the correct size,
 % and another one to actually draw it, since message1 will overwrite the
 % first sendright
@@ -896,7 +1039,7 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 }
 }
 
-\bigtask{Task 2}{15 em,0}{l}{
+\task{Task 2}{15 em,0}{bl}{
 \only<2->{
 \node (message2) [message] {Message};
 \node (memory2) [below=1em, fill=orange!40, minimum size=2cm, dashed, thick, draw] at (message2.south) {Memory};
@@ -919,6 +1062,54 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 
 \begin{frame}
 \frametitle{Hurd Filesystem}
+\tikzstyle{dirent}=[draw=black,thick,anchor=west]
+\tikzstyle{selected}=[draw=red,fill=red!30]
+\tikzstyle{optional}=[dashed,fill=gray!50]
+\tikzstyle{link}=[red,dotted,->,thick]
+\tikzstyle{grow2}=[grow via three points={one child at (1.5,0) and two children at (1.5,0) and (1.5,-0.7)},
+  edge from parent path={(\tikzparentnode.east) -- +(.5,0) |- (\tikzchildnode.west)}]
+\begin{center}
+\begin{tikzpicture}
+  [grow via three points={one child at (0.5,-0.7) and
+  two children at (0.5,-0.7) and (0.5,-1.4)},
+  edge from parent path={(\tikzparentnode.south) |- (\tikzchildnode.west)}]
+  \node[dirent] (root) {/}
+  child { node[dirent] {bin}
+    child [grow2] { node[dirent] (bash) {bash}}
+    child [grow2] { node[dirent] (date) {date}}
+    child [grow2] { node[dirent] (grep) {grep}}
+    child [grow2] { node[dirent] (ls) {ls}}
+  }
+  child { node[dirent] {etc}}
+  child { node[dirent] {lib}}
+  child { node[dirent] {tmp}}
+  child { node[dirent] (hurd) {hurd}}
+  child { node[dirent] (home) {home}}
+  child { node[dirent] (http) {http:}}
+  child { node[dirent] {servers}
+    child { node[dirent] {socket}
+      child { node[dirent] (inet) {inet}}
+    }
+  };
+
+
+\task{ext2 File Server}{20 em,-5 em}{l}{}
+\task{httpfs}{20 em, -12 em}{ls}{}
+\task{pfinet}{20 em, -17 em}{ls}{}
+
+\draw [link] (root) -- +(5,0) |- (ext2 File Server Port 7);
+\draw [link] (bash) -- +(1,0) |- (ext2 File Server Port 5);
+\draw [link] (date) -- +(1,0) |- (ext2 File Server Port 3);
+\draw [link] (grep) -- +(1.5,0) |- (ext2 File Server Port 1);
+\draw [link] (ls) -- +(2,0) |- (ext2 File Server Port -1);
+\draw [link] (hurd) -- +(2,0) -- (ext2 File Server Port -3);
+\draw [link] (home) -- +(3,0) -- (ext2 File Server Port -5);
+
+\draw [link] (http) -- +(2,0) |- (httpfs Port 0);
+\draw [link] (inet) -- (pfinet Port -1);
+
+\end{tikzpicture}
+\end{center}
 \end{frame}
 
 \begin{frame}[fragile]
@@ -960,8 +1151,26 @@ task135(pid9403)->task_terminate () = 0
 \end{semiverbatim}
 \end{frame}
 
-\begin{frame}
-\frametitle{Example: Basic File I/O}
+%\begin{frame}
+%\frametitle{Example: Basic File I/O}
+%\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{{\tt rpctrace} of {\tt ls} (mapping the C library)}
+\begin{semiverbatim}
+\tiny
+  149(pid9403)->dir_lookup ("lib/i386-gnu/libc.so.0.3" 1 0) = 0 1 ""    155(pid9403)
+
+  155(pid9403)->io_read (-1 512) = 0 "\\x7fELF\\x01\\x01\\x01\\0\\0\\0\\0\\0\\0\\0\\0\\0\\x03\\0\\x03\\0\\x01\\0\\0\\0pE\\x05\\04\\0\\0\\0\\xfc\\x19''\\0\\0\\0\\0\\04\\0 \\0\\n\\0(\\0x\\0w\\0\\x06\\0\\0\\04\\0\\0\\04\\0\\0\\04\\0\\0\\0@\\x01\\0\\0@\\x01\\0\\0\\x05\\0\\0\\0"
+
+  155(pid9403)->io_stat () = 0 {23 5 0 158020 0 1513754748 0 33261 1 0 0 2239676 0 1515530623 0 1513435063 0 1513747658 0 8192 4384 0 0 0 0 0 0 0 0 0 0 0}
+
+  155(pid9403)->io_map () = 0    153(pid9403)  (null)
+
+task135(pid9403)->vm_map (0 2245448 0 1    153(pid9403) 0 32 5 7 1) = 0 17039360
+
+
+\end{semiverbatim}
 \end{frame}
 
 \begin{frame}
@@ -988,37 +1197,315 @@ task135(pid9403)->task_terminate () = 0
 \draw [color=red, ->, thick] (15 em,-3 em) -- node [midway, left] {vm\_map} (15 em,- 8 em);
 \draw [color=red, <-, thick, dotted] (15.2 em,-3 em) -- node [midway, right] {\tiny addr} (15.2 em,- 8 em);
 
-\draw [color=red, ->, thick] (-1.5 em,-3 em) -- node [midway, right] {m\_o\_ready} (-1.5 em,- 8 em);
-\draw [color=red, <-, thick] (-2 em,-3 em) -- node [midway, left] {m\_o\_init} (-2 em,- 8 em);
+\only<1>{
+  \draw [color=red, <-, thick] (-2 em,-3 em) -- node [midway, left] {m\_o\_init} (-2 em,- 8 em);
+  \draw [color=red, ->, thick] (-1.5 em,-3 em) -- node [midway, right] {m\_o\_ready} (-1.5 em,- 8 em);
+}
+\only<2>{
+  \draw [color=red, <-, thick] (0.5 em,-3 em) -- node [midway, left] {m\_o\_data\_request} (0.5 em,- 8 em);
+  \draw [color=red, ->, thick] (1 em,-3 em) -- node [midway, right] {m\_o\_data\_supply} (1 em,- 8 em);
+}
 
 \end{tikzpicture}
 \end{center}
 \end{frame}
 
 \begin{frame}
-\frametitle{Example: Shared Libraries}
+\frametitle{Mach Memory Management: Shared Memory}
+%\begin{center}
+\begin{tikzpicture}[transform canvas={xshift=9.5em, yshift=2em}]
+
+\task{Task 1}{-5em,0}{}{
+\node (memory1) [fill=orange!40, minimum size=1.5cm, dashed, thick, draw] {};
+}
+\task{Task 2}{6 em,0}{}{
+\node (memory2) [fill=orange!40, minimum size=1.5cm, dashed, thick, draw] {};
+}
+\task{Task 3}{17 em,0}{}{
+\node (memory3) [fill=orange!40, minimum size=1.5cm, dashed, thick, draw] {};
+}
+
+\node (kernel) [kernel] at (6 em, -10 em) {};
+\node (kmemory) [fill=orange!40, minimum size=1.5cm, thick, draw] at (6 em, -10 em) {};
+\node [below] at (kernel.north) {Kernel};
+
+\draw [orange, ultra thick, dotted, ->] (kmemory) -- (memory1);
+\draw [orange, ultra thick, dotted, ->] (kmemory) -- (memory2);
+\draw [orange, ultra thick, dotted, ->] (kmemory) -- (memory3);
+
+
+\end{tikzpicture}
+%\end{center}
 \end{frame}
 
-\begin{frame}[fragile]
-\frametitle{{\tt rpctrace} of {\tt ls} (mapping the C library)}
-\begin{semiverbatim}
-\tiny
-  149(pid9403)->dir_lookup ("lib/i386-gnu/libc.so.0.3" 1 0) = 0 1 ""    155(pid9403)
+\begin{frame}
+\frametitle{Mach Memory Management: Distributed Shared Memory}
 
-  155(pid9403)->io_read (-1 512) = 0 "\\x7fELF\\x01\\x01\\x01\\0\\0\\0\\0\\0\\0\\0\\0\\0\\x03\\0\\x03\\0\\x01\\0\\0\\0pE\\x05\\04\\0\\0\\0\\xfc\\x19''\\0\\0\\0\\0\\04\\0 \\0\\n\\0(\\0x\\0w\\0\\x06\\0\\0\\04\\0\\0\\04\\0\\0\\04\\0\\0\\0@\\x01\\0\\0@\\x01\\0\\0\\x05\\0\\0\\0"
+\tikzstyle{emptymemory} = [fill=white, minimum size=1.5cm, dashed, thick, draw]
+\tikzstyle{readmemory} = [fill=orange!40, minimum size=1.5cm, thick, draw]
+\tikzstyle{writememory} = [fill=green!40, minimum size=1.5cm, thick, draw]
 
-  155(pid9403)->io_stat () = 0 {23 5 0 158020 0 1513754748 0 33261 1 0 0 2239676 0 1515530623 0 1513435063 0 1513747658 0 8192 4384 0 0 0 0 0 0 0 0 0 0 0}
+\begin{tikzpicture}[transform canvas={xshift=12em, yshift=7em, scale=0.4}]
 
-  155(pid9403)->io_map () = 0    153(pid9403)  (null)
+\task{Task 1}{-5em,0}{u}{
+\only<1-2,9->{\node (memory1) [emptymemory] {\only<2>{\Huge R}};}
+\only<3-8> {\node (memory1) [readmemory, dashed] {};}
+}
+\task{Task 2}{6 em,0}{u}{
+\only<1-3,9->{\node (memory2) [emptymemory] {};}
+\only<4-8>{\node (memory2) [readmemory, dashed] {};}
+}
+\task{Task 3}{17 em,0}{u}{
+\only<1-3,9-13>{\node (memory3) [emptymemory] {\only<11->{\Huge W}};}
+\only<4-8>{\node (memory3) [readmemory, dashed] {};}
+\only<14->{\node (memory3) [writememory, dashed] {};}
+}
 
-task135(pid9403)->vm_map (0 2245448 0 1    153(pid9403) 0 32 5 7 1) = 0 17039360
+\node (kernel) [kernel] at (6 em, -10 em) {};
+\only<1-2,9-13>{\node (kmemory) [fill=white, minimum size=1.5cm, dashed, thick, draw] at (6 em, -10 em) {};}
+\only<3-8>{\node (kmemory) [fill=orange!40, minimum size=1.5cm, thick, draw] at (6 em, -10 em) {};}
+\only<14>{\node (kmemory) [writememory] at (6 em, -10 em) {};}
+\node [below] at (kernel.north) {Kernel};
 
+\only<3-8>{\draw [orange, ultra thick, dotted, ->] (kmemory) -- (memory1);}
+\only<4-8>{\draw [orange, ultra thick, dotted, ->] (kmemory) -- (memory2);}
+\only<4-8>{\draw [orange, ultra thick, dotted, ->] (kmemory) -- (memory3);}
+\only<14->{\draw [green, ultra thick, dotted, ->] (kmemory) -- (memory3);}
 
-\end{semiverbatim}
+\node (server) [kernel, color=cyan!20, minimum width=20em] at (6 em, -20 em) {};
+\only<1-9>{\node (smemory) [readmemory] at (server) {};}
+\only<10-12,14>{\node (smemory) [emptymemory] at (server) {};}
+\only<13>{\node (smemory) [writememory] at (server) {};}
+\node [below] at (server.north) {Memory Object Server};
+
+\only<2>{\draw [red, ->] (kernel) -- node [midway, left] {\huge m\_o\_data\_request} (server);}
+\only<3>{\draw [red, <-] (kernel) -- node [midway, right] {\huge m\_o\_data\_supply} (server);}
+\only<8>{\draw [red, <-] (kernel) -- node [midway, right] {\huge m\_o\_lock\_request (flush)} (server);}
+\only<9>{\draw [red, ->] (kernel) -- node [midway, right] {\huge m\_o\_lock\_completed} (server);}
+\only<11>{\draw [red, ->] (kernel) -- node [midway, left] {\huge m\_o\_data\_request} (server);}
+\only<14>{\draw [red, <-] (kernel) -- node [midway, right] {\huge m\_o\_data\_supply} (server);}
+
+\node (kernel2) [kernel] at (6 em, -30 em) {};
+\only<1-5,13->{\node (kmemory2) [emptymemory] at (kernel2) {};}
+\only<6-9>{\node (kmemory2) [readmemory] at (kernel2) {};}
+\only<10-12>{\node (kmemory2) [writememory] at (kernel2) {};}
+\node [below] at (kernel2.north) {Kernel};
+
+\task{Task 4}{-5em,-40 em}{u}{
+\node (memory4) [emptymemory] {};
+}
+\task{Task 5}{6 em,-40 em}{u}{
+\only<1-5,13->{\node (memory5) [emptymemory] {\only<5>{\Huge R}};}
+\only<6-12>{\node (memory5) [readmemory, dashed] {};}
+}
+\task{Task 6}{17 em,-40 em}{u}{
+\only<1-9,13->{\node (memory6) [emptymemory] {\only<7-9>{\Huge W}};}
+\only<10-12>{\node (memory6) [writememory, dashed] {};}
+}
+
+\only<5>{\draw [red, ->] (kernel2) -- node [midway, left] {\huge m\_o\_data\_request} (server);}
+\only<6>{\draw [red, <-] (kernel2) -- node [midway, right] {\huge m\_o\_data\_supply} (server);}
+\only<7>{\draw [red, ->] (kernel2) -- node [midway, left] {\huge m\_o\_data\_unlock} (server);}
+\only<10>{\draw [red, <-] (kernel2) -- node [midway, right] {\huge m\_o\_lock\_request (+write)} (server);}
+\only<12>{\draw [red, <-] (kernel2) -- node [midway, right] {\huge m\_o\_lock\_request (flush)} (server);}
+\only<13>{\draw [red, ->] (kernel2) -- node [midway, left] {\huge m\_o\_data\_return} (server);}
+
+\only<6-12>{\draw [orange, ultra thick, dotted, ->] (kmemory2) -- (memory5);}
+\only<10-12>{\draw [green, ultra thick, dotted, ->] (kmemory2) -- (memory6);}
+
+\end{tikzpicture}
 \end{frame}
 
 \begin{frame}
 \frametitle{The {\tt netmsg} Server}
+\begin{tikzpicture}[transform canvas={xshift=12em, yshift=6em, scale=0.4}]
+
+\task{Task 1}{-5em,0}{u}{}
+\task{Task 2}{6 em,0}{u}{}
+\task{Task 3}{17 em,0}{u}{}
+
+\node (kernel) [kernel] at (6 em, -10 em) {};
+\node [above of=kernel] {\Huge netmsg};
+
+\node [cloud, draw,cloud puffs=10,cloud puff arc=120, aspect=2, inner ysep=1em, minimum width=20em, minimum height=10em]
+  at (6 em, -20 em) {};
+
+\node (kernel2) [kernel] at (6 em, -30 em) {};
+\node [above of=kernel2] {\Huge netmsg};
+
+\task{Task 4}{-5em,-40 em}{u}{}
+\task{Task 5}{6 em,-40 em}{u}{}
+\task{Task 6}{17 em,-40 em}{u}{}
+
+\draw [red] (Task 1.south) -- (kernel.center) -- (kernel2.center) -- (Task 4.north);
+\draw [red] (Task 2.south) -- (kernel.center) -- (kernel2.center) -- (Task 5.north);
+\draw [red] (Task 3.south) -- (kernel.center) -- (kernel2.center) -- (Task 6.north);
+
+\end{tikzpicture}
+\end{frame}
+
+\begin{frame}
+\frametitle{The {\tt netmsg} Server}
+\begin{itemize}
+\item All Mach messages serialized over a single TCP connection
+\item Transmit Mach messages (almost) unchanged
+\item Memory regions are appended at the end of the message
+\item Local port numbers are transmitted unchanged
+\item Remote port numbers have all their bits inverted
+\end{itemize}
+\end{frame}
+
+\begin{frame}
+\frametitle{The {\tt netmsg} Server}
+\begin{center}
+\begin{tikzpicture}[transform canvas={xshift=0em, yshift=-3em, scale=0.4}]
+
+\fill[color=yellow!20] (-50 em, -10 em) rectangle (-8 em, 25 em);
+\node at (-21 em, 20em) {\Huge Node 1};
+\fill[color=yellow!20] (50 em, -10 em) rectangle (8 em, 25 em);
+\node at (21 em, 20em) {\Huge Node 2};
+
+\filldraw (-30 em, 15em) node[rectangle, name=queue 1, minimum width=1.8cm, minimum height=1cm, draw, pattern=vertical lines] {};
+% \task{Task 0}{-30 em,15 em}{ur}{}
+
+\task{Task 1}{-30 em,0}{r}{
+  \only<1-2>{
+    \node (sendright) [draw, fill=orange, inner xsep=5] {Send};
+    \node (message1) [fit=(sendright), message] {Message};
+    \only<1>{\node (sendright) [draw, fill=orange, inner xsep=5] {Send};}
+  }
+}
+\task{netmsg 1}{-15 em,0}{l}{
+  \only<2-3>{
+    \node (sendright2) [draw, fill=orange, inner xsep=5] {Send};
+    \node (message2) [fit=(sendright2), message] {Message};
+  }
+  \only<2->{\node (sendright2) [draw, fill=orange, inner xsep=5] {Send};}
+}
+
+\only<1>{\draw[red,dotted,->,ultra thick] (sendright) -- (queue 1);}
+\only<2>{\draw[ultra thick,->] (message1) -- (message2);}
+\only<2->{
+  \draw[red,dotted,->,ultra thick] (sendright2) -- (queue 1);
+}
+
+\node [cloud, draw,cloud puffs=10,cloud puff arc=120, aspect=2, inner ysep=1em, minimum width=15em, minimum height=8em]
+  at (0 em, 0 em) {};
+
+\only<4->{
+  \filldraw (15 em, 15em) node[rectangle, name=queue 2, minimum width=1.8cm, minimum height=1cm, draw, pattern=vertical lines] {};
+}
+
+\task{netmsg 2}{15 em,0}{r}{
+  \only<3-5>{
+    \node (sendright3) [draw, fill=orange, inner xsep=5] {Send};
+    \node (message3) [fit=(sendright3), message] {Message};
+    \only<4>{\node (sendright3) [draw, fill=orange, inner xsep=5] {Send};}
+  }
+  \only<4->{\node (rcvright3) [draw, fill=green, inner xsep=5] at (0,1.25) {Rcv};}
+}
+\task{Task 2}{30 em,0}{l}{
+  \only<5>{
+    \node (sendright4) [draw, fill=orange, inner xsep=5] {Send};
+    \node (message4) [fit=(sendright4), message] {Message};
+  }
+  \only<5-6>{\node (sendright4) [draw, fill=orange, inner xsep=5] {Send};}
+}
+
+\only<1>{\draw[ultra thick, dotted, ->] (Task 1) -- (Task 2);}
+
+\only<3>{\draw[ultra thick,->] (message2) -- (message3);}
+
+\only<4>{\draw[red,dotted,->,ultra thick] (sendright3.west) to [bend left=20] (queue 2);}
+\only<4->{\draw[green,dotted,->,ultra thick] (queue 2) -- (rcvright3);}
+
+\only<5->{
+
+\draw[red,dotted,->,ultra thick] (sendright4) -- (queue 2);
+}
+
+\only<5>{\draw[ultra thick,->] (message3) -- (message4);}
+
+\end{tikzpicture}
+\end{center}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{{\tt netmsg}: Translation of a send right for transmission}
+\begin{semiverbatim}
+\tiny
+if ((ports[i] == MACH_PORT_NULL) || (ports[i] == MACH_PORT_DEAD))
+  \{
+    continue;
+  \}
+else if (remote_ports_by_local.count(ports[i]) == 1)
+  \{
+    /* We're transmitting a send right that we earlier received over the network.  Convert to the
+     * remote's name space, and indicate to the remote, by bit flipping the port number, that we're
+     * sending it a port number in its own name space.  Also, destroy the send right we received
+     * with the message, which is a send right to ourself!  If it's the port's last send right, then
+     * we'll get a no senders notification and deallocate the receive right then, so all we destroy
+     * here is the send right.
+     */
+
+    assert(local_port_type.at(ports[i]) == MACH_MSG_TYPE_PORT_RECEIVE);
+    mach_call (mach_port_mod_refs (mach_task_self(), ports[i],
+                                   MACH_PORT_RIGHT_SEND, -1));
+
+    ports[i] = (~ remote_ports_by_local[ports[i]]);
+  \}
+else
+  \{
+    /* We've got a send right (note it), but no mapping to a remote port (the remote takes care of that) */
+
+    local_port_type[ports[i]] = MACH_MSG_TYPE_PORT_SEND;
+
+    /* request a DEAD NAME notification */
+
+    mach_call (mach_port_request_notification (mach_task_self (), ports[i],
+                                               MACH_NOTIFY_DEAD_NAME, 0,
+                                               notification_port, MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+  \}
+\end{semiverbatim}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{{\tt netmsg}: Translation of a send right on reception}
+\begin{semiverbatim}
+\tiny
+/* We're receiving a send right over the network.  We need to relay on a send
+ * right, which will be to a local receive right.
+ */
+
+if (local_ports_by_remote.count(port) == 1)
+  \{
+    const mach_port_t newport = local_ports_by_remote[port];
+
+    assert(local_port_type.at(newport) == MACH_MSG_TYPE_PORT_RECEIVE);
+
+    /* it already exists; create a new send right to relay on */
+    mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
+                                       MACH_MSG_TYPE_MAKE_SEND));
+
+    return newport;
+  \}
+else
+  \{
+    mach_port_t newport;
+
+    /* create new receive port and a new send right that will be moved to the recipient */
+    mach_call (mach_port_allocate (mach_task_self (), MACH_PORT_RIGHT_RECEIVE, &newport));
+    mach_call (mach_port_insert_right (mach_task_self (), newport, newport,
+                                       MACH_MSG_TYPE_MAKE_SEND));
+
+    /* request notification when all send rights have been destroyed */
+    mach_port_t old;
+    mach_call (mach_port_request_notification (mach_task_self (), newport,
+                                               MACH_NOTIFY_NO_SENDERS, 0,
+                                               newport, MACH_MSG_TYPE_MAKE_SEND_ONCE, &old));
+    return newport;
+  \}
+\end{semiverbatim}
 \end{frame}
 
 \begin{frame}[fragile]
@@ -1058,6 +1545,7 @@ memory_object_data_request: (kernel requesting a single page)
 \end{semiverbatim}
 \end{frame}
 
+\begin{comment}
 \begin{frame}
 \frametitle{What kind of bugs have I found?}
 \begin{itemize}
@@ -1068,13 +1556,240 @@ memory_object_data_request: (kernel requesting a single page)
 \item weak refs
 \end{itemize}
 \end{frame}
+\end{comment}
+
+\begin{frame}
+\frametitle{Difficulty tracking which clients have access}
+
+% Because of the kernel's ability to proactively flush pages (unless PRECIOUS is specified),
+% we can't be certain that a client on a page's ACCESSLIST actually possesses that page.
+% All we know for sure is that a client not on ACCESSLIST does not possess the page.
+
+% Examining the Mach kernel code for m_o_lock_request, we see that the kernel might block
+% while looping over the pages (and unlocks the memory object while doing so), so for a
+% multi-page lock request, we need to consider the possibility that part of the page range
+% might be processed, then other kernel operations happen (including VM page operations)
+% before the remaining part of the page range is processed and the lock request completes.
+
+
+\begin{itemize}
+\item five clients have read access to page 50 and are on its ACCESSLIST
+\item pager\_flush is called on pages 0-100
+\item page 50 flushes on client A
+\item client A re-requests access to page 50, and it is supplied (ACCESSLIST doesn't change)
+\item the flushes complete
+\item only client A now has access to page 50 and should be alone on its ACCESSLIST
+\end{itemize}
+
+% This scenario shows that ACCESSLIST, WAITLIST and a FLUSHING flag aren't enough; we have to track
+% which clients requested access during the flush to correctly compute ACCESSLIST at the end.
+
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{{\tt \_\_pthread\_cond\_timedwait\_internal}}
+\begin{semiverbatim}
+\tiny
+  /* Block the thread.  */
+  err = __pthread_timedblock (self, abstime, clock_id);
+
+  __pthread_spin_lock (&cond->__lock);
+  if (! self->prevp)
+    \{
+      /* Another thread removed us from the list of waiters, which means a
+         wakeup message has been sent.  It was either consumed while we were
+         blocking, or queued after we timed out and before we acquired the
+         condition lock, in which case the message queue must be drained.  */
+      if (! err)
+        drain = 0;
+      else
+        \{
+          assert (err == ETIMEDOUT);
+          drain = 1;
+        \}
+    \}
+  else
+    \{
+      /* We're still in the list of waiters.  Noone attempted to wake us up,
+         i.e. we timed out.  */
+      assert (err == ETIMEDOUT);
+      __pthread_dequeue (self);
+      drain = 0;
+    \}
+  __pthread_spin_unlock (&cond->__lock);
+\end{semiverbatim}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{Original {\tt get\_identity} code}
+\begin{semiverbatim}
+\tiny
+id_clean (void *cookie)
+\{
+  struct idspec *i = cookie;
+  pthread_mutex_lock (&idlock);
+  if (refcounts_hard_references(&i->pi.refcounts) == 0) \{
+      /* Nobody got a send right in between, we can remove from the hash.  */
+      hurd_ihash_locp_remove (&idhash, i->id_hashloc);
+      ports_port_deref_weak (&i->pi);
+  \}
+  pthread_mutex_unlock (&idlock);
+\}
+
+fshelp_get_identity (struct port_bucket *bucket, ino_t fileno, mach_port_t *pt)
+\{
+  pthread_mutex_lock (&idlock);
+
+  i = hurd_ihash_find (&idhash, (hurd_ihash_key_t) fileno);
+  if (i == NULL) \{
+      ports_create_port (idclass, bucket, sizeof (struct idspec), &i);
+      hurd_ihash_add (&idhash, (hurd_ihash_key_t) fileno, i);
+
+      /* Weak reference for the hash entry.  */
+      ports_port_ref_weak(&i->pi);
+
+      *pt = ports_get_right (i);
+      ports_port_deref (i);
+  \} else \{
+    *pt = ports_get_right (i);
+  \}
+
+  pthread_mutex_unlock (&idlock);
+\}
+
+\end{semiverbatim}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{{\tt libports} dereference code}
+\begin{semiverbatim}
+\tiny
+void
+ports_port_deref (void *portstruct)
+\{
+  struct port_info *pi = portstruct;
+  struct references result;
+
+  if (pi->class->dropweak_routine)
+    \{
+      /* If we need to call the dropweak routine, we need to hold one
+         reference while doing so.  We use a weak reference for this
+         purpose, which we acquire by demoting our hard reference to a
+         weak one.  */
+      refcounts_demote (&pi->refcounts, &result);
+
+      if (result.hard == 0 && result.weak > 1)
+        (*pi->class->dropweak_routine) (pi);
+
+      refcounts_deref_weak (&pi->refcounts, &result);
+    \}
+  else
+    refcounts_deref (&pi->refcounts, &result);
+
+  if (result.hard == 0 && result.weak == 0)
+    _ports_complete_deallocate (pi);
+\}
+
+\end{semiverbatim}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{First attempt to fix {\tt get\_identity} code}
+\begin{semiverbatim}
+\tiny
+id_drop_weak (void *cookie)
+\{
+  struct idspec *i = cookie;
+  pthread_mutex_lock (&idlock);
+  if (refcounts_hard_references(&i->pi.refcounts) == 0) \{
+      /* Nobody got a send right in between, we can remove from the hash.  */
+      hurd_ihash_locp_remove (&idhash, i->id_hashloc);
+      ports_port_deref_weak (&i->pi);
+  \}
+  pthread_mutex_unlock (&idlock);
+\}
+
+fshelp_get_identity (struct port_bucket *bucket, ino_t fileno, mach_port_t *pt)
+\{
+  pthread_mutex_lock (&idlock);
+
+  i = hurd_ihash_find (&idhash, (hurd_ihash_key_t) fileno);
+  if (i == NULL) \{
+      ports_create_port (idclass, bucket, sizeof (struct idspec), &i);
+      hurd_ihash_add (&idhash, (hurd_ihash_key_t) fileno, i);
+
+      /* Weak reference for the hash entry.  */
+      ports_port_ref_weak(&i->pi);
+
+      *pt = ports_get_right (i);
+      ports_port_deref (i);
+  \} else \{
+    *pt = ports_get_right (i);
+  \}
+
+  pthread_mutex_unlock (&idlock);
+\}
+
+\end{semiverbatim}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{Correctly fixed {\tt get\_identity} code}
+\begin{semiverbatim}
+\tiny
+id_drop_weak (void *cookie)
+\{
+  struct idspec *i = cookie;
+  pthread_mutex_lock (&idlock);
+  if (refcounts_hard_references(&i->pi.refcounts) == 0 && i->id_hashloc != NULL) \{
+      /* Nobody got a send right in between, we can remove i from the hash.  */
+      hurd_ihash_locp_remove (&idhash, i->id_hashloc);
+      i->id_hashloc = NULL;
+      ports_port_deref_weak (&i->pi);
+  \}
+  pthread_mutex_unlock (&idlock);
+\}
+
+fshelp_get_identity (struct port_bucket *bucket, ino_t fileno, mach_port_t *pt)
+\{
+  pthread_mutex_lock (&idlock);
+
+  i = hurd_ihash_find (&idhash, (hurd_ihash_key_t) fileno);
+  if (i == NULL) \{
+      ports_create_port (idclass, bucket, sizeof (struct idspec), &i);
+      hurd_ihash_add (&idhash, (hurd_ihash_key_t) fileno, i);
+
+      /* Weak reference for the hash entry.  */
+      ports_port_ref_weak(&i->pi);
+
+      *pt = ports_get_right (i);
+      ports_port_deref (i);
+  \} else \{
+    *pt = ports_get_right (i);
+  \}
+
+  pthread_mutex_unlock (&idlock);
+\}
+
+\end{semiverbatim}
+\end{frame}
 
 \begin{frame}
 \frametitle{Work Needed / Help Wanted}
 \begin{itemize}
+\item Finish multi-client {\tt libpager}
 \item 64-bit user space
 \item Multiprocessor support
 \item Rewrite of {\tt netmsg}
+\begin{itemize}
+\item UDP or raw Ethernet frames instead of TCP
+\item OSPF-like protocol to manage port numbers over multiple hosts
+\item Synchronization of port closures (DEAD NAMES and NO SENDERS)
+\item raw PCI device access
+\end{itemize}
+\vskip 0.5in
+\item {\tt https://www.gnu.org/software/hurd/}
+\item {\tt https://github.com/BrentBaccala/hurd}
 \end{itemize}
 \end{frame}
 
