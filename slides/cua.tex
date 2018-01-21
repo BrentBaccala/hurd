@@ -797,22 +797,23 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 
 \begin{center}
 
-\begin{tikzpicture}[transform canvas={scale=0.4, yshift=12em, xshift=-15em}]
+% node distance is the distance that the queues are positioned from their task ports
+\begin{tikzpicture}[transform canvas={scale=0.4, yshift=12em, xshift=-15em}, node distance=6em]
 
-\task{Task 1 left}{0,0}{ru}{}
-\task{Task 2 left}{0,-11 em}{ru}{}
-\task{Task 3 left}{0,-22 em}{ru}{}
-\task{Task 4 left}{0,-33 em}{ru}{}
-\task{Task 1 right}{30 em,0}{lu}{}
-\task{Task 2 right}{30 em,-11 em}{lu}{}
-\task{Task 3 right}{30 em,-22 em}{lu}{}
-\task{Task 4 right}{30 em,-33 em}{lu}{}
+\task{Task 1 left}{at (0,0)}{ru}{}
+\task{Task 2 left}{at (0,-11em)}{ru}{}
+\task{Task 3 left}{at (0,-22em)}{ru}{}
+\task{Task 4 left}{at (0,-33 em)}{ru}{}
+\task{Task 1 right}{at (30 em,0)}{lu}{}
+\task{Task 2 right}{at (30 em,-11 em)}{lu}{}
+\task{Task 3 right}{at (30 em,-22 em)}{lu}{}
+\task{Task 4 right}{at (30 em,-33 em)}{lu}{}
 
-\queue{Task 1 right Port 5}{queue 1}
-\queue{Task 2 right Port -5}{queue 2a}
-\queue{Task 2 right Port 5}{queue 2b}
-\queue{Task 3 right Port 0}{queue 3}
-\queue{Task 4 right Port 0}{queue 4}
+\queue[left = of Task 1 right Port 5]{queue 1}{}
+\queue[left = of Task 2 right Port -5]{queue 2a}{}
+\queue[left = of Task 2 right Port 5]{queue 2b}{}
+\queue[left = of Task 3 right Port 0]{queue 3}{}
+\queue[left = of Task 4 right Port 0]{queue 4}{}
 
 \draw [color=violet, thick, -triangle 90] (Task 1 left Port 5) -- (queue 1.west);
 \draw [color=violet, thick, -triangle 90] (queue 1.east) -- (Task 1 right Port 5);
@@ -849,14 +850,14 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 
 \begin{tikzpicture}
 
-\task{Task 1}{0,0}{r}{
+\task{Task 1}{at (0,0)}{r}{
 \node (message1) [message] {Message 1};
 }
-\task{Task 2}{15 em,0}{l}{
+\task{Task 2}{at (15 em,0)}{l}{
 \node (message2) [message] at (1 em, 1 em) {Message 1};
 \node (message2a) [message] at (1.9 em, -1 em) {Message 2};
 }
-\task{Task 3}{0,-11 em}{r}{
+\task{Task 3}{at (0,-11 em)}{r}{
 \node (message3) [message] {Message 2};
 }
 
@@ -877,7 +878,7 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 \begin{center}
 \begin{tikzpicture}[node distance = .5cm]
 
-\task{Task 1}{0,0}{br}{
+\task{Task 1}{at (0,0)}{br}{
 % print two sendright nodes, one to fill the message1 box to the correct size,
 % and another one to actually draw it, since message1 will overwrite the
 % first sendright
@@ -890,7 +891,7 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 \only<4->{\node (message3) at (0, -7em) [message] {Message 2};}
 }
 
-\task{Task 2}{15 em,0}{bl}{
+\task{Task 2}{at (15 em,0)}{bl}{
 \only<3->{
 \node (sendright2) [draw, fill=orange] {Send 9};
 \node (message2) [fit=(sendright2), message] {Message 1};
@@ -931,7 +932,7 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 \begin{center}
 \begin{tikzpicture}[node distance = .5cm]
 
-\task{Task 1}{0,0}{br}{
+\task{Task 1}{at (0,0)}{br}{
 % print two sendright nodes, one to fill the message1 box to the correct size,
 % and another one to actually draw it, since message1 will overwrite the
 % first sendright
@@ -944,7 +945,7 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 \only<4->{\node (message3) at (0, -7em) [message] {Message 2};}
 }
 
-\task{Task 2}{15 em,0}{bl}{
+\task{Task 2}{at (15 em,0)}{bl}{
 \only<3->{
 \node (sendright2) [draw, fill=green] {Recv 9};
 \node (message2) [fit=(sendright2), message] {Message 1};
@@ -987,7 +988,7 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 
 \begin{tikzpicture}[node distance = .5cm]
 
-\task{Task 1}{0,0}{br}{
+\task{Task 1}{at (0,0)}{br}{
 % print two sendright nodes, one to fill the message1 box to the correct size,
 % and another one to actually draw it, since message1 will overwrite the
 % first sendright
@@ -998,7 +999,7 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 }
 }
 
-\task{Task 2}{15 em,0}{bl}{
+\task{Task 2}{at (15 em,0)}{bl}{
 \only<2->{
 \node (message2) [message] {Message};
 \node (memory2) [below=1em, fill=orange!40, minimum size=2cm, dashed, thick, draw] at (message2.south) {Memory};
@@ -1052,9 +1053,9 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
   };
 
 
-\task{ext2 File Server}{20 em,-5 em}{l}{}
-\task{httpfs}{20 em, -12 em}{ls}{}
-\task{pfinet}{20 em, -17 em}{ls}{}
+\task{ext2 File Server}{at (20 em,-5 em)}{l}{}
+\task{httpfs}{at (20 em, -12 em)}{ls}{}
+\task{pfinet}{at (20 em, -17 em)}{ls}{}
 
 \draw [link] (root) -- +(5,0) |- (ext2 File Server Port 7);
 \draw [link] (bash) -- +(1,0) |- (ext2 File Server Port 5);
@@ -1135,10 +1136,10 @@ task135(pid9403)->vm_map (0 2245448 0 1    153(pid9403) 0 32 5 7 1) = 0 17039360
 \begin{center}
 \begin{tikzpicture}
 
-\task{Filesystem Server}{0,0}{}{
+\task{Filesystem Server}{at (0,0)}{}{
 \node (memory1) [above left=-0.5, fill=white, minimum size=1.5cm, dashed, thick, draw] {};
 }
-\task{ls}{15 em,0}{}{
+\task{ls}{at (15 em,0)}{}{
 %\node (memory1) [above right=-0.5, fill=orange!40, minimum size=1.5cm, dashed, thick, draw] {};
 \node (memory2) [above right=-0.5, fill=white, minimum size=1.5cm, dashed, thick, draw] {};
 \node [below] at (memory2.north) {\tiny addr};
@@ -1172,13 +1173,13 @@ task135(pid9403)->vm_map (0 2245448 0 1    153(pid9403) 0 32 5 7 1) = 0 17039360
 %\begin{center}
 \begin{tikzpicture}[transform canvas={xshift=9.5em, yshift=2em}]
 
-\task{Task 1}{-5em,0}{}{
+\task{Task 1}{at (-5em,0)}{}{
 \node (memory1) [fill=orange!40, minimum size=1.5cm, dashed, thick, draw] {};
 }
-\task{Task 2}{6 em,0}{}{
+\task{Task 2}{at (6 em,0)}{}{
 \node (memory2) [fill=orange!40, minimum size=1.5cm, dashed, thick, draw] {};
 }
-\task{Task 3}{17 em,0}{}{
+\task{Task 3}{at (17 em,0)}{}{
 \node (memory3) [fill=orange!40, minimum size=1.5cm, dashed, thick, draw] {};
 }
 
@@ -1204,15 +1205,15 @@ task135(pid9403)->vm_map (0 2245448 0 1    153(pid9403) 0 32 5 7 1) = 0 17039360
 
 \begin{tikzpicture}[transform canvas={xshift=12em, yshift=7em, scale=0.4}]
 
-\task{Task 1}{-5em,0}{u}{
+\task{Task 1}{at (-5em,0)}{u}{
 \only<1-2,9->{\node (memory1) [emptymemory] {\only<2>{\Huge R}};}
 \only<3-8> {\node (memory1) [readmemory, dashed] {};}
 }
-\task{Task 2}{6 em,0}{u}{
+\task{Task 2}{at (6 em,0)}{u}{
 \only<1-3,9->{\node (memory2) [emptymemory] {};}
 \only<4-8>{\node (memory2) [readmemory, dashed] {};}
 }
-\task{Task 3}{17 em,0}{u}{
+\task{Task 3}{at (17 em,0)}{u}{
 \only<1-3,9-13>{\node (memory3) [emptymemory] {\only<11->{\Huge W}};}
 \only<4-8>{\node (memory3) [readmemory, dashed] {};}
 \only<14->{\node (memory3) [writememory, dashed] {};}
@@ -1248,14 +1249,14 @@ task135(pid9403)->vm_map (0 2245448 0 1    153(pid9403) 0 32 5 7 1) = 0 17039360
 \only<10-12>{\node (kmemory2) [writememory] at (kernel2) {};}
 \node [below] at (kernel2.north) {Kernel};
 
-\task{Task 4}{-5em,-40 em}{u}{
+\task{Task 4}{at (-5em,-40 em)}{u}{
 \node (memory4) [emptymemory] {};
 }
-\task{Task 5}{6 em,-40 em}{u}{
+\task{Task 5}{at (6 em,-40 em)}{u}{
 \only<1-5,13->{\node (memory5) [emptymemory] {\only<5>{\Huge R}};}
 \only<6-12>{\node (memory5) [readmemory, dashed] {};}
 }
-\task{Task 6}{17 em,-40 em}{u}{
+\task{Task 6}{at (17 em,-40 em)}{u}{
 \only<1-9,13->{\node (memory6) [emptymemory] {\only<7-9>{\Huge W}};}
 \only<10-12>{\node (memory6) [writememory, dashed] {};}
 }
@@ -1277,9 +1278,9 @@ task135(pid9403)->vm_map (0 2245448 0 1    153(pid9403) 0 32 5 7 1) = 0 17039360
 \frametitle{The {\tt netmsg} Server}
 \begin{tikzpicture}[transform canvas={xshift=12em, yshift=6em, scale=0.4}]
 
-\task{Task 1}{-5em,0}{u}{}
-\task{Task 2}{6 em,0}{u}{}
-\task{Task 3}{17 em,0}{u}{}
+\task{Task 1}{at (-5em,0)}{u}{}
+\task{Task 2}{at (6 em,0)}{u}{}
+\task{Task 3}{at (17 em,0)}{u}{}
 
 \node (kernel) [kernel] at (6 em, -10 em) {};
 \node [above of=kernel] {\Huge netmsg};
@@ -1290,9 +1291,9 @@ task135(pid9403)->vm_map (0 2245448 0 1    153(pid9403) 0 32 5 7 1) = 0 17039360
 \node (kernel2) [kernel] at (6 em, -30 em) {};
 \node [above of=kernel2] {\Huge netmsg};
 
-\task{Task 4}{-5em,-40 em}{u}{}
-\task{Task 5}{6 em,-40 em}{u}{}
-\task{Task 6}{17 em,-40 em}{u}{}
+\task{Task 4}{at (-5em,-40 em)}{u}{}
+\task{Task 5}{at (6 em,-40 em)}{u}{}
+\task{Task 6}{at (17 em,-40 em)}{u}{}
 
 \draw [red] (Task 1.south) -- (kernel.center) -- (kernel2.center) -- (Task 4.north);
 \draw [red] (Task 2.south) -- (kernel.center) -- (kernel2.center) -- (Task 5.north);
@@ -1324,14 +1325,14 @@ task135(pid9403)->vm_map (0 2245448 0 1    153(pid9403) 0 32 5 7 1) = 0 17039360
 
 \filldraw (-30 em, 15em) node[rectangle, name=queue 1, minimum width=1.8cm, minimum height=1cm, draw, pattern=vertical lines] {};
 
-\task{Task 1}{-30 em,0}{r}{
+\task{Task 1}{at (-30 em,0)}{r}{
   \only<1-2>{
     \node (sendright) [draw, fill=orange, inner xsep=5] {Send};
     \node (message1) [fit=(sendright), message] {Message};
     \only<1>{\node (sendright) [draw, fill=orange, inner xsep=5] {Send};}
   }
 }
-\task{netmsg 1}{-15 em,0}{l}{
+\task{netmsg 1}{at (-15 em,0)}{l}{
   \only<2-3>{
     \node (sendright2) [draw, fill=orange, inner xsep=5] {Send};
     \node (message2) [fit=(sendright2), message] {Message};
@@ -1352,7 +1353,7 @@ task135(pid9403)->vm_map (0 2245448 0 1    153(pid9403) 0 32 5 7 1) = 0 17039360
   \filldraw (15 em, 15em) node[rectangle, name=queue 2, minimum width=1.8cm, minimum height=1cm, draw, pattern=vertical lines] {};
 }
 
-\task{netmsg 2}{15 em,0}{r}{
+\task{netmsg 2}{at (15 em,0)}{r}{
   \only<3-5>{
     \node (sendright3) [draw, fill=orange, inner xsep=5] {Send};
     \node (message3) [fit=(sendright3), message] {Message};
@@ -1360,7 +1361,7 @@ task135(pid9403)->vm_map (0 2245448 0 1    153(pid9403) 0 32 5 7 1) = 0 17039360
   }
   \only<4->{\node (rcvright3) [draw, fill=green, inner xsep=5] at (0,1.25) {Rcv};}
 }
-\task{Task 2}{30 em,0}{l}{
+\task{Task 2}{at (30 em,0)}{l}{
   \only<5>{
     \node (sendright4) [draw, fill=orange, inner xsep=5] {Send};
     \node (message4) [fit=(sendright4), message] {Message};

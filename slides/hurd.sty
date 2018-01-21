@@ -3,9 +3,10 @@
 %%
 %% Written by Brent Baccala (2018)
 %%
-%% \task - takes four arguments
+%% \task - takes four arguments (and optionally one more)
+%% its optional arg goes into the matrix's optional arg
 %% 1. name of task (used to refer to it from tikz; maybe printed as a label as well)
-%% 2. location of task box's center point
+%% 2. used to specify postioning, like "at (0,0)"
 %% 3. "r" or "l", indicating if a set of tick marks representing
 %%    ports should drawn on the left or right side of the task box
 %%    "u" to label the task "Task" instead of labeling it with its name
@@ -19,8 +20,9 @@
 %% and everything else in the bottom cell
 %%
 %% \queue - draw a box with vertical lines to represent a message queue
-%% arg 1 is the name of a port to position it to the left of
-%% arg 2 is name to be given the box
+%% its optional arg goes into the filldraw's optional arg
+%% arg 1 is name to be given the box
+%% arg 2 is used to specify postioning
 %%
 %% Defaults styles named "task" and "queue" are used to draw these objects
 
@@ -35,20 +37,20 @@
 
 \tikzstyle{queue} = [draw, rectangle, minimum width=1.8cm, minimum height=1cm, pattern=vertical lines]
 
-\newcommand\task[4]{
-\matrix (#1) [task, inner xsep=0] at (#2) { \node {\IfSubStr{#3}{u}{Task}{#1}}; \\ #4
+\newcommand\task[5][]{
+\matrix (#2) [task, inner xsep=0, #1] #3 { \node {\IfSubStr{#4}{u}{Task}{#2}}; \\ #5
 
 % print port tick marks in fill color if they are disabled, in order to make
 % them expand out the dimensions of the task box yet remain invisible
 
-\IfSubStr{#3}{b}{\edef\starti{-20}}{\IfSubStr{#3}{s}{\edef\starti{-1}}{\edef\starti{-7}}}
-\IfSubStr{#3}{s}{\edef\endi{1}}{\edef\endi{7}}
+\IfSubStr{#4}{b}{\edef\starti{-20}}{\IfSubStr{#4}{s}{\edef\starti{-1}}{\edef\starti{-7}}}
+\IfSubStr{#4}{s}{\edef\endi{1}}{\edef\endi{7}}
 
 \foreach \i in {\starti,...,\endi}
 {
-  \IfSubStr{#3}{l}{\edef\leftcolor{black}\edef\leftcoord{coordinate (#1 Port \i)}}
+  \IfSubStr{#4}{l}{\edef\leftcolor{black}\edef\leftcoord{coordinate (#2 Port \i)}}
                   {\edef\leftcolor{blue!20}\edef\leftcoord{}}
-  \IfSubStr{#3}{r}{\edef\rightcolor{black}\edef\rightcoord{coordinate (#1 Port \i)}}
+  \IfSubStr{#4}{r}{\edef\rightcolor{black}\edef\rightcoord{coordinate (#2 Port \i)}}
                   {\edef\rightcolor{blue!20}\edef\rightcoord{}}
   \draw[xshift=-5em, ultra thick, color=\leftcolor] (0,0.2 * \i) \leftcoord -- (0.2,0.2 * \i);
   \draw[xshift=5em, ultra thick, color=\rightcolor] (-0.2,0.2 * \i) -- (0,0.2 * \i) \rightcoord;
@@ -57,8 +59,8 @@
 \\};
 }
 
-\newcommand\queue[2]{
-\filldraw (#1) +(-3.1,0) node[queue, name=#2] {};
+\newcommand\queue[3][]{
+\filldraw node[queue, name=#2, #1] #3 {};
 }
 
 \endinput
