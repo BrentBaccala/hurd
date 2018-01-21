@@ -22,10 +22,10 @@
 
 \usepackage{tabularx}
 
-\usepackage{xstring}
+\usepackage{hurd}
 
 \usepackage{tikz}
-\usetikzlibrary{positioning, fit, backgrounds, arrows, patterns, trees, shapes}
+\usetikzlibrary{positioning, fit, backgrounds, arrows, trees, shapes}
 
 \begin{document}
 
@@ -792,60 +792,6 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 \includegraphics[width=\textwidth]{graph-big.png}
 \end{frame}
 
-% tikz commands to draw task boxes to illustrate Mach IPC concepts
-
-\tikzstyle{task} = [draw, fill=blue!20, rounded corners]
-
-\tikzstyle{kernel} = [draw, fill=blue!20, rounded corners, minimum width=30em, minimum height=8em]
-
-\tikzstyle{message} = [draw, fill=red!20, text width=5em, text depth=3em, text centered,
-  minimum width=5em, minimum height=2em, rounded corners]
-
-% \task - takes four arguments
-% 1. name of task (used to refer to it from tikz; maybe printed as a label as well)
-% 2. location of task box's center point
-% 3. "r" or "l", indicating if a set of tick marks representing
-%    ports should drawn on the left or right side of the task box
-%    "u" to label the task "Task" instead of labeling it with its name
-%    "b" to make a "big" node (I wish I knew how to size the tick marks automatically)
-%    "s" to make a "small" node
-% 4. contents of the task box - other nodes
-%
-% The tick marks will be named "#1 Port #" for future reference
-%
-% It's implemented as a tikz matrix with two cells - the task name in the top cell
-% and everything else in the bottom cell
-
-\newcommand\task[4]{
-\matrix (#1) [task, inner xsep=0] at (#2) { \node {\IfSubStr{#3}{u}{Task}{#1}}; \\ #4
-
-% print port tick marks in fill color if they are disabled, in order to make
-% them expand out the dimensions of the task box yet remain invisible
-
-\IfSubStr{#3}{b}{\edef\starti{-20}}{\IfSubStr{#3}{s}{\edef\starti{-1}}{\edef\starti{-7}}}
-\IfSubStr{#3}{s}{\edef\endi{1}}{\edef\endi{7}}
-
-\foreach \i in {\starti,...,\endi}
-{
-  \IfSubStr{#3}{l}{\edef\leftcolor{black}\edef\leftcoord{coordinate (#1 Port \i)}}
-                  {\edef\leftcolor{blue!20}\edef\leftcoord{}}
-  \IfSubStr{#3}{r}{\edef\rightcolor{black}\edef\rightcoord{coordinate (#1 Port \i)}}
-                  {\edef\rightcolor{blue!20}\edef\rightcoord{}}
-  \draw[xshift=-5em, ultra thick, color=\leftcolor] (0,0.2 * \i) \leftcoord -- (0.2,0.2 * \i);
-  \draw[xshift=5em, ultra thick, color=\rightcolor] (-0.2,0.2 * \i) -- (0,0.2 * \i) \rightcoord;
-}
-
-\\};
-}
-
-% draw a box with vertical lines to represent a message queue
-% arg 1 is the name of a port to position it to the left of
-% arg 2 is name to be given the box
-
-\newcommand\queue[2]{
-\filldraw (#1) +(-3.1,0) node[rectangle, name=#2, minimum width=1.8cm, minimum height=1cm, draw, pattern=vertical lines] {};
-}
-
 \begin{frame}
 \frametitle{Ports - Mach's Interprocess Communication (IPC)}
 
@@ -892,6 +838,9 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 \end{center}
 
 \end{frame}
+
+\tikzstyle{message} = [draw, fill=red!20, text width=5em, text depth=3em, text centered,
+  minimum width=5em, minimum height=2em, rounded corners]
 
 \begin{frame}
 \frametitle{Mach IPC}
@@ -1161,10 +1110,6 @@ task135(pid9403)->task_terminate () = 0
 \end{semiverbatim}
 \end{frame}
 
-%\begin{frame}
-%\frametitle{Example: Basic File I/O}
-%\end{frame}
-
 \begin{frame}[fragile]
 \frametitle{{\tt rpctrace} of {\tt ls} (mapping the C library)}
 \begin{semiverbatim}
@@ -1182,6 +1127,8 @@ task135(pid9403)->vm_map (0 2245448 0 1    153(pid9403) 0 32 5 7 1) = 0 17039360
 
 \end{semiverbatim}
 \end{frame}
+
+\tikzstyle{kernel} = [draw, fill=blue!20, rounded corners, minimum width=30em, minimum height=8em]
 
 \begin{frame}
 \frametitle{Mach Memory Management}
@@ -1376,7 +1323,6 @@ task135(pid9403)->vm_map (0 2245448 0 1    153(pid9403) 0 32 5 7 1) = 0 17039360
 \node at (21 em, 20em) {\Huge Node 2};
 
 \filldraw (-30 em, 15em) node[rectangle, name=queue 1, minimum width=1.8cm, minimum height=1cm, draw, pattern=vertical lines] {};
-% \task{Task 0}{-30 em,15 em}{ur}{}
 
 \task{Task 1}{-30 em,0}{r}{
   \only<1-2>{
