@@ -14,7 +14,8 @@
 %%    "s" to make a "small" node
 %% 4. contents of the task box - other nodes
 %%
-%% The tick marks will be named "#1 Port #" for future reference
+%% The tick marks will be named "#1 [Left|Right] Port #" for future reference.
+%% If only one side has tick marks, you can use "#1 Port #" to refer to its ports.
 %%
 %% It's implemented as a tikz matrix with two cells - the task name in the top cell
 %% and everything else in the bottom cell
@@ -48,12 +49,14 @@
 
 \foreach \i in {\starti,...,\endi}
 {
-  \IfSubStr{#4}{l}{\edef\leftcolor{black}\edef\leftcoord{coordinate (#2 Port \i)}}
+  \IfSubStr{#4}{l}{\edef\leftcolor{black}\edef\leftcoord{coordinate (#2 Left Port \i)}}
                   {\edef\leftcolor{blue!20}\edef\leftcoord{}}
-  \IfSubStr{#4}{r}{\edef\rightcolor{black}\edef\rightcoord{coordinate (#2 Port \i)}}
+  \IfSubStr{#4}{r}{\edef\rightcolor{black}\edef\rightcoord{coordinate (#2 Right Port \i)}}
                   {\edef\rightcolor{blue!20}\edef\rightcoord{}}
   \draw[xshift=-5em, ultra thick, color=\leftcolor] (0,0.2 * \i) \leftcoord -- (0.2,0.2 * \i);
   \draw[xshift=5em, ultra thick, color=\rightcolor] (-0.2,0.2 * \i) -- (0,0.2 * \i) \rightcoord;
+  \IfSubStr{#4}{l}{\node (#2 Port \i) at (#2 Left Port \i) {};}{}
+  \IfSubStr{#4}{r}{\node (#2 Port \i) at (#2 Right Port \i) {};}{}
 }
 
 \\};
