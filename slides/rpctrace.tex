@@ -1,0 +1,184 @@
+\documentclass{beamer}
+\usetheme{Madrid}
+
+\setbeamertemplate{footline}{}
+\beamertemplatenavigationsymbolsempty
+
+\usepackage{comment}
+\usepackage{hurd}
+
+\usetikzlibrary{positioning, calc}
+
+\begin{document}
+
+\tikzstyle{send} = [rectangle, fill=green, rounded corners] 
+\tikzstyle{recv} = [rectangle, fill=red!50, rounded corners]
+\tikzstyle{empty} = [minimum size=0, inner sep=0]
+\tikzstyle{queue} = [draw, rectangle, minimum height=.5cm, minimum width=1cm, pattern=vertical lines]
+
+\begin{frame}
+\begin{tikzpicture}
+
+\node (center point) {};
+
+\task [left = of center point] {rpctrace}{}{lr}{}
+\task [right = of center point] {PUT}{}{l}{}
+
+\queue [above = of rpctrace] {queue}{}
+
+\node (below rpctrace) [below = of rpctrace] {};
+\node (below PUT) [below = of PUT] {};
+
+% invisible at first, but present to keep the canvas sizing consistent across all slides
+\only<1-4>{
+  \queue [white] {queue2}{at ($(below rpctrace)!.5!(below PUT)$)}
+}
+\only<5->{
+  \queue {queue2}{at ($(below rpctrace)!.5!(below PUT)$)}
+}
+
+% invisible receive right to match one from the next set of slides, so the canvas sizing is identical
+\draw [white, thick] (queue.west) -- ++(-3,1) node [recv, white, anchor=south] {R};
+
+\only<1,8->{\node (R1) at (PUT Port 0) [recv, anchor=west] {R};}
+\only<2-7>{\node (R1) at (PUT Port 0) [recv, anchor=west, minimum size=0, inner sep=0] {};}
+\node (r1) at (R1) {};
+
+\only<1-3,7->{
+  \node (S1) at (R1.east) [send, anchor=west] {S};
+  \node (S2) at (S1.east) [send, anchor=west] {S};
+}
+
+\only<1-3>{
+  \draw [violet, thick] (PUT Port 0) -- +(-1,0) |- (queue.east);
+}
+
+\draw [violet, thick] (queue.north) -- ++(-1,1) node [send, anchor=south] {S};
+\draw [violet, thick] (queue.north) -- ++(1,1) node [send, anchor=south] {S};
+
+\only<2->{
+  \node (R2) at (rpctrace Left Port 0) [recv, anchor=west] {R};
+  \draw [violet, thick] (queue.west) -- ++(-2,0) |- (R2);
+}
+
+\only<3-9>{
+  \node (S3) at (R2.east) [send, anchor=west] {S};
+}
+\only<10->{
+  \node (S3) at (R2.east) [empty] {};
+}
+
+\only<5-7>{
+  \node (R3) at (rpctrace Right Port 0) [recv, anchor=east] {R};
+}
+\only<8->{
+  \node (R3) at (rpctrace Right Port 0) [minimum size=0, inner sep=0] {};
+}
+
+\only<5->{
+  \draw [violet, thick] (rpctrace Right Port 0) -| ($(rpctrace Right Port 0)!.5!(queue2.west)$) |- (queue2.west);
+}
+
+\only<6->{
+  \node (S4) at (R3.west) [send, anchor=east] {S};
+}
+
+\only<7->{
+  \draw [violet, thick] (queue2.east) -| ($(queue2.east)!.5!(PUT Port 0)$) |- (PUT Port 0);
+}
+
+\only<9->{
+  % S3's location moves between slides, so starting this line at S4 keeps the dashes from morphing between slides
+  \draw [violet, dashed, thick] (S4) -- (S3);
+}
+
+
+\end{tikzpicture}
+\end{frame}
+
+\begin{comment}
+    (defun increment-number-at-point ()
+      (interactive)
+      (skip-chars-backward ``0-9'')
+      (or (looking-at ``[0-9]+'')
+          (error ``No number at point''))
+      (replace-match (number-to-string (1+ (string-to-number (match-string 0))))))
+
+(when (string-match ``[ \t]*$'' test-str)
+    (message (concat ``[`` (replace-match " nil nil test-str) ``]'')))
+
+     (while (re-search-forward ``foo[ \t]+bar'' nil t)
+       (replace-match ``foobar''))
+
+(defun ff ()
+  "increment numbers in string"
+  (let (mystr start)
+    (setq str (match-string 0)
+    (setq start 0)
+    (while (string-match "[0-9]+" mystr start)
+      (replace-match (number-to-string (1+ (string-to-number (match-string 0)))) nil nil (match-string 0))
+  (replace-regexp-in-string ``_'' `` `` (match-string 1))
+)
+
+\end{comment}
+
+\begin{frame}
+\begin{tikzpicture}
+
+\node (center point) {};
+
+\task [left = of center point] {rpctrace}{}{lr}{}
+\task [right = of center point] {PUT}{}{l}{}
+
+\queue [above = of rpctrace] {queue}{}
+
+\node (below rpctrace) [below = of rpctrace] {};
+\node (below PUT) [below = of PUT] {};
+
+% invisible at first, but present to keep the canvas sizing consistent across all slides
+\only<1-3>{
+  \queue [white] {queue2}{at ($(below rpctrace)!.5!(below PUT)$)}
+}
+\only<4->{
+  \queue {queue2}{at ($(below rpctrace)!.5!(below PUT)$)}
+}
+
+\only<1-2,5->{
+  \node (S1) at (PUT Port 0) [send, anchor=west] {S};
+  \node (S2) at (S1.east) [send, anchor=west] {S};
+}
+
+\only<1-2>{
+  \draw [violet, thick] (PUT Port 0) -- +(-1,0) |- (queue.east);
+}
+
+\draw [violet, thick] (queue.north) -- ++(-1,1) node [send, anchor=south] {S};
+\draw [violet, thick] (queue.north) -- ++(1,1) node [send, anchor=south] {S};
+\draw [violet, thick] (queue.west) -- ++(-3,1) node [recv, anchor=south] {R};
+
+\only<2->{
+  \node (S3) at (rpctrace Left Port 0) [send, anchor=west] {S};
+  \draw [violet, thick] (queue.west) -- ++(-2,0) |- (S3);
+}
+
+\only<4->{
+  \node (R3) at (rpctrace Right Port 0) [recv, anchor=east] {R};
+}
+
+\only<4->{
+  \draw [violet, thick] (rpctrace Right Port 0) -| ($(rpctrace Right Port 0)!.5!(queue2.west)$) |- (queue2.west);
+}
+
+\only<5->{
+  \draw [violet, thick] (queue2.east) -| ($(queue2.east)!.5!(PUT Port 0)$) |- (PUT Port 0);
+}
+
+\only<6->{
+  \draw [violet, dashed, thick] (S3) -- (R3);
+}
+
+
+\end{tikzpicture}
+\end{frame}
+
+\end{document}
