@@ -1,0 +1,525 @@
+--- ./utils/rpctrace.c.bak	2018-01-19 13:01:13.000000000 -0500
++++ ./utils/rpctrace.c	2018-01-25 13:05:22.000000000 -0500
+@@ -48,6 +48,7 @@
+ static const struct argp_option options[] =
+ {
+   {"output", 'o', "FILE", 0, "Send trace output to FILE instead of stderr."},
++  {"pid", 'p', "pid", 0, "Trace process with process id pid, may only be used once"},
+   {0, 's', "SIZE", 0, "Specify the maximum string size to print (the default is 80)."},
+   {0, 'E', "var[=value]", 0,
+    "Set/change (var=value) or remove (var) an environment variable among the "
+@@ -85,6 +86,8 @@
+ 
+ task_t unknown_task;
+ 
++pthread_cond_t no_tasks_remaining = PTHREAD_COND_INITIALIZER;
++
+ void
+ add_task (task_t task)
+ {
+@@ -106,6 +109,9 @@
+ remove_task (task_t task)
+ {
+   hurd_ihash_remove (&task_ihash, task);
++  if (task_ihash.nr_items == 0) {
++    pthread_cond_broadcast(&no_tasks_remaining);
++  }
+ }
+ 
+ static const char *
+@@ -592,7 +598,9 @@
+ }
+ 
+ /* get_send_wrapper searches for the send wrapper for the target task.
+-   If it doesn't exist, create a new one. */
++ * If it doesn't exist, create a new one.
++ * The port right passed in is replaced with a send right to the wrapper.
++ */
+ struct sender_info *
+ get_send_wrapper (struct receiver_info *receiver_info,
+ 		  mach_port_t task, mach_port_t *right)
+@@ -1662,6 +1670,411 @@
+ 
+ /*** Main program and child startup ***/
+ 
++void
++attach(pid_t pid)
++{
++  error_t err;
++  task_t task;
++
++  ports_inhibit_bucket_rpcs(traced_bucket);
++
++  task = pid2task (pid);
++  if (task < 0)
++    error (2, errno, "pid2task");
++
++  /* stop the task */
++
++  err = task_suspend(task);
++  assert_perror_backtrace (err);
++
++  /* add it to our hash of tasks (it's the only one right now) */
++
++  add_task(task);
++
++  /* Obtain the task's port information */
++
++  mach_port_t *portnames = NULL;
++  mach_msg_type_number_t nportnames = 0;
++  mach_port_type_t *porttypes = NULL;
++  mach_msg_type_number_t nporttypes = 0;
++
++  err = mach_port_names(task, &portnames, &nportnames, &porttypes, &nporttypes);
++  assert_perror_backtrace (err);
++
++  /* First, we record the members of all the portsets in stack-allocated memory.
++   * The 'members' element points to Mach-allocated memory that will need to be
++   * freed with vm_deallocate().
++   */
++
++  struct portset {
++    mach_port_t name;
++    mach_port_t * members;
++    mach_msg_type_number_t nmembers;
++    struct portset * next;
++  };
++
++  struct portset * portset_list = NULL;
++
++  for (int j = 0; j < nportnames; j++)
++    {
++      if (porttypes[j] & MACH_PORT_TYPE_PORT_SET) {
++
++	struct portset * portset = (struct portset *) alloca(sizeof(struct portset));
++
++	err = mach_port_get_set_status(task, portnames[j], &portset->members, &portset->nmembers);
++	assert_perror_backtrace (err);
++
++	portset->name = portnames[j];
++	portset->next = portset_list;
++	portset_list = portset;
++      }
++    }
++
++  /* wrap all of the task's ports */
++
++  for (int j = 0; j < nportnames; j++)
++    {
++      // fprintf(ostream, "%lu -> 0x%08x\n", portnames[j], porttypes[j]);
++
++      if (porttypes[j] == MACH_PORT_TYPE_DEAD_NAME) {
++	continue;
++      }
++
++      if (porttypes[j] == MACH_PORT_TYPE_PORT_SET) {
++	continue;
++      }
++
++      if (porttypes[j] == MACH_PORT_TYPE_SEND_ONCE) {
++
++	/* move it to rpctrace */
++
++	mach_port_t send_once_right;
++	mach_msg_type_name_t type;
++
++	err = mach_port_extract_right (task, portnames[j],
++				       MACH_MSG_TYPE_MOVE_SEND_ONCE,
++				       &send_once_right, &type);
++	assert_perror_backtrace (err);
++
++	assert_backtrace (type == MACH_MSG_TYPE_PORT_SEND_ONCE);
++
++	/* wrap it */
++
++	mach_port_t wrapper_right;
++	new_send_once_wrapper(send_once_right, &wrapper_right, task);
++
++	/* recreate a send-once right in the traced task */
++
++	err = mach_port_insert_right (task, portnames[j], wrapper_right,
++				      MACH_MSG_TYPE_MAKE_SEND_ONCE);
++	assert_perror_backtrace (err);
++
++	continue;
++      }
++
++      /* The only remaining cases should be ordinary send and receive rights */
++
++      assert_backtrace ((porttypes[j] & ~MACH_PORT_TYPE_SEND_RECEIVE) == 0);
++
++      // send rights w/out receive right - create a receiver_info (unknown_task) with a linked sender_info
++      // replace PUT's send rights with send rights to our sender_info
++
++      // send right with receive right - create a receiver_info (task) with a linked sender_info
++      // move PUT's receive right to our receiver_info
++      // replace PUT's send rights with send rights to our sender_info
++
++      // receive right w/out (local) send rights - create a receiver_info (task) with a linked sender_info
++      // move PUT's receive right to our receiver_info
++
++      if (porttypes[j] & MACH_PORT_TYPE_RECEIVE) {
++
++	/* Check to see if the port has any send rights at all.  If not, ignore it.
++	 *
++	 * XXX We want to ignore bare receive rights here, but we also end up ignoring
++	 * receive rights with attached send-once rights.  We could enhance this code
++	 * to handle receive rights with a single send-once right attached, but to
++	 * really do this right, we'd have to modify other parts of rpctrace to handle
++	 * not only receive rights with multiple send-once rights outstanding, but
++	 * also receive rights with both send and send-once rights.
++	 */
++
++	mach_port_status_t port_status;
++
++	err = mach_port_get_receive_status (task, portnames[j], &port_status);
++	assert_perror_backtrace (err);
++
++	//if (! port_status.mps_srights && (port_status.mps_sorights == 0)) {
++	if (! port_status.mps_srights) {
++	  continue;
++	}
++
++	// move the receive right from traced task to rpctrace
++
++	mach_port_t receive_right;
++	mach_msg_type_name_t type;
++
++	err = mach_port_extract_right (task, portnames[j],
++				       MACH_MSG_TYPE_MOVE_RECEIVE,
++				       &receive_right, &type);
++	assert_perror_backtrace (err);
++
++	assert_backtrace (type == MACH_MSG_TYPE_PORT_RECEIVE);
++
++#if 1
++	// give ourselves a send right to this port
++	mach_port_t extra_send_right;
++
++	err = mach_port_extract_right (mach_task_self (), receive_right, MACH_MSG_TYPE_MAKE_SEND,
++				       &extra_send_right, &type);
++	assert_perror_backtrace (err);
++	assert_backtrace (type == MACH_MSG_TYPE_PORT_SEND);
++#else
++	// XXX this version can't be traced by rpctrace on itself
++	err = mach_port_insert_right (mach_task_self (), receive_right, receive_right,
++				      MACH_MSG_TYPE_MAKE_SEND);
++	assert_perror_backtrace (err);
++#endif
++
++	// import the receive right as a sender_info
++
++	struct sender_info *send_wrapper;
++
++	err = ports_import_port (traced_class, traced_bucket,
++				 receive_right, sizeof *send_wrapper,
++				 &send_wrapper);
++	assert_perror_backtrace (err);
++
++	// find out how many send rights the task had
++
++	mach_port_urefs_t sendrights = 0;
++
++	if (porttypes[j] & MACH_PORT_TYPE_SEND) {
++
++	  err = mach_port_get_refs (task, portnames[j],
++				    MACH_PORT_RIGHT_SEND, &sendrights);
++	  assert_perror_backtrace (err);
++
++	  // remove them
++
++	  err = mach_port_mod_refs (task, portnames[j],
++				    MACH_PORT_RIGHT_SEND, - sendrights);
++	  assert_perror_backtrace (err);
++	}
++
++	// create a new port and receive right in the traced task
++
++	err = mach_port_allocate_name (task, MACH_PORT_RIGHT_RECEIVE, portnames[j]);
++	assert_perror_backtrace (err);
++
++	// give ourselves a send right to the new port
++
++	mach_port_t send_right;
++
++	err = mach_port_extract_right (task, portnames[j], MACH_MSG_TYPE_MAKE_SEND, &send_right, &type);
++	assert_perror_backtrace (err);
++
++	assert_backtrace (type == MACH_MSG_TYPE_PORT_SEND);
++
++	// if the task had send rights, recreate them
++
++	if (sendrights > 0) {
++
++	  err = mach_port_insert_right (task, portnames[j], send_right,
++					MACH_MSG_TYPE_COPY_SEND);
++	  assert_perror_backtrace (err);
++
++	  if (sendrights > 1) {
++	    err = mach_port_mod_refs (task, portnames[j],
++				      MACH_PORT_RIGHT_SEND, sendrights - 1);
++	    assert_perror_backtrace (err);
++	  }
++	}
++
++	// set up our data structures to track everything
++
++	struct receiver_info * receiver_info = new_receiver_info(send_right, task);
++
++	receiver_info->portname = portnames[j];
++
++	TRACED_INFO (send_wrapper)->type = MACH_MSG_TYPE_MOVE_SEND;
++	TRACED_INFO (send_wrapper)->task = task;
++	TRACED_INFO (send_wrapper)->name = receiver_info->name;
++	TRACED_INFO (send_wrapper)->seqno = 0;
++	pthread_cond_init(& TRACED_INFO(send_wrapper)->sequencer, NULL);
++
++	//easprintf (&TRACED_INFO (send_wrapper)->name, "  %lu<--%lu(pid%d)",
++	//	   receiver_info->forward, TRACED_INFO (send_wrapper)->pi.port_right, pid);
++	easprintf (&TRACED_INFO (send_wrapper)->name, "  %lu(pid%d)", portnames[j], pid);
++
++	send_wrapper->next = NULL;
++	send_wrapper->receive_right = receiver_info;
++	receiver_info->next = send_wrapper;
++
++	/* drop the extraneous send right */
++
++	err = mach_port_deallocate(mach_task_self(), extra_send_right);
++	assert_perror_backtrace (err);
++
++      } else {
++
++	/* we're dealing with send rights with the receive right on a different task */
++
++	// give ourselves a send right to the port
++
++	mach_port_t send_right;
++	mach_msg_type_name_t type;
++
++	err = mach_port_extract_right (task, portnames[j], MACH_MSG_TYPE_COPY_SEND, &send_right, &type);
++	assert_perror_backtrace (err);
++
++	assert_backtrace (type == MACH_MSG_TYPE_PORT_SEND);
++
++	// find out how many send rights the task had
++
++	mach_port_urefs_t sendrights;
++
++	err = mach_port_get_refs (task, portnames[j],
++				  MACH_PORT_RIGHT_SEND, &sendrights);
++	assert_perror_backtrace (err);
++
++	// remove them
++
++	err = mach_port_mod_refs (task, portnames[j],
++				  MACH_PORT_RIGHT_SEND, - sendrights);
++	assert_perror_backtrace (err);
++
++	/* create a receive right */
++
++	struct sender_info *send_wrapper;
++
++	err = ports_create_port (traced_class, traced_bucket,
++				 sizeof *send_wrapper, &send_wrapper);
++	assert_perror_backtrace (err);
++
++	// recreate the task's send rights
++
++	assert_backtrace(sendrights > 0);
++
++	err = mach_port_insert_right (task, portnames[j], ports_get_right(send_wrapper),
++				      MACH_MSG_TYPE_MAKE_SEND);
++	assert_perror_backtrace (err);
++
++	if (sendrights > 1) {
++
++	  err = mach_port_mod_refs (task, portnames[j],
++				    MACH_PORT_RIGHT_SEND, sendrights-1);
++	  assert_perror_backtrace (err);
++	}
++
++	// set up data structures to track everything
++
++	struct receiver_info * receiver_info = new_receiver_info(send_right, task);
++
++	TRACED_INFO (send_wrapper)->type = MACH_MSG_TYPE_MOVE_SEND;
++	TRACED_INFO (send_wrapper)->task = task;
++	TRACED_INFO (send_wrapper)->name = receiver_info->name;
++	TRACED_INFO (send_wrapper)->seqno = 0;
++	pthread_cond_init(& TRACED_INFO(send_wrapper)->sequencer, NULL);
++
++	//easprintf (&TRACED_INFO (send_wrapper)->name, "  %lu<--%lu(pid%d)",
++	//	   receiver_info->forward, TRACED_INFO (send_wrapper)->pi.port_right, pid);
++	easprintf (&TRACED_INFO (send_wrapper)->name, "  %lu(pid%d)",
++		   portnames[j], pid);
++
++	send_wrapper->next = NULL;
++	send_wrapper->receive_right = receiver_info;
++	receiver_info->next = send_wrapper;
++      }
++
++    }
++
++  /* Now go back over the portsets and recreate them. */
++
++  while (portset_list) {
++    mach_port_t * members;
++    mach_msg_type_number_t nmembers;
++    err = mach_port_get_set_status(task, portset_list->name, &members, &nmembers);
++    assert_perror_backtrace (err);
++    fprintf(ostream, "portset %lu nmembers %d\n", portset_list->name, nmembers);
++
++    for (int j = 0; j < portset_list->nmembers; j++) {
++      err = mach_port_move_member(task, portset_list->members[j], portset_list->name);
++      assert_perror_backtrace (err);
++    }
++    err = vm_deallocate(mach_task_self(), (vm_address_t) portset_list->members, portset_list->nmembers * sizeof(mach_port_t));
++    assert_perror_backtrace (err);
++    portset_list = portset_list->next;
++  }
++
++  /* deallocate list of ports and types */
++
++  if (portnames) {
++    err = vm_deallocate (mach_task_self (), (vm_address_t) portnames,
++			 nportnames * sizeof (*portnames));
++    assert_perror_backtrace (err);
++  }
++
++  if (porttypes) {
++    err = vm_deallocate (mach_task_self (), (vm_address_t) porttypes,
++			 nporttypes * sizeof (*porttypes));
++    assert_perror_backtrace (err);
++  }
++
++  /* wrap the task port */
++
++  mach_port_t kernel_port;
++
++  err = task_get_kernel_port(task, &kernel_port);
++  assert_perror_backtrace (err);
++
++  struct receiver_info *kernel_port_receiver;
++
++  kernel_port_receiver = hurd_ihash_find (&traced_names, kernel_port);
++
++  if (! kernel_port_receiver) {
++    kernel_port_receiver = new_receiver_info (kernel_port, task);
++  } else {
++    free(kernel_port_receiver->name);
++    easprintf (&kernel_port_receiver->name, "task%lu(pid%d)", task, pid);
++    if (kernel_port_receiver->next) {
++      free(kernel_port_receiver->next->pi.name);
++      easprintf (&kernel_port_receiver->next->pi.name, "task%lu(pid%d)", task, pid);
++    }
++  }
++
++  struct sender_info *task_send_wrapper;
++  task_send_wrapper = get_send_wrapper(kernel_port_receiver, task, &kernel_port);
++
++  free (TRACED_INFO (task_send_wrapper)->name);
++  easprintf (&TRACED_INFO (task_send_wrapper)->name, "task%lu(pid%d)", task, pid);
++
++  /* get_send_wrapper() set kernel_port to point to a receive right,
++   * expecting us to use it with MACH_MSG_TYPE_MAKE_SEND.
++   *
++   * task_set_kernel_port() actually uses MACH_MSG_TYPE_COPY_SEND,
++   * so we need to fiddle some things here...
++   */
++
++  err = mach_port_insert_right (mach_task_self (), kernel_port, kernel_port,
++				MACH_MSG_TYPE_MAKE_SEND);
++  assert_perror_backtrace (err);
++
++  err = task_set_kernel_port(task, kernel_port);
++  assert_perror_backtrace (err);
++
++  err = mach_port_deallocate (mach_task_self (), kernel_port);
++  assert_perror_backtrace (err);
++
++  /* wrap all of the thread ports - why do we have a threads_wrapped flag? */
++
++  wrap_all_threads(task);
++
++  /* resume the task */
++
++  task_resume(task);
++
++  ports_resume_bucket_rpcs(traced_bucket);
++}
+ 
+ /* Run a child and have it do more or else `execvpe (argv, envp);'.  */
+ pid_t
+@@ -1742,6 +2155,7 @@
+   char **cmd_envp = NULL;
+   char *envz = NULL;
+   size_t envz_len = 0;
++  pid_t traced_pid = 0;
+ 
+   /* Parse our options...  */
+   error_t parse_opt (int key, char *arg, struct argp_state *state)
+@@ -1756,6 +2170,14 @@
+ 	  strsize = atoi (arg);
+ 	  break;
+ 
++	case 'p':
++	  if (traced_pid != 0) {
++	    argp_usage (state);
++	    return EINVAL;
++	  }
++	  traced_pid = atoi (arg);
++	  break;
++
+ 	case 'E':
+ 	  if (envz == NULL)
+ 	    {
+@@ -1785,10 +2207,17 @@
+ 	  break;
+ 
+ 	case ARGP_KEY_NO_ARGS:
+-	  argp_usage (state);
+-	  return EINVAL;
++	  if (traced_pid == 0) {
++	    argp_usage (state);
++	    return EINVAL;
++	  }
++	  break;
+ 
+ 	case ARGP_KEY_ARG:
++	  if (traced_pid != 0) {
++	    argp_usage (state);
++	    return EINVAL;
++	  }
+ 	  cmd_argv = &state->argv[state->next - 1];
+ 	  state->next = state->argc;
+ 	  break;
+@@ -1854,9 +2283,26 @@
+   if (cmd_envp == NULL)
+     cmd_envp = envp;
+ 
+-  /* Run the program on the command line and wait for it to die.
+-     The other thread does all the tracing and interposing.  */
+-  {
++  if (traced_pid) {
++
++    /* When we attach to a running process, we can't wait() for it
++     * because it's not our child.
++     *
++     * Instead, wait until we've gotten DEAD NAME notifications on
++     * all of our traced task ports.
++     */
++
++    attach(traced_pid);
++
++    pthread_mutex_lock(&tracelock);
++    pthread_cond_wait (&no_tasks_remaining, &tracelock);
++    pthread_mutex_unlock(&tracelock);
++
++  } else {
++
++    /* Run the program on the command line and wait for it to die.
++       The other thread does all the tracing and interposing.  */
++
+     pid_t child, pid;
+     int status;
+     child = traced_spawn (cmd_argv, cmd_envp);
