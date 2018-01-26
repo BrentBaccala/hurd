@@ -7,14 +7,152 @@
 \usepackage{comment}
 \usepackage{hurd}
 
-\usetikzlibrary{positioning, calc}
+\usetikzlibrary{positioning, calc, arrows, fit}
 
 \begin{document}
 
-\tikzstyle{send} = [rectangle, fill=green, rounded corners] 
+\tikzstyle{send} = [rectangle, fill=green, rounded corners]
 \tikzstyle{recv} = [rectangle, fill=red!50, rounded corners]
 \tikzstyle{empty} = [minimum size=0, inner sep=0]
 \tikzstyle{queue} = [draw, rectangle, minimum height=.5cm, minimum width=1cm, pattern=vertical lines]
+\tikzstyle{message} = [draw, fill=red!20, text width=5em, text depth=3em, text centered,
+                       minimum width=5em, minimum height=2em, rounded corners]
+
+\tikzstyle{port link} = [black, -triangle 90]
+\tikzstyle{message path} = [violet, thick, -triangle 90]
+\tikzstyle{right link} = [red, thick, dotted, ->]
+\tikzstyle{internal link} = [dashed, thick]
+
+% illustration of rpctrace problems with mach_port_insert_right()
+
+\begin{frame}[fragile]
+\begin{block}{}
+\begin{semiverbatim}
+\tiny
+ports\_create\_port (port\_class, port\_bucket, sizeof (struct port\_info), \&readport);
+readportname = ports\_get\_right (readport);
+mach\_port\_insert\_right (mach\_task\_self (), readportname, readportname, MACH\_MSG\_TYPE\_MAKE\_SEND);
+\end{semiverbatim}
+\end{block}
+
+\begin{block}{}
+\begin{semiverbatim}
+\tiny
+routine mach\_port\_insert\_right(
+                task            : ipc\_space\_t;
+                name            : mach\_port\_name\_t;
+                poly            : mach\_port\_poly\_t);
+
+\end{semiverbatim}
+\end{block}
+
+\vfill
+
+\begin{center}
+\begin{tikzpicture}
+
+\node (center point) {};
+
+\task [left = of center point] {rpctrace}{}{lr}{
+  \only<1-3>{
+    \node (rpctrace Message) [message, anchor=north, opacity=0] {\scriptsize insert\_right};
+  }
+  \only<4-5>{
+    \node (rpctrace Message) [message, anchor=north] {\scriptsize insert\_right};
+  }
+  \only<6>{
+    \node (rpctrace Message) [message, anchor=north, fill=none, dashed, text opacity=0] {\scriptsize insert\_right};
+  }
+}
+
+\only<4-5>{
+  \node (rpctrace sendright) at (rpctrace Message) [send, anchor=west] {S};
+  \node at (rpctrace sendright.west) [anchor=east, outer sep=0, inner sep=0] {(10,};
+  \node at (rpctrace sendright.east) [anchor=west, outer sep=0, inner sep=0] {)};
+}
+
+\task [right = of center point] {Traced Task}{}{lk}{
+  \only<1-2,5->{
+    \node (Traced Task Message) [message, anchor=north, opacity=0] {\scriptsize insert\_right};
+  }
+  \only<3>{
+    \node (Traced Task Message) [message, anchor=north] {\scriptsize insert\_right};
+  }
+  \only<4>{
+    \node (Traced Task Message) [message, anchor=north, fill=none, dashed, text opacity=0] {\scriptsize insert\_right};
+  }
+}
+
+\only<3>{
+  \node (Traced Task sendright) at (Traced Task Message) [send, anchor=west] {S};
+  \node at (Traced Task sendright.west) [anchor=east, outer sep=0, inner sep=0] {(10,};
+  \node at (Traced Task sendright.east) [anchor=west, outer sep=0, inner sep=0] {)};
+}
+
+\draw [port link] (rpctrace Port 7) -| ($(rpctrace Port 7)!.5!(Traced Task Task Port)$) |- (Traced Task Task Port);
+
+\node (S1) at (rpctrace Port 7) [send, anchor=east] {S};
+\node (R1) at (rpctrace Port 4) [recv, anchor=east] {R};
+
+\draw [internal link] (S1) -- +(-.5,0) |- (R1);
+
+\draw [port link] (Traced Task Port 4) -- (rpctrace Port 4);
+\node (S2) at (Traced Task Port 4) [send, anchor=west] {S};
+\node at (S2.east) [anchor=west] {\scriptsize mach\_task\_self()};
+
+\only<4>{
+  \draw [message path] (Traced Task Message.north) |- (S2);
+  \draw [message path] (Traced Task Port 4) -- (rpctrace Port 4);
+  \draw [message path] (R1) -| (rpctrace Message.north);
+}
+
+\only<6>{
+  \draw [message path] (rpctrace Message.north) |- (S1);
+  \draw [message path] (rpctrace Port 7) -| ($(rpctrace Port 7)!.5!(Traced Task Task Port)$) |- (Traced Task Task Port);
+  \draw [message path] (Traced Task Task Port) -| ($(Traced Task Task Port)!.5!(Kernel Message.west)$) |- (Kernel Message.west);
+}
+
+\only<2->{
+  \node (R2) at (Traced Task Port -4) [recv, anchor=west] {R};
+  \node at (R2.north) [anchor=south west, inner sep=2] {10};
+}
+
+\only<3>{
+  \draw [right link] (Traced Task sendright) -- (R2);
+}
+
+\only<4>{
+  \draw [right link] (rpctrace sendright) -- (R2);
+}
+
+\only<5->{
+  \node (S3) at (rpctrace Port -4) [send, anchor=east] {S};
+  \node (R3) at (rpctrace Port -1) [recv, anchor=east] {R};
+  \draw [internal link] (S3) -- +(-.5,0) |- (R3);
+  \draw [port link] (rpctrace Port -4) -- (Traced Task Port -4);
+}
+
+\only<5>{
+  \draw [right link] (rpctrace sendright) -- (R3);
+}
+
+\only<1-5>{
+  \node (Kernel Message) [message, anchor=south west, opacity=0] at (Traced Task.north) {\scriptsize insert\_right};
+}
+\only<6->{
+  \node (Kernel Message) [message, anchor=south west] at (Traced Task.north) {\scriptsize insert\_right};
+  \node (Kernel sendright) at (Kernel Message) [send, anchor=west] {S};
+  \node at (Kernel sendright.west) [anchor=east, outer sep=0, inner sep=0] {(10,};
+  \node at (Kernel sendright.east) [anchor=west, outer sep=0, inner sep=0] {)};
+  \draw [right link] (Kernel sendright) -- (R3);
+}
+
+\end{tikzpicture}
+\end{center}
+
+\end{frame}
+
+%% illustration of attach operation (two frames)
 
 \begin{frame}
 \begin{tikzpicture}
@@ -40,11 +178,10 @@
 % invisible receive right to match one from the next set of slides, so the canvas sizing is identical
 \draw [white, thick] (queue.west) -- ++(-3,1) node [recv, white, anchor=south] {R};
 
-\only<1,8->{\node (R1) at (PUT Port 0) [recv, anchor=west] {R};}
-\only<2-7>{\node (R1) at (PUT Port 0) [recv, anchor=west, minimum size=0, inner sep=0] {};}
-\node (r1) at (R1) {};
+\only<1,5->{\node (R1) at (PUT Port 0) [recv, anchor=west] {R};}
+\only<2-4>{\node (R1) at (PUT Port 0) [empty] {};}
 
-\only<1-3,7->{
+\only<1-3,6->{
   \node (S1) at (R1.east) [send, anchor=west] {S};
   \node (S2) at (S1.east) [send, anchor=west] {S};
 }
@@ -61,33 +198,23 @@
   \draw [violet, thick] (queue.west) -- ++(-2,0) |- (R2);
 }
 
-\only<3-9>{
+\only<3-8>{
   \node (S3) at (R2.east) [send, anchor=west] {S};
 }
-\only<10->{
+\only<9->{
   \node (S3) at (R2.east) [empty] {};
 }
 
-\only<5-7>{
-  \node (R3) at (rpctrace Right Port 0) [recv, anchor=east] {R};
-}
-\only<8->{
-  \node (R3) at (rpctrace Right Port 0) [minimum size=0, inner sep=0] {};
-}
-
-\only<5->{
+\only<7->{
+  \node (S4) at (rpctrace Right Port 0) [send, anchor=east] {S};
   \draw [violet, thick] (rpctrace Right Port 0) -| ($(rpctrace Right Port 0)!.5!(queue2.west)$) |- (queue2.west);
 }
 
-\only<6->{
-  \node (S4) at (R3.west) [send, anchor=east] {S};
-}
-
-\only<7->{
+\only<5->{
   \draw [violet, thick] (queue2.east) -| ($(queue2.east)!.5!(PUT Port 0)$) |- (PUT Port 0);
 }
 
-\only<9->{
+\only<8->{
   % S3's location moves between slides, so starting this line at S4 keeps the dashes from morphing between slides
   \draw [violet, dashed, thick] (S4) -- (S3);
 }
