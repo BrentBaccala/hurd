@@ -9,6 +9,49 @@
 
 \usetikzlibrary{positioning, calc, arrows, fit}
 
+\begin{comment}
+
+;; ELISP code to insert and remove slides from beamer \only macros
+;;
+;; XXX still have to deal with case where \only<2> needs to become \only<2-3> (inserting new frame 3)
+;;     or \only<5> has to become \only<0> (deleting frame 5)
+
+(defun incr-only-func (min)
+  "increment all numbers in string greater than or equal to a minimum value"
+  (let ((mystr (match-string 0)) (start 0) value)
+       (save-match-data (while (string-match "[0-9]+" mystr start)
+                               (setq value (string-to-number (match-string 0 mystr)))
+                               (when (>= value min)
+                                     (setq mystr (replace-match (number-to-string (1+ value))
+                                                                nil nil mystr)))
+                               (string-match "[0-9]+" mystr start)
+                               (setq start (match-end 0))))
+       mystr))
+
+(defun incr-only (min)
+  "increment an only macro"
+  (interactive "NSlide number to insert: ")
+  (query-replace-regexp "\\only<[^>]+>" `(replace-eval-replacement replace-quote (incr-only-func ,min))))
+
+(defun decr-only-func (min)
+  "decrement all numbers in string greater than a minimum value"
+  (let ((mystr (match-string 0)) (start 0) value)
+       (save-match-data (while (string-match "[0-9]+" mystr start)
+                               (setq value (string-to-number (match-string 0 mystr)))
+                               (when (> value min)
+                                     (setq mystr (replace-match (number-to-string (1- value))
+                                                                nil nil mystr)))
+                               (string-match "[0-9]+" mystr start)
+                               (setq start (match-end 0))))
+       mystr))
+
+(defun decr-only (min)
+  "decrement an only macro"
+  (interactive "NSlide number to remove: ")
+  (query-replace-regexp "\\only<[^>]+>" `(replace-eval-replacement replace-quote (decr-only-func ,min))))
+
+\end{comment}
+
 \begin{document}
 
 \tikzstyle{send} = [rectangle, fill=green, rounded corners]
@@ -222,32 +265,6 @@ routine mach\_port\_insert\_right(
 
 \end{tikzpicture}
 \end{frame}
-
-\begin{comment}
-    (defun increment-number-at-point ()
-      (interactive)
-      (skip-chars-backward ``0-9'')
-      (or (looking-at ``[0-9]+'')
-          (error ``No number at point''))
-      (replace-match (number-to-string (1+ (string-to-number (match-string 0))))))
-
-(when (string-match ``[ \t]*$'' test-str)
-    (message (concat ``[`` (replace-match " nil nil test-str) ``]'')))
-
-     (while (re-search-forward ``foo[ \t]+bar'' nil t)
-       (replace-match ``foobar''))
-
-(defun ff ()
-  "increment numbers in string"
-  (let (mystr start)
-    (setq str (match-string 0)
-    (setq start 0)
-    (while (string-match "[0-9]+" mystr start)
-      (replace-match (number-to-string (1+ (string-to-number (match-string 0)))) nil nil (match-string 0))
-  (replace-regexp-in-string ``_'' `` `` (match-string 1))
-)
-
-\end{comment}
 
 \begin{frame}
 \begin{tikzpicture}
