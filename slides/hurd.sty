@@ -12,10 +12,12 @@
 %%    "u" to label the task "Task" instead of labeling it with its name
 %%    "b" to make a "big" node (I wish I knew how to size the tick marks automatically)
 %%    "s" to make a "small" node
+%%    "k" to add a dashed extension above the task illustrating the task's kernel component
 %% 4. contents of the task box - other nodes
 %%
 %% The tick marks will be named "#1 [Left|Right] Port #" for future reference.
 %% If only one side has tick marks, you can use "#1 Port #" to refer to its ports.
+%% If a kernel extension is present, there's a "#1 Task Port"
 %%
 %% It's implemented as a tikz matrix with two cells - the task name in the top cell
 %% and everything else in the bottom cell
@@ -38,8 +40,8 @@
 
 \tikzstyle{queue} = [draw, rectangle, minimum width=1.8cm, minimum height=1cm, pattern=vertical lines]
 
-\newcommand\task[5][]{
-\matrix (#2) [task, inner xsep=0, #1] #3 { \node {\IfSubStr{#4}{u}{Task}{#2}}; \\ #5
+\newcommand\taskk[5][]{
+\matrix (#2) [task, inner xsep=0, #1] #3 { \node [anchor=center] {\IfSubStr{#4}{u}{Task}{#2}}; \\ #5
 
 % print port tick marks in fill color if they are disabled, in order to make
 % them expand out the dimensions of the task box yet remain invisible
@@ -55,11 +57,50 @@
                   {\edef\rightcolor{blue!20}\edef\rightcoord{}}
   \draw[xshift=-5em, ultra thick, color=\leftcolor] (0,0.2 * \i) \leftcoord -- (0.2,0.2 * \i);
   \draw[xshift=5em, ultra thick, color=\rightcolor] (-0.2,0.2 * \i) -- (0,0.2 * \i) \rightcoord;
-  \IfSubStr{#4}{l}{\node (#2 Port \i) at (#2 Left Port \i) {};}{}
-  \IfSubStr{#4}{r}{\node (#2 Port \i) at (#2 Right Port \i) {};}{}
+  \IfSubStr{#4}{l}{\node [minimum size=0, inner sep=0] (#2 Port \i) at (#2 Left Port \i) {};}{}
+  \IfSubStr{#4}{r}{\node [minimum size=0, inner sep=0] (#2 Port \i) at (#2 Right Port \i) {};}{}
 }
 
 \\};
+}
+
+\newcommand\taskkkk[5][]{
+\matrix [task, inner xsep=0, #1, yshift=1em, dashed, thick] #3 {
+
+% print port tick marks in fill color if they are disabled, in order to make
+% them expand out the dimensions of the task box yet remain invisible
+
+\draw[xshift=-5em, ultra thick, color=blue!20] (0,0.2 * 20) -- (0.2,0.2 * 20);
+\draw[xshift=5em, ultra thick, color=blue!20] (0,0.2 * 20) -- (-0.2,0.2 * 20);
+
+\draw[xshift=-5em, ultra thick, color=black, solid] (0,0.2 * 19) coordinate (#2 Task Port) -- (0.2,0.2 * 19) node {\tiny TASK};
+
+\\};
+}
+
+% this command draws a dashed extension above the task box to illustrate the kernel task port
+
+\newcommand\taskkk[5]{
+% these shifts, to moved the dashed extension into position, are pretty arbitrary
+\IfSubStr{#4}{b}{\edef\yshift{97}}{\IfSubStr{#4}{s}{\edef\yshift{25}}{\edef\yshift{60}}}
+\matrix [task, inner xsep=0, #1, yshift=\yshift, dashed, thick] #3 {
+
+% print tick marks in fill color to size the box
+
+\draw[xshift=-5em, ultra thick, color=blue!20] (0,0.2) -- (0.2,0.2);
+\draw[xshift=5em, ultra thick, color=blue!20] (0,0.2) -- (-0.2,0.2);
+
+% print a labeled tick mark to illustrate the task port
+
+\draw[xshift=-5em, ultra thick, color=black, solid] (0,0) coordinate (#2 Task Port) -- (0.2,0) node {\tiny TASK};
+
+\\};
+}
+
+
+\newcommand\task[5][]{
+\IfSubStr{#4}{k}{\taskkk{#1}{#2}{#3}{#4}{#5}}{}
+\taskk[#1]{#2}{#3}{#4}{#5}
 }
 
 \newcommand\queue[3][]{

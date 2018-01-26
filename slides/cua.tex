@@ -1030,7 +1030,7 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
   edge from parent path={(\tikzparentnode.east) -- +(.5,0) |- (\tikzchildnode.west)}]
 \begin{center}
 \begin{tikzpicture}
-  [grow via three points={one child at (0.5,-0.7) and
+  [node distance = 1em, grow via three points={one child at (0.5,-0.7) and
   two children at (0.5,-0.7) and (0.5,-1.4)},
   edge from parent path={(\tikzparentnode.south) |- (\tikzchildnode.west)}]
   \node[dirent] (root) {/}
@@ -1054,8 +1054,8 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 
 
 \task{ext2 File Server}{at (20 em,-5 em)}{l}{}
-\task{httpfs}{at (20 em, -12 em)}{ls}{}
-\task{pfinet}{at (20 em, -17 em)}{ls}{}
+\task [below = of ext2 File Server] {httpfs}{}{ls}{}
+\task [below = of httpfs] {pfinet}{}{ls}{}
 
 \draw [link] (root) -- +(5,0) |- (ext2 File Server Port 7);
 \draw [link] (bash) -- +(1,0) |- (ext2 File Server Port 5);
@@ -1065,7 +1065,7 @@ standard Linux inter-process communication mechanisms, shared memory, semaphores
 \draw [link] (hurd) -- +(2,0) -- (ext2 File Server Port -3);
 \draw [link] (home) -- +(3,0) -- (ext2 File Server Port -5);
 
-\draw [link] (http) -- +(2,0) |- (httpfs Port 0);
+\draw [link] (http) -- (httpfs Port 1);
 \draw [link] (inet) -- (pfinet Port -1);
 
 \end{tikzpicture}
