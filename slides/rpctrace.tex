@@ -66,6 +66,41 @@
 \tikzstyle{right link} = [red, thick, dotted, ->]
 \tikzstyle{internal link} = [dashed, thick]
 
+\begin{frame}
+\begin{tikzpicture}
+
+\task {rpctrace}{}{lr}{}
+
+\task [right = of rpctrace] {Traced Task 2}{}{sl}{}
+\task [above = of Traced Task 2] {Traced Task 1}{}{sl}{}
+\task [below = of Traced Task 2] {Traced Task 3}{}{sl}{}
+
+\task [above = of rpctrace] {Unknown Task}{}{sl}{}
+
+\draw [port link] (rpctrace Left Port 0) -- +(-1,0) |- (Unknown Task Port 0);
+\draw [port link] (Traced Task 2 Port 0) -- (rpctrace Right Port 0);
+\draw [port link] (Traced Task 1 Port 0) -| ($(Traced Task 1 Port 0)!.5!(rpctrace Right Port 5)$) |- (rpctrace Right Port 5);
+\draw [port link] (Traced Task 3 Port 0) -| ($(Traced Task 3 Port 0)!.5!(rpctrace Right Port -5)$) |- (rpctrace Right Port -5);
+
+\node (Task 1 sendright) at (Traced Task 1 Port 0) [send, anchor=west] {S};
+\node (Task 2 sendright) at (Traced Task 2 Port 0) [send, anchor=west] {S};
+\node (Task 3 sendright) at (Traced Task 3 Port 0) [send, anchor=west] {S};
+
+\node (Unknown Task recvright) at (Unknown Task Port 0) [recv, anchor=west] {R};
+
+\node (R1) at (rpctrace Right Port 5) [recv, anchor=east] {R};
+\node (R2) at (rpctrace Right Port 0) [recv, anchor=east] {R};
+\node (R3) at (rpctrace Right Port -5) [recv, anchor=east] {R};
+
+\node (S1) at (rpctrace Left Port 0) [send, anchor=west] {S};
+
+\draw [internal link] (S1) -- (R2);
+\draw [internal link] ($(S1)!.5!(R2)$) -- (R1);
+\draw [internal link] ($(S1)!.5!(R2)$) -- (R3);
+
+\end{tikzpicture}
+\end{frame}
+
 % illustration of rpctrace problems with mach_port_insert_right()
 
 \begin{frame}[fragile]
