@@ -1,0 +1,13 @@
+diff --git a/utils/rpctrace.c b/utils/rpctrace.c
+index 09911b37..bab7ff24 100644
+--- a/utils/rpctrace.c
++++ b/utils/rpctrace.c
+@@ -1470,6 +1470,8 @@ print_request_header (struct sender_info *receiver, mach_msg_header_t *msg)
+   print_ellipsis ();
+   last_reply_port = msg->msgh_local_port;
+ 
++  fprintf(ostream, "[%5d]", msg->msgh_seqno);
++
+   if (TRACED_INFO (receiver)->name != 0)
+     fprintf (ostream, "%4s->", TRACED_INFO (receiver)->name);
+   else
