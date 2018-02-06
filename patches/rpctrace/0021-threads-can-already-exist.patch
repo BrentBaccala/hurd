@@ -1,0 +1,61 @@
+--- ./utils/rpctrace.c.bak	2018-02-06 00:08:17.000000000 -0500
++++ ./utils/rpctrace.c	2018-02-06 00:15:22.000000000 -0500
+@@ -991,6 +991,7 @@
+ static void
+ wrap_all_threads (task_t task)
+ {
++  mach_port_t new_thread_port;
+   struct sender_info *thread_send_wrapper;
+   struct receiver_info *thread_receiver_info;
+   thread_t *threads;
+@@ -1004,30 +1005,30 @@
+   for (int i = 0; i < nthreads; ++i)
+     {
+       thread_receiver_info = hurd_ihash_find (&traced_names, threads[i]);
+-      /* We haven't seen the port. */
++
+       if (thread_receiver_info == NULL)
+ 	{
+-	  mach_port_t new_thread_port;
++	  /* We haven't seen the port. */
++	  thread_receiver_info = new_receiver_info (threads[i], task);
++	}
+ 
+-	  thread_receiver_info = new_receiver_info (threads[i], unknown_task);
+-	  thread_send_wrapper = new_send_wrapper (thread_receiver_info,
+-						  task, &new_thread_port);
+-	  free (TRACED_INFO (thread_send_wrapper)->name);
+-	  easprintf (&TRACED_INFO (thread_send_wrapper)->name,
+-		     "thread%lu(pid%d)", threads[i], task2pid (task));
+-
+-	  err = mach_port_insert_right (mach_task_self (),
+-					new_thread_port, new_thread_port,
+-					MACH_MSG_TYPE_MAKE_SEND);
+-	  if (err)
+-	    error (2, err, "mach_port_insert_right");
+-
+-	  err = thread_set_kernel_port (threads[i], new_thread_port);
+-	  if (err)
+-	    error (2, err, "thread_set_kernel_port");
++      thread_send_wrapper = get_send_wrapper (thread_receiver_info,
++					      task, &new_thread_port);
++      free (TRACED_INFO (thread_send_wrapper)->name);
++      easprintf (&TRACED_INFO (thread_send_wrapper)->name,
++		 "thread%lu(pid%d)", threads[i], task2pid (task));
++
++      err = mach_port_insert_right (mach_task_self (),
++				    new_thread_port, new_thread_port,
++				    MACH_MSG_TYPE_MAKE_SEND);
++      if (err)
++	error (2, err, "mach_port_insert_right");
++
++      err = thread_set_kernel_port (threads[i], new_thread_port);
++      if (err)
++	error (2, err, "thread_set_kernel_port");
+ 
+-	  mach_port_deallocate (mach_task_self (), new_thread_port);
+-	}
++      mach_port_deallocate (mach_task_self (), new_thread_port);
+     }
+   vm_deallocate (mach_task_self (), (vm_address_t) threads,
+                  nthreads * sizeof (thread_t));
