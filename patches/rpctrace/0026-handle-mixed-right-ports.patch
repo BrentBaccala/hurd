@@ -1,0 +1,475 @@
+--- ./utils/rpctrace.c.bak	2018-02-07 15:41:10.000000000 -0500
++++ ./utils/rpctrace.c	2018-02-07 22:13:45.000000000 -0500
+@@ -146,13 +146,20 @@
+  * who has the send right to the traced port.
+  */
+ 
++struct send_once_right
++{
++  mach_port_t forward;
++  struct send_once_right *next;
++};
++
+ struct receiver_info
+ {
+   char *name;			/* null or a string describing this */
+   hurd_ihash_locp_t locp;	/* position in the traced_names hash table */
+   mach_port_t portname;		/* The port name in the owner task. */
+   task_t task;			/* The task who has the right. */
+-  mach_port_t forward;		/* real port. */
++  mach_port_t forward;		/* send right to the real port. */
++  struct send_once_right *sorights; /* send once right(s) to the real port */
+   struct receiver_info *next;	/* Link with other receive rights. */
+   struct sender_info *senders;	/* The head of the send right list */
+ };
+@@ -160,7 +167,6 @@
+ struct sender_info
+ {
+   struct port_info pi;
+-  mach_msg_type_name_t type;
+   char *name;			/* null or a string describing this */
+   task_t task;			/* The task who has the right. */
+   mach_port_seqno_t seqno;      /* next RPC to be processed on this port */
+@@ -170,8 +176,6 @@
+   struct receiver_info *receive_right;	/* The corresponding receive right */
+ };
+ 
+-#define INFO_SEND_ONCE(info) ((info)->type == MACH_MSG_TYPE_MOVE_SEND_ONCE)
+-
+ /* This structure stores the information of the RPC requests. */
+ struct req_info
+ {
+@@ -275,6 +279,7 @@
+   info->forward = right;
+   info->task = owner;
+   info->portname = UNKNOWN_NAME;
++  info->sorights = NULL;
+   info->next = NULL;
+   info->senders = NULL;
+   if (owner != unknown_task)
+@@ -284,20 +289,25 @@
+     }
+   info->name = 0;
+ 
+-  /* Request the dead-name notification, so if the receive right is destroyed,
+-   * we can destroy the wrapper. */
+-  err = mach_port_request_notification (mach_task_self (), right,
+-					MACH_NOTIFY_DEAD_NAME, 1,
+-					notify_pi->port_right,
+-					MACH_MSG_TYPE_MAKE_SEND_ONCE, &foo);
+-  if (err)
+-    error (2, err, "mach_port_request_notification");
+-  if (MACH_PORT_VALID (foo))
+-    mach_port_deallocate (mach_task_self (), foo);
++  /* Request the dead-name notification, so if the port is destroyed,
++   * we can destroy the wrapper.  'right' will be MACH_PORT_NULL if there
++   * are only send-once rights associated with this port.
++   */
++  if (right != MACH_PORT_NULL) {
++    err = mach_port_request_notification (mach_task_self (), right,
++					  MACH_NOTIFY_DEAD_NAME, 1,
++					  notify_pi->port_right,
++					  MACH_MSG_TYPE_MAKE_SEND_ONCE, &foo);
++    if (err)
++      error (2, err, "mach_port_request_notification");
++    if (MACH_PORT_VALID (foo))
++      mach_port_deallocate (mach_task_self (), foo);
++
++    err = hurd_ihash_add (&traced_names, right, info);
++    if (err)
++      error (2, err, "hurd_ihash_add");
++  }
+ 
+-  err = hurd_ihash_add (&traced_names, info->forward, info);
+-  if (err)
+-    error (2, err, "hurd_ihash_add");
+   return info;
+ }
+ 
+@@ -306,8 +316,13 @@
+ {
+   struct sender_info *send_wrapper;
+   struct receiver_info **prev;
++  struct send_once_right *soright;
++
++  if (info->forward != MACH_PORT_NULL) {
++    mach_port_deallocate (mach_task_self (), info->forward);
++    hurd_ihash_locp_remove (&traced_names, info->locp);
++  }
+ 
+-  mach_port_deallocate (mach_task_self (), info->forward);
+   /* Remove it from the receive right list. */
+   prev = &receive_right_list;
+   while (*prev != info && *prev)
+@@ -316,6 +331,12 @@
+   if (*prev)
+     *prev = info->next;
+   
++  while ((soright = info->sorights)) {
++    mach_port_deallocate(mach_task_self (), soright->forward);
++    info->sorights = soright->next;
++    free(soright);
++  }
++
+   send_wrapper = info->senders;
+   while (send_wrapper)
+     {
+@@ -334,7 +355,6 @@
+       send_wrapper = next;
+     }
+ 
+-  hurd_ihash_locp_remove (&traced_names, info->locp);
+   free (info);
+ }
+ 
+@@ -361,7 +381,7 @@
+   info->name = 0;
+   easprintf (&info->name, "  %lu<--%lu(pid%d)",
+ 	     receive->forward, info->pi.port_right, task2pid (task));
+-  info->type = MACH_MSG_TYPE_MOVE_SEND;
++
+   info->task = task;
+   info->seqno = 0;
+   pthread_cond_init(& info->sequencer, NULL);
+@@ -395,13 +415,16 @@
+   info->seqno = 0;
+   pthread_cond_init(& info->sequencer, NULL);
+ 
+-  receive = new_receiver_info (right, task);
++  receive = new_receiver_info (MACH_PORT_NULL, task);
++
++  receive->sorights = (struct send_once_right *) malloc(sizeof(struct send_once_right));
++  receive->sorights->forward = right;
++  receive->sorights->next = NULL;
+ 
+   info->receive_right = receive;
+   info->next = NULL;
+   receive->senders = info;
+ 
+-  info->type = MACH_MSG_TYPE_MOVE_SEND_ONCE;
+   info->task = task;
+ 
+   /* Since we never make send rights to this port, we don't want to
+@@ -738,7 +761,6 @@
+ 	    if (err)
+ 	      error (2, err, "ports_import_port");
+ 
+-	    send_wrapper->type = MACH_MSG_TYPE_MOVE_SEND;
+ 	    send_wrapper->task = source;
+ 	    send_wrapper->name = receiver_info->name;
+ 	    /* Initialize them in case that the source task doesn't
+@@ -1164,11 +1186,15 @@
+ 
+   struct sender_info *info = (struct sender_info *)pi;
+ 
+-  if (inp->msgh_id == MACH_NOTIFY_NO_SENDERS && !INFO_SEND_ONCE (info))
++  assert_backtrace(info->receive_right);
++
++  if ((inp->msgh_id == MACH_NOTIFY_NO_SENDERS)
++      && (info->receive_right->forward != MACH_PORT_NULL))
+     {
+       /* No more senders for a send right we are tracing.  Now INFO
+ 	 will die, and we will release the tracee send right so it too
+ 	 can see a no-senders notification.  */
++      /* XXX might have a problem here if a receive right has both send-once and send rights */
+       mach_no_senders_notification_t *n = (void *) inp;
+       ports_no_senders (info, n->not_count);
+       ((mig_reply_header_t *) outp)->RetCode = MIG_NO_REPLY;
+@@ -1190,67 +1216,81 @@
+   to = info->receive_right->task;
+ 
+   /* Swap the header data like a crossover cable. */
+-  {
+-    mach_msg_type_name_t this_type = MACH_MSGH_BITS_LOCAL (inp->msgh_bits);
+-    mach_msg_type_name_t reply_type = MACH_MSGH_BITS_REMOTE (inp->msgh_bits);
++
++  mach_msg_type_name_t this_type = MACH_MSGH_BITS_LOCAL (inp->msgh_bits);
++  mach_msg_type_name_t reply_type = MACH_MSGH_BITS_REMOTE (inp->msgh_bits);
+     
+-    /* Save the original reply port in the RPC request. */
+-    reply_port = inp->msgh_remote_port;
++  /* Save the original reply port in the RPC request. */
++  reply_port = inp->msgh_remote_port;
+ 
+-    inp->msgh_local_port = inp->msgh_remote_port;
+-    if (reply_type && msgid_trace_replies (msgid)
+-	/* The reply port might be dead, e.g., the traced task has died. */
+-	&& MACH_PORT_VALID (inp->msgh_local_port))
+-      {
+-	switch (reply_type)
+-	  {
+-	  case MACH_MSG_TYPE_PORT_SEND:
+-	    rewrite_right (&inp->msgh_local_port, &reply_type,
+-			   info->task, to);
+-	    break;
+-
+-	  case MACH_MSG_TYPE_PORT_SEND_ONCE:;
+-	    struct sender_info *info2;
+-	    info2 = new_send_once_wrapper (inp->msgh_local_port,
+-					   &inp->msgh_local_port, info->task);
+-	    reply_type = MACH_MSG_TYPE_MAKE_SEND_ONCE;
+-	    assert_backtrace (inp->msgh_local_port);
++  inp->msgh_local_port = inp->msgh_remote_port;
++  if (reply_type && msgid_trace_replies (msgid)
++      /* The reply port might be dead, e.g., the traced task has died. */
++      && MACH_PORT_VALID (inp->msgh_local_port))
++    {
++      switch (reply_type)
++	{
++	case MACH_MSG_TYPE_PORT_SEND:
++	  rewrite_right (&inp->msgh_local_port, &reply_type,
++			 info->task, to);
++	  break;
+ 
+-	    if (info2->name == 0)
+-	      {
+-		if (msgid == 0)
+-		  easprintf (&info2->name, "reply(%u:%u)",
+-			     (unsigned int) info2->pi.port_right,
+-			     (unsigned int) inp->msgh_id);
+-		else
+-		  easprintf (&info2->name, "reply(%u:%s)",
+-			     (unsigned int) info2->pi.port_right,
+-			     msgid->name);
+-	      }
+-	    break;
++	case MACH_MSG_TYPE_PORT_SEND_ONCE:;
++	  struct sender_info *info2;
++	  info2 = new_send_once_wrapper (inp->msgh_local_port,
++					 &inp->msgh_local_port, info->task);
++	  reply_type = MACH_MSG_TYPE_MAKE_SEND_ONCE;
++	  assert_backtrace (inp->msgh_local_port);
+ 
+-	  default:
+-	    error (1, 0, "Reply type %i not handled", reply_type);
+-	  }
+-      }
++	  if (info2->name == 0)
++	    {
++	      if (msgid == 0)
++		easprintf (&info2->name, "reply(%u:%u)",
++			   (unsigned int) info2->pi.port_right,
++			   (unsigned int) inp->msgh_id);
++	      else
++		easprintf (&info2->name, "reply(%u:%s)",
++			   (unsigned int) info2->pi.port_right,
++			   msgid->name);
++	    }
++	  break;
++
++	default:
++	  error (1, 0, "Reply type %i not handled", reply_type);
++	}
++    }
+ 
+-    assert_backtrace (info->receive_right);
+-    inp->msgh_remote_port = info->receive_right->forward;
++  if (this_type == MACH_MSG_TYPE_MOVE_SEND_ONCE)
++    {
++      /* We have a message to forward for a send-once wrapper
++	 object.  Since each wrapper object can have multiple
++	 send-once rights, but they all go to the same destination,
++	 we pick the first one off the list.  If it's the only one,
++	 then this wrapper can be reclaimed now, so we drop a
++	 reference.  We continue to hold a hard ref to the ports
++	 object while this function is running, so we won't
++	 deallocate info until after we return. */
+ 
+-    if (this_type == MACH_MSG_TYPE_MOVE_SEND_ONCE)
+-      {
+-	/* We have a message to forward for a send-once wrapper object.
+-	   Since each wrapper object only lives for a single message, this
+-	   one can be reclaimed now.  We continue to hold a hard ref to the
+-	   ports object, but we know that nothing else refers to it now, and
+-	   we are consuming its `forward' right in the message we send.  */
++      struct send_once_right * soright = info->receive_right->sorights;
++      assert_backtrace(soright);
++      inp->msgh_remote_port = soright->forward;
++      info->receive_right->sorights = soright->next;
++
++      if (soright->next == MACH_PORT_NULL) {
+ 	ports_port_deref(info);
+       }
+-    else
++
++      free(soright);
++    }
++  else
++    {
+       this_type = MACH_MSG_TYPE_COPY_SEND;
++      inp->msgh_remote_port = info->receive_right->forward;
++    }
+ 
+-    inp->msgh_bits = complex | MACH_MSGH_BITS (this_type, reply_type);
+-  }
++  assert_backtrace(inp->msgh_remote_port != MACH_PORT_NULL);
++
++  inp->msgh_bits = complex | MACH_MSGH_BITS (this_type, reply_type);
+ 
+   /* The message now appears as it would if we were the sender.
+      It is ready to be resent.  */
+@@ -1260,7 +1300,7 @@
+       struct req_info *req = NULL;
+ 
+       if (inp->msgh_local_port == MACH_PORT_NULL
+-	  && info->type == MACH_MSG_TYPE_MOVE_SEND_ONCE
++	  && this_type == MACH_MSG_TYPE_MOVE_SEND_ONCE
+ 	  && inp->msgh_size >= sizeof (mig_reply_header_t)
+ 	  /* The notification message is considered as a request. */
+ 	  && (inp->msgh_id > 72 || inp->msgh_id < 64)
+@@ -1293,7 +1333,7 @@
+ 	  /* It's a notification message. */
+ 	  if (inp->msgh_id <= 72 && inp->msgh_id >= 64)
+ 	    {
+-	      assert_backtrace (info->type == MACH_MSG_TYPE_MOVE_SEND_ONCE);
++	      assert_backtrace (this_type == MACH_MSG_TYPE_PORT_SEND_ONCE);
+ 	      /* mach_notify_port_destroyed message has a port,
+ 	       * TODO how do I handle it? */
+ 	      assert_backtrace (inp->msgh_id != 69);
+@@ -1306,7 +1346,7 @@
+ 
+ 	  print_contents (inp, inp + 1, info->task, to);
+ 
+-	  if ((info->type == MACH_MSG_TYPE_MOVE_SEND)
++	  if ((this_type == MACH_MSG_TYPE_COPY_SEND)
+ 	      && (inp->msgh_local_port != MACH_PORT_NULL))
+ 	    {
+ 	      /* looks like we're expecting a reply */
+@@ -1982,36 +2022,14 @@
+ 	 * replace task's send rights with send rights to its new receive right
+ 	 */
+ 
+-	/* Check to see if the port has any send rights at all.  If not, ignore it.
+-	 *
+-	 * XXX We want to ignore bare receive rights here, but we also end up ignoring
+-	 * receive rights with attached send-once rights.  We could enhance this code
+-	 * to handle receive rights with a single send-once right attached, but to
+-	 * really do this right, we'd have to modify other parts of rpctrace to handle
+-	 * not only receive rights with multiple send-once rights outstanding, but
+-	 * also receive rights with both send and send-once rights.
+-	 */
+-
+ 	mach_port_status_t port_status;
+ 
+ 	err = mach_port_get_receive_status (task, portnames[j], &port_status);
+ 	assert_perror_backtrace (err);
+ 
+-	if (! port_status.mps_srights && (port_status.mps_sorights == 0)) {
+-	  /* Ignoring bare receive right */
+-	  continue;
+-	}
++	/* Check to see if the port has any send rights at all.  If not, ignore it. */
+ 
+-	if (port_status.mps_srights && (port_status.mps_sorights > 0)) {
+-	  fprintf(stderr, "Warning: ignoring receive right with mixed send and send-once rights\n");
+-	  continue;
+-	}
+-	if (port_status.mps_sorights > 1) {
+-	  fprintf(stderr, "Warning: ignoring receive right with multiple send-once rights\n");
+-	  continue;
+-	}
+-	if (port_status.mps_sorights > 0) {
+-	  fprintf(stderr, "Warning: ignoring receive right with single send-once right\n");
++	if (! port_status.mps_srights && (port_status.mps_sorights == 0)) {
+ 	  continue;
+ 	}
+ 
+@@ -2027,21 +2045,6 @@
+ 
+ 	assert_backtrace (type == MACH_MSG_TYPE_PORT_RECEIVE);
+ 
+-#if 0
+-	// give ourselves a send right to this port
+-	mach_port_t extra_send_right;
+-
+-	err = mach_port_extract_right (mach_task_self (), receive_right, MACH_MSG_TYPE_MAKE_SEND,
+-				       &extra_send_right, &type);
+-	assert_perror_backtrace (err);
+-	assert_backtrace (type == MACH_MSG_TYPE_PORT_SEND);
+-#else
+-	// XXX this version can't be traced by rpctrace on itself
+-	err = mach_port_insert_right (mach_task_self (), receive_right, receive_right,
+-				      MACH_MSG_TYPE_MAKE_SEND);
+-	assert_perror_backtrace (err);
+-#endif
+-
+ 	// import the receive right as a sender_info
+ 
+ 	struct sender_info *send_wrapper;
+@@ -2076,16 +2079,23 @@
+ 	err = mach_port_allocate_name (task, MACH_PORT_RIGHT_RECEIVE, portnames[j]);
+ 	assert_perror_backtrace (err);
+ 
+-	// give ourselves a send right to the new port
+-
+-	mach_port_t send_right;
++	// mimic the original port's seqno
+ 
+-	err = mach_port_extract_right (task, portnames[j], MACH_MSG_TYPE_MAKE_SEND, &send_right, &type);
++	err = mach_port_set_seqno(task, portnames[j], port_status.mps_seqno);
+ 	assert_perror_backtrace (err);
+ 
+-	assert_backtrace (type == MACH_MSG_TYPE_PORT_SEND);
++	// if the original port has any send rights anywhere, give ourselves a send right to the new port
++
++	mach_port_t send_right = MACH_PORT_NULL;
+ 
+-	// if the task had send rights, recreate them
++	if (port_status.mps_srights) {
++	  err = mach_port_extract_right (task, portnames[j], MACH_MSG_TYPE_MAKE_SEND, &send_right, &type);
++	  assert_perror_backtrace (err);
++
++	  assert_backtrace (type == MACH_MSG_TYPE_PORT_SEND);
++	}
++
++	// if the task itself had send rights, recreate them
+ 
+ 	if (sendrights > 0) {
+ 
+@@ -2106,7 +2116,6 @@
+ 
+ 	receiver_info->portname = portnames[j];
+ 
+-	send_wrapper->type = MACH_MSG_TYPE_MOVE_SEND;
+ 	send_wrapper->task = task;
+ 	send_wrapper->name = receiver_info->name;
+ 	send_wrapper->seqno = 0;
+@@ -2120,10 +2129,27 @@
+ 	send_wrapper->receive_right = receiver_info;
+ 	receiver_info->senders = send_wrapper;
+ 
+-	/* drop the extraneous send right */
++	// if the original port has any send-once rights, link that many of them to the new receive right
+ 
+-	err = mach_port_deallocate(mach_task_self(), receive_right);
+-	assert_perror_backtrace (err);
++	if (port_status.mps_sorights > 0) {
++	  ports_port_ref(send_wrapper);
++	}
++
++	for (natural_t sorights = port_status.mps_sorights; sorights > 0; sorights --) {
++
++	  mach_port_t send_once_right;
++
++	  err = mach_port_extract_right (task, portnames[j], MACH_MSG_TYPE_MAKE_SEND_ONCE, &send_once_right, &type);
++	  assert_perror_backtrace (err);
++
++	  assert_backtrace (type == MACH_MSG_TYPE_PORT_SEND_ONCE);
++
++	  struct send_once_right * soright = (struct send_once_right *) malloc(sizeof(struct send_once_right));
++
++	  soright->forward = send_once_right;
++	  soright->next = receiver_info->sorights;
++	  receiver_info->sorights = soright;
++	}
+ 
+       } else {
+ 
+@@ -2195,7 +2221,6 @@
+ 
+ 	struct receiver_info * receiver_info = new_receiver_info(send_right, unknown_task);
+ 
+-	send_wrapper->type = MACH_MSG_TYPE_MOVE_SEND;
+ 	send_wrapper->task = task;
+ 	send_wrapper->name = receiver_info->name;
+ 	send_wrapper->seqno = 0;

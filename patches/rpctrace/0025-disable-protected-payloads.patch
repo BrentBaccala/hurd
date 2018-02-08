@@ -1,0 +1,210 @@
+--- ./utils/rpctrace.c.bak	2018-02-06 19:36:34.000000000 -0500
++++ ./utils/rpctrace.c	2018-02-06 21:26:47.000000000 -0500
+@@ -355,6 +355,9 @@
+ 			   sizeof *info, &info);
+   assert_perror_backtrace (err);
+ 
++  err = mach_port_clear_protected_payload(mach_task_self(), info->pi.port_right);
++  assert_perror_backtrace(err);
++
+   info->name = 0;
+   easprintf (&info->name, "  %lu<--%lu(pid%d)",
+ 	     receive->forward, info->pi.port_right, task2pid (task));
+@@ -384,6 +387,10 @@
+   err = ports_create_port (traced_class, traced_bucket,
+ 			   sizeof *info, &info);
+   assert_perror_backtrace (err);
++
++  err = mach_port_clear_protected_payload(mach_task_self(), info->pi.port_right);
++  assert_perror_backtrace(err);
++
+   info->name = 0;
+   info->seqno = 0;
+   pthread_cond_init(& info->sequencer, NULL);
+@@ -1102,7 +1109,7 @@
+ }
+ 
+ int
+-trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
++trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp, struct port_info *pi)
+ {
+   mach_port_t reply_port;
+ 
+@@ -1119,41 +1126,15 @@
+ 
+   error_t err;
+   const struct msgid_info *msgid;
+-  struct sender_info *info;
+   mach_msg_bits_t complex;
+ 
+   task_t to;
+ 
+-  /* Look up our record for the receiving port.  There is no need to check
+-     the class, because our port bucket only ever contains one class of
+-     ports (traced_class).  */
+-
+-  if (MACH_MSGH_BITS_LOCAL (inp->msgh_bits) == MACH_MSG_TYPE_PROTECTED_PAYLOAD)
+-    {
+-      info = ports_lookup_payload (traced_bucket, inp->msgh_protected_payload,
+-				   NULL);
+-      if (info)
+-	{
+-	  /* Undo the protected payload optimization.  */
+-	  inp->msgh_bits = MACH_MSGH_BITS (
+-	    MACH_MSGH_BITS_REMOTE (inp->msgh_bits),
+-	    is_notification (inp)? MACH_MSG_TYPE_MOVE_SEND_ONCE: info->type)
+-	    | MACH_MSGH_BITS_OTHER (inp->msgh_bits);
+-	  inp->msgh_local_port = ports_payload_get_name ((unsigned int) info);
+-	}
+-    }
+-  else
+-    info = ports_lookup_port (traced_bucket, inp->msgh_local_port, NULL);
+-
+-  assert_backtrace (info);
+-
+   pthread_mutex_lock(&tracelock);
+ 
+-  /* A notification message from the kernel appears to have been sent
+-     with a send-once right, even if there have never really been any.  */
+-  if (MACH_MSGH_BITS_LOCAL (inp->msgh_bits) == MACH_MSG_TYPE_MOVE_SEND_ONCE)
++  if (pi == notify_pi)
+     {
+-      if (inp->msgh_id == MACH_NOTIFY_DEAD_NAME && info == (void *) notify_pi)
++      if (inp->msgh_id == MACH_NOTIFY_DEAD_NAME)
+ 	{
+ 	  struct receiver_info *receiver_info;
+ 	  const mach_dead_name_notification_t *const n = (void *) inp;
+@@ -1169,42 +1150,31 @@
+ 	      destroy_receiver_info (receiver_info);
+ 	    }
+ 
+-	  ((mig_reply_header_t *) outp)->RetCode = MIG_NO_REPLY;
+-	  ports_port_deref (info);
+-	  
+ 	  /* It might be a task port. Remove the dead task from the list. */
+ 	  remove_task (n->not_port);
+-
+-	  pthread_mutex_unlock(&tracelock);
+-
+-	  return 1;
+-	}
+-      else if (inp->msgh_id == MACH_NOTIFY_NO_SENDERS
+-	       && !INFO_SEND_ONCE (info))
+-	{
+-	  /* No more senders for a send right we are tracing.  Now INFO
+-	     will die, and we will release the tracee send right so it too
+-	     can see a no-senders notification.  */
+-	  mach_no_senders_notification_t *n = (void *) inp;
+-	  ports_no_senders (info, n->not_count);
+-	  ports_port_deref (info);
+-	  ((mig_reply_header_t *) outp)->RetCode = MIG_NO_REPLY;
+-	  pthread_mutex_unlock(&tracelock);
+-	  return 1;
+ 	}
+-      /* Get some unexpected notification for rpctrace itself,
++
++      /* else, got some unexpected notification for rpctrace itself,
+        * TODO ignore them for now. */
+-      else if (info == (void *) notify_pi)
+-	{
+-	  ports_port_deref (info);
+-	  ((mig_reply_header_t *) outp)->RetCode = MIG_NO_REPLY;
+-	  pthread_mutex_unlock(&tracelock);
+-	  return 1;
+-	}
++
++      ((mig_reply_header_t *) outp)->RetCode = MIG_NO_REPLY;
++      pthread_mutex_unlock(&tracelock);
++      return 1;
+     }
+ 
+-  assert_backtrace (info != (void *) notify_pi);
+-  assert_backtrace (MACH_MSGH_BITS_LOCAL (inp->msgh_bits) == info->type);
++  struct sender_info *info = (struct sender_info *)pi;
++
++  if (inp->msgh_id == MACH_NOTIFY_NO_SENDERS && !INFO_SEND_ONCE (info))
++    {
++      /* No more senders for a send right we are tracing.  Now INFO
++	 will die, and we will release the tracee send right so it too
++	 can see a no-senders notification.  */
++      mach_no_senders_notification_t *n = (void *) inp;
++      ports_no_senders (info, n->not_count);
++      ((mig_reply_header_t *) outp)->RetCode = MIG_NO_REPLY;
++      pthread_mutex_unlock(&tracelock);
++      return 1;
++    }
+ 
+   complex = inp->msgh_bits & MACH_MSGH_BITS_COMPLEX;
+ 
+@@ -1370,7 +1340,6 @@
+   pthread_cond_broadcast (& info->sequencer);
+ 
+   /* Unlock prior to resending message to avoid deadlocks in the kernel */
+-  ports_port_deref (info);
+   pthread_mutex_unlock(&tracelock);
+ 
+   /* Resend the message to the tracee.  */
+@@ -1479,9 +1448,13 @@
+     error (0, err, "unable to adjust libports thread priority");
+ }
+ 
++typedef int (*demuxer_type)(mach_msg_header_t *inp,
++			    mach_msg_header_t *outp,
++			    struct port_info *pi);
++
+ static void
+ manage_port_operations_multithread (struct port_bucket *bucket,
+-				    ports_demuxer_type demuxer,
++				    demuxer_type demuxer,
+ 				    int thread_timeout,
+ 				    int global_timeout,
+ 				    void (*hook)())
+@@ -1558,19 +1531,6 @@
+       else
+ 	{
+ 	  pi = ports_lookup_port (bucket, inp->msgh_local_port, 0);
+-	  if (pi)
+-	    {
+-	      /* Store the objects address as the payload and set the
+-		 message type accordingly.  This prevents us from
+-		 having to do another hash table lookup in the intran
+-		 functions if protected payloads are not supported by
+-		 the kernel.  */
+-	      inp->msgh_bits =
+-		MACH_MSGH_BITS_OTHER (inp->msgh_bits)
+-		| MACH_MSGH_BITS (MACH_MSGH_BITS_REMOTE (inp->msgh_bits),
+-				  MACH_MSG_TYPE_PROTECTED_PAYLOAD);
+-	      inp->msgh_protected_payload = (unsigned long) pi;
+-	    }
+ 	}
+ 
+       if (pi)
+@@ -1589,7 +1549,7 @@
+ 	      if (inp->msgh_seqno < cancel_threshold)
+ 		hurd_thread_cancel (link.thread);
+ 
+-	      status = demuxer (inp, outheadp);
++	      status = demuxer (inp, outheadp, pi);
+ 	      ports_end_rpc (pi, &link);
+ 	    }
+ 	  ports_port_deref (pi);
+@@ -2091,6 +2051,9 @@
+ 				 &send_wrapper);
+ 	assert_perror_backtrace (err);
+ 
++	err = mach_port_clear_protected_payload(mach_task_self(), receive_right);
++	assert_perror_backtrace(err);
++
+ 	// find out how many send rights the task had
+ 
+ 	mach_port_urefs_t sendrights = 0;
+@@ -2204,6 +2167,9 @@
+ 				 sizeof *send_wrapper, &send_wrapper);
+ 	assert_perror_backtrace (err);
+ 
++	err = mach_port_clear_protected_payload(mach_task_self(), send_wrapper->pi.port_right);
++	assert_perror_backtrace(err);
++
+ 	// recreate the task's send rights
+ 
+ 	assert_backtrace(sendrights > 0);
