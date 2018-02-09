@@ -1,4 +1,4 @@
---- ./utils/rpctrace.c.orig	2018-02-05 14:52:05.000000000 -0500
+--- ./utils/rpctrace.c		2018-02-05 14:52:05.000000000 -0500
 +++ ./utils/rpctrace.c.bak	2018-02-06 00:08:17.000000000 -0500
 @@ -48,6 +48,7 @@
  static const struct argp_option options[] =
