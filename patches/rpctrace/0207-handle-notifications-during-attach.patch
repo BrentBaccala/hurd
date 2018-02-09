@@ -1,0 +1,91 @@
+--- ./utils/rpctrace.c.bak	2018-02-07 23:50:46.000000000 -0500
++++ ./utils/rpctrace.c	2018-02-08 14:56:45.000000000 -0500
+@@ -2033,6 +2033,16 @@
+ 	  continue;
+ 	}
+ 
++	// detach any NO SENDERS notification the port may have
++
++	mach_port_t no_senders_notification;
++
++	err = mach_port_request_notification (task, portnames[j],
++					      MACH_NOTIFY_NO_SENDERS, 0,
++					      MACH_PORT_NULL,
++					      MACH_MSG_TYPE_MAKE_SEND_ONCE, &no_senders_notification);
++	assert_perror_backtrace (err);
++
+ 	// move the receive right from traced task to rpctrace
+ 
+ 	mach_port_t receive_right;
+@@ -2084,6 +2094,12 @@
+ 	err = mach_port_set_seqno(task, portnames[j], port_status.mps_seqno);
+ 	assert_perror_backtrace (err);
+ 
++	err = mach_port_set_mscount(task, portnames[j], port_status.mps_mscount);
++	assert_perror_backtrace (err);
++
++	err = mach_port_set_qlimit(task, portnames[j], port_status.mps_qlimit);
++	assert_perror_backtrace (err);
++
+ 	// if the original port has any send rights anywhere, give ourselves a send right to the new port
+ 
+ 	mach_port_t send_right = MACH_PORT_NULL;
+@@ -2110,6 +2126,20 @@
+ 	  }
+ 	}
+ 
++	// replace the NO SENDERS notification
++
++	if (no_senders_notification != MACH_PORT_NULL) {
++
++	  mach_port_t dummy;
++
++	  err = mach_port_request_notification (task, portnames[j],
++						MACH_NOTIFY_NO_SENDERS, port_status.mps_mscount + 1,
++						no_senders_notification,
++						MACH_MSG_TYPE_MOVE_SEND_ONCE, &dummy);
++	  assert_perror_backtrace (err);
++	  assert_backtrace (dummy == MACH_PORT_NULL);
++	}
++
+ 	// set up our data structures to track everything
+ 
+ 	struct receiver_info * receiver_info = new_receiver_info(send_right, task);
+@@ -2171,6 +2201,16 @@
+ 
+ 	assert_backtrace (type == MACH_MSG_TYPE_PORT_SEND);
+ 
++	// detach any DEAD NAME notification the port may have
++
++	mach_port_t dead_name_notification;
++
++	err = mach_port_request_notification (task, portnames[j],
++					      MACH_NOTIFY_DEAD_NAME, 1,
++					      MACH_PORT_NULL,
++					      MACH_MSG_TYPE_MAKE_SEND_ONCE, &dead_name_notification);
++	assert_perror_backtrace (err);
++
+ 	// find out how many send rights the task had
+ 
+ 	mach_port_urefs_t sendrights;
+@@ -2211,6 +2251,20 @@
+ 	  assert_perror_backtrace (err);
+ 	}
+ 
++	// replace the DEAD NAME notification
++
++	if (dead_name_notification != MACH_PORT_NULL) {
++
++	  mach_port_t dummy;
++
++	  err = mach_port_request_notification (task, portnames[j],
++						MACH_NOTIFY_DEAD_NAME, 1,
++						dead_name_notification,
++						MACH_MSG_TYPE_MOVE_SEND_ONCE, &dummy);
++	  assert_perror_backtrace (err);
++	  assert_backtrace (dummy == MACH_PORT_NULL);
++	}
++
+ 	/* Set up data structures to track everything
+ 	 *
+ 	 * The task has send rights without an associated receive right,

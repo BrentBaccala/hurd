@@ -1,0 +1,13 @@
+diff --git a/utils/rpctrace.c b/utils/rpctrace.c
+index 6086ab68..838184bf 100644
+--- a/utils/rpctrace.c
++++ b/utils/rpctrace.c
+@@ -1232,7 +1232,7 @@ trace_and_forward (mach_msg_header_t *inp, mach_msg_header_t *outp)
+ 
+   msgid = msgid_info (inp->msgh_id);
+ 
+-  while (inp->msgh_seqno != TRACED_INFO (info)->seqno)
++  while (inp->msgh_seqno > TRACED_INFO (info)->seqno)
+     {
+       pthread_cond_wait (& TRACED_INFO (info)->sequencer, &tracelock);
+     }

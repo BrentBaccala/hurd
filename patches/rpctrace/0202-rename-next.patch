@@ -1,0 +1,141 @@
+--- ./utils/rpctrace.c.bak	2018-02-06 13:04:43.000000000 -0500
++++ ./utils/rpctrace.c	2018-02-06 16:22:52.000000000 -0500
+@@ -164,8 +164,8 @@
+   mach_port_t portname;		/* The port name in the owner task. */
+   task_t task;			/* The task who has the right. */
+   mach_port_t forward;		/* real port. */
+-  struct receiver_info *receive_right;	/* Link with other receive rights. */
+-  struct sender_info *next;	/* The head of the send right list */
++  struct receiver_info *next;	/* Link with other receive rights. */
++  struct sender_info *senders;	/* The head of the send right list */
+ };
+ 
+ struct sender_info
+@@ -297,11 +297,11 @@
+   info->forward = right;
+   info->task = owner;
+   info->portname = UNKNOWN_NAME;
+-  info->receive_right = NULL;
+   info->next = NULL;
++  info->senders = NULL;
+   if (owner != unknown_task)
+     {
+-      info->receive_right = receive_right_list;
++      info->next = receive_right_list;
+       receive_right_list = info;
+     }
+   info->name = 0;
+@@ -333,12 +333,12 @@
+   /* Remove it from the receive right list. */
+   prev = &receive_right_list;
+   while (*prev != info && *prev)
+-    prev = &((*prev)->receive_right);
++    prev = &((*prev)->next);
+   /* If we find the receiver info in the list. */
+   if (*prev)
+-    *prev = info->receive_right;
++    *prev = info->next;
+   
+-  send_wrapper = info->next;
++  send_wrapper = info->senders;
+   while (send_wrapper)
+     {
+       struct sender_info *next = send_wrapper->next;
+@@ -385,8 +385,8 @@
+   TRACED_INFO (info)->seqno = 0;
+   pthread_cond_init(& TRACED_INFO(info)->sequencer, NULL);
+   info->receive_right = receive;
+-  info->next = receive->next;
+-  receive->next = info;
++  info->next = receive->senders;
++  receive->senders = info;
+ 
+   *wrapper_right = ports_get_right (info);
+   ports_port_deref (info);
+@@ -449,7 +449,7 @@
+   if (info->receive_right)
+     {
+       /* Remove it from the send right list. */
+-      prev = &info->receive_right->next;
++      prev = &info->receive_right->senders;
+       while (*prev != info && *prev)
+ 	prev = &((*prev)->next);
+       assert_backtrace (*prev);
+@@ -479,7 +479,7 @@
+       /* If this is the last send wrapper, it means that our traced port won't
+        * have any more send rights. We notify the owner of the receive right
+        * of that by deallocating the forward port. */
+-      if (info->receive_right->next == NULL)
++      if (info->receive_right->senders == NULL)
+ 	destroy_receiver_info (info->receive_right);
+ 
+       info->receive_right = NULL;
+@@ -497,7 +497,7 @@
+     {
+       if (info->task == task && info->portname == name)
+ 	return TRUE;
+-      info = info->receive_right;
++      info = info->next;
+     }
+   return FALSE;
+ }
+@@ -605,7 +605,7 @@
+ get_send_wrapper (struct receiver_info *receiver_info,
+ 		  mach_port_t task, mach_port_t *right)
+ {
+-  struct sender_info *info = receiver_info->next;
++  struct sender_info *info = receiver_info->senders;
+   
+   while (info)
+     {
+@@ -796,7 +796,7 @@
+ 	    receiver_info->task = dest;
+ 	    if (dest != unknown_task)
+ 	      {
+-		receiver_info->receive_right = receive_right_list;
++		receiver_info->next = receive_right_list;
+ 		receive_right_list = receiver_info;
+ 	      }
+ 	    /* The port name will be discovered
+@@ -805,8 +805,8 @@
+ 	    receiver_info->name = name;
+ 
+ 	    send_wrapper->receive_right = receiver_info;
+-	    send_wrapper->next = receiver_info->next;
+-	    receiver_info->next = send_wrapper;
++	    send_wrapper->next = receiver_info->senders;
++	    receiver_info->senders = send_wrapper;
+ 
+ 	    err = hurd_ihash_add (&traced_names, receiver_info->forward,
+ 				  receiver_info);
+@@ -1919,7 +1919,7 @@
+ 
+ 	send_wrapper->next = NULL;
+ 	send_wrapper->receive_right = receiver_info;
+-	receiver_info->next = send_wrapper;
++	receiver_info->senders = send_wrapper;
+ 
+ 	/* drop the extraneous send right */
+ 
+@@ -2006,7 +2006,7 @@
+ 
+ 	send_wrapper->next = NULL;
+ 	send_wrapper->receive_right = receiver_info;
+-	receiver_info->next = send_wrapper;
++	receiver_info->senders = send_wrapper;
+       }
+ 
+     }
+@@ -2055,9 +2055,9 @@
+   } else {
+     free(kernel_port_receiver->name);
+     easprintf (&kernel_port_receiver->name, "task%lu(pid%d)", task, pid);
+-    if (kernel_port_receiver->next) {
+-      free(kernel_port_receiver->next->pi.name);
+-      easprintf (&kernel_port_receiver->next->pi.name, "task%lu(pid%d)", task, pid);
++    if (kernel_port_receiver->senders) {
++      free(kernel_port_receiver->senders->pi.name);
++      easprintf (&kernel_port_receiver->senders->pi.name, "task%lu(pid%d)", task, pid);
+     }
+   }
+ 

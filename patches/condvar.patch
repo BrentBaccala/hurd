@@ -1,23 +1,6 @@
---- ./libpthread/sysdeps/pthread/bits/condition.h.bak	2017-12-20 12:09:18.000000000 -0500
-+++ ./libpthread/sysdeps/pthread/bits/condition.h	2017-12-20 15:26:27.000000000 -0500
-@@ -26,6 +26,7 @@
- struct __pthread_cond
-   {
-     __pthread_spinlock_t __lock;
-+    int __waitcount;
-     struct __pthread *__queue;
-     struct __pthread_condattr *__attr;
-     struct __pthread_condimpl *__impl;
-@@ -34,6 +35,6 @@
- 
- /* Initializer for a condition variable.  */
- #define __PTHREAD_COND_INITIALIZER \
--  { __PTHREAD_SPIN_LOCK_INITIALIZER, NULL, NULL, NULL, NULL }
-+  { __PTHREAD_SPIN_LOCK_INITIALIZER, 0, NULL, NULL, NULL, NULL }
- 
- #endif /* bits/condition.h */
---- ./libpthread/sysdeps/generic/pt-cond-destroy.c.bak	2017-12-20 12:09:18.000000000 -0500
-+++ ./libpthread/sysdeps/generic/pt-cond-destroy.c	2017-12-20 12:40:18.000000000 -0500
+diff -ru glibc-2.25/libpthread/sysdeps/generic/pt-cond-destroy.c glibc-2.25.new/libpthread/sysdeps/generic/pt-cond-destroy.c
+--- glibc-2.25/libpthread/sysdeps/generic/pt-cond-destroy.c	2018-02-02 15:26:58.000000000 -0500
++++ glibc-2.25.new/libpthread/sysdeps/generic/pt-cond-destroy.c	2017-12-26 12:38:18.000000000 -0500
 @@ -23,6 +23,8 @@
  int
  __pthread_cond_destroy (pthread_cond_t *cond)
@@ -27,8 +10,9 @@
    return 0;
  }
  
---- ./libpthread/sysdeps/generic/pt-cond-timedwait.c.bak	2017-12-20 12:09:18.000000000 -0500
-+++ ./libpthread/sysdeps/generic/pt-cond-timedwait.c	2017-12-20 15:27:52.000000000 -0500
+diff -ru glibc-2.25/libpthread/sysdeps/generic/pt-cond-timedwait.c glibc-2.25.new/libpthread/sysdeps/generic/pt-cond-timedwait.c
+--- glibc-2.25/libpthread/sysdeps/generic/pt-cond-timedwait.c	2018-02-02 15:26:58.000000000 -0500
++++ glibc-2.25.new/libpthread/sysdeps/generic/pt-cond-timedwait.c	2017-12-26 12:38:18.000000000 -0500
 @@ -111,6 +111,7 @@
        __pthread_enqueue (&cond->__queue, self);
        if (cond->__attr)
@@ -45,3 +29,20 @@
    __pthread_spin_unlock (&cond->__lock);
  
    if (drain)
+diff -ru glibc-2.25/libpthread/sysdeps/pthread/bits/condition.h glibc-2.25.new/libpthread/sysdeps/pthread/bits/condition.h
+--- glibc-2.25/libpthread/sysdeps/pthread/bits/condition.h	2018-02-02 15:26:58.000000000 -0500
++++ glibc-2.25.new/libpthread/sysdeps/pthread/bits/condition.h	2017-12-27 11:15:31.000000000 -0500
+@@ -29,11 +29,11 @@
+     struct __pthread *__queue;
+     struct __pthread_condattr *__attr;
+     struct __pthread_condimpl *__impl;
+-    void *__data;
++    int __waitcount;
+   };
+ 
+ /* Initializer for a condition variable.  */
+ #define __PTHREAD_COND_INITIALIZER \
+-  { __PTHREAD_SPIN_LOCK_INITIALIZER, NULL, NULL, NULL, NULL }
++  { __PTHREAD_SPIN_LOCK_INITIALIZER, NULL, NULL, NULL, 0 }
+ 
+ #endif /* bits/condition.h */

@@ -1,5 +1,5 @@
---- ./utils/rpctrace.c.bak	2018-01-19 13:01:13.000000000 -0500
-+++ ./utils/rpctrace.c	2018-01-25 13:05:22.000000000 -0500
+--- ./utils/rpctrace.c		2018-02-05 14:52:05.000000000 -0500
++++ ./utils/rpctrace.c.bak	2018-02-06 00:08:17.000000000 -0500
 @@ -48,6 +48,7 @@
  static const struct argp_option options[] =
  {
@@ -38,7 +38,7 @@
  struct sender_info *
  get_send_wrapper (struct receiver_info *receiver_info,
  		  mach_port_t task, mach_port_t *right)
-@@ -1662,6 +1670,411 @@
+@@ -1662,6 +1670,429 @@
  
  /*** Main program and child startup ***/
  
@@ -146,19 +146,16 @@
 +
 +      /* The only remaining cases should be ordinary send and receive rights */
 +
-+      assert_backtrace ((porttypes[j] & ~MACH_PORT_TYPE_SEND_RECEIVE) == 0);
-+
-+      // send rights w/out receive right - create a receiver_info (unknown_task) with a linked sender_info
-+      // replace PUT's send rights with send rights to our sender_info
-+
-+      // send right with receive right - create a receiver_info (task) with a linked sender_info
-+      // move PUT's receive right to our receiver_info
-+      // replace PUT's send rights with send rights to our sender_info
-+
-+      // receive right w/out (local) send rights - create a receiver_info (task) with a linked sender_info
-+      // move PUT's receive right to our receiver_info
++      assert_backtrace ((porttypes[j] & MACH_PORT_TYPE_ALL_RIGHTS & ~MACH_PORT_TYPE_SEND_RECEIVE) == 0);
 +
 +      if (porttypes[j] & MACH_PORT_TYPE_RECEIVE) {
++
++	/* receive right (possibly with send rights) - create a receiver_info (task) with a linked sender_info
++	 *
++	 * move task's receive right to our sender_info (use ports_import_port)
++	 * create a new receive right for task, with a send right in our receiver_info
++	 * replace task's send rights with send rights to its new receive right
++	 */
 +
 +	/* Check to see if the port has any send rights at all.  If not, ignore it.
 +	 *
@@ -175,8 +172,21 @@
 +	err = mach_port_get_receive_status (task, portnames[j], &port_status);
 +	assert_perror_backtrace (err);
 +
-+	//if (! port_status.mps_srights && (port_status.mps_sorights == 0)) {
-+	if (! port_status.mps_srights) {
++	if (! port_status.mps_srights && (port_status.mps_sorights == 0)) {
++	  /* Ignoring bare receive right */
++	  continue;
++	}
++
++	if (port_status.mps_srights && (port_status.mps_sorights > 0)) {
++	  fprintf(stderr, "Warning: ignoring receive right with mixed send and send-once rights\n");
++	  continue;
++	}
++	if (port_status.mps_sorights > 1) {
++	  fprintf(stderr, "Warning: ignoring receive right with multiple send-once rights\n");
++	  continue;
++	}
++	if (port_status.mps_sorights > 0) {
++	  fprintf(stderr, "Warning: ignoring receive right with single send-once right\n");
 +	  continue;
 +	}
 +
@@ -192,7 +202,7 @@
 +
 +	assert_backtrace (type == MACH_MSG_TYPE_PORT_RECEIVE);
 +
-+#if 1
++#if 0
 +	// give ourselves a send right to this port
 +	mach_port_t extra_send_right;
 +
@@ -284,12 +294,18 @@
 +
 +	/* drop the extraneous send right */
 +
-+	err = mach_port_deallocate(mach_task_self(), extra_send_right);
++	err = mach_port_deallocate(mach_task_self(), receive_right);
 +	assert_perror_backtrace (err);
 +
 +      } else {
 +
-+	/* we're dealing with send rights with the receive right on a different task */
++	/* send rights w/out receive right (it's on a different task)
++	 *
++	 * create a receiver_info (unknown_task) with a linked sender_info
++	 * replace task's send rights with send rights to our sender_info
++	 */
++
++	assert_backtrace ((porttypes[j] & MACH_PORT_TYPE_ALL_RIGHTS) == MACH_PORT_TYPE_SEND);
 +
 +	// give ourselves a send right to the port
 +
@@ -338,9 +354,15 @@
 +	  assert_perror_backtrace (err);
 +	}
 +
-+	// set up data structures to track everything
++	/* Set up data structures to track everything
++	 *
++	 * The task has send rights without an associated receive right,
++	 * and this is the only task being traced, so the receive right
++	 * belongs to some task we're not tracing, and therefore
++	 * receiver_info is associated with 'unknown_task'.
++	 */
 +
-+	struct receiver_info * receiver_info = new_receiver_info(send_right, task);
++	struct receiver_info * receiver_info = new_receiver_info(send_right, unknown_task);
 +
 +	TRACED_INFO (send_wrapper)->type = MACH_MSG_TYPE_MOVE_SEND;
 +	TRACED_INFO (send_wrapper)->task = task;
@@ -363,16 +385,12 @@
 +  /* Now go back over the portsets and recreate them. */
 +
 +  while (portset_list) {
-+    mach_port_t * members;
-+    mach_msg_type_number_t nmembers;
-+    err = mach_port_get_set_status(task, portset_list->name, &members, &nmembers);
-+    assert_perror_backtrace (err);
-+    fprintf(ostream, "portset %lu nmembers %d\n", portset_list->name, nmembers);
 +
 +    for (int j = 0; j < portset_list->nmembers; j++) {
 +      err = mach_port_move_member(task, portset_list->members[j], portset_list->name);
 +      assert_perror_backtrace (err);
 +    }
++
 +    err = vm_deallocate(mach_task_self(), (vm_address_t) portset_list->members, portset_list->nmembers * sizeof(mach_port_t));
 +    assert_perror_backtrace (err);
 +    portset_list = portset_list->next;
@@ -450,7 +468,7 @@
  
  /* Run a child and have it do more or else `execvpe (argv, envp);'.  */
  pid_t
-@@ -1742,6 +2155,7 @@
+@@ -1745,6 +2176,7 @@
    char **cmd_envp = NULL;
    char *envz = NULL;
    size_t envz_len = 0;
@@ -458,7 +476,7 @@
  
    /* Parse our options...  */
    error_t parse_opt (int key, char *arg, struct argp_state *state)
-@@ -1756,6 +2170,14 @@
+@@ -1759,6 +2191,14 @@
  	  strsize = atoi (arg);
  	  break;
  
@@ -473,7 +491,7 @@
  	case 'E':
  	  if (envz == NULL)
  	    {
-@@ -1785,10 +2207,17 @@
+@@ -1788,10 +2228,17 @@
  	  break;
  
  	case ARGP_KEY_NO_ARGS:
@@ -493,7 +511,7 @@
  	  cmd_argv = &state->argv[state->next - 1];
  	  state->next = state->argc;
  	  break;
-@@ -1854,9 +2283,26 @@
+@@ -1857,9 +2304,26 @@
    if (cmd_envp == NULL)
      cmd_envp = envp;
  
