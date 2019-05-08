@@ -1,4 +1,59 @@
 
+\documentclass{article}
+
+\usepackage{nopageno}
+\usepackage{vmargin}
+\usepackage{comment}
+
+% I like smaller margins than the default
+\setmargnohfrb{0.5in}{0.5in}{0.5in}{0.5in}
+
+% I prefer unindented paragraphs with a blank line between them
+\parindent 0pt
+\parskip \baselineskip
+
+% Redefine underscore to print as a normal character
+\catcode`\_=\active
+\def_{\_}
+
+\title{Building an SSI Cluter with GNU/Hurd}
+\author{Brent Baccala}
+\date{}
+
+\pdfinfo{
+  /Title	(Building an SSI Cluter with GNU/Hurd)
+  /Author	(Brent Baccala)
+}
+
+% Shortcuts just for this document
+\def\libpager{{\tt libpager\ }}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+Operating system designers have tried for years to leverage
+the power of multiple computers and develop cluster
+operating systems.  Notable attempts include VAX/VMS, various cluster
+Linux systems [MOSIX, refs], Beowulf, Plan 9, ScaleMP, and
+Hadoop.
+
+Some of these designs, like Beowulf and Hadoop, are built using
+libraries that allow programs which use those libraries to run
+distributed over multiple, otherwise independent, computers.  Others,
+such as VAX/VMS, Plan 9, and ScaleMP, aspire to present the cluster as
+if it were a single machine -- a Single System Image (SSI) -- allowing
+unmodified programs to exploit cluster parallelism.
+
+GNU/Hurd is an operating system based on the Mach kernel, which was
+designed for use in a cluster environment, making it a natural choice
+to build a POSIX-compatible SSI cluster.  Development on Hurd has
+progressed slowly, but a Debian port has been available since 2013,
+and approximately three quarters of the Debian packages compile and
+run on Hurd.
+
 To support a multi-node Hurd cluster, the libpager used by filesystem
 translators needs to support multiple clients (i.e, multiple kernels
 mmap'ing files).  Hurd's original libpager, written in the mid-1990s,
@@ -10,14 +65,133 @@ necessary to implement inter-node shared memory, whether disk-based or
 not.  Its use in the tmpfs translator, which is in turn used by
 Hurd's POSIX shared memory implementation
 
+Hurd's netmsg and libpaper have been developed to the point where Hurd
+could be usable as a cluster operating system, though the current
+Debian distribution doesn't use this functionality.  At the time of
+this writing (2019), the major barriers to building a Hurd cluster are
+the 32-bit address space and the lack of SMP support, enhancements
+that are beyond the scope of the work described in this paper.
+
 
 CAP THEOREM
-  states that we can't have all three: consistency, availability, partitioning
-  right now, we sacrifice availability - if the network partitions, libpager can deadlock
-  if we introduce a timeout on lock requests, then we're sacrificing consistency
+
+The CAP theorem states that we can't have all three of: consistency,
+availability, partitioning.  Right now, we sacrifice availability - if
+the network partitions, libpager can deadlock.  If we introduce a
+timeout on lock requests, then we're sacrificing consistency.
 
 
-GENERAL NOTES
+\section{Introduction to Mach Port-Based IPC}
+
+In addition to opaque data (generally, but not necessarily interpreted
+as remote procedure calls), Mach messages can contain two more
+sophisticated structures.  The first are port rights.
+
+A Mach message can transport send or receive rights for Mach ports.
+This is basically the only way in which a process can obtain Mach
+ports since, much like POSIX file descriptors, port numbers are local
+to a process and interpreted by the kernel, so there is no way that a
+process can fabricate another process's port number, just as a POSIX
+process can not fabricate another process's file descriptor.
+
+All Hurd authentication is based on port rights.  For example, a file
+system server may give out a send right which allows access to a
+particular file, simply by answering RPC messages transmitted to that
+port.  The process receiving the send right is free to pass it to
+another process, which would then obtain the same rights to access the
+file.  Note that since the first process would be free to proxy any
+requests to access the file, this isn't a security flaw.  In fact, the
+process {\it can} proxy the requests by creating a new port of its
+own, handling out a send right to that port, and relaying message to
+the file system server, which would allow it to filter access to the
+file.  This is roughly how file systems are implemented in Hurd.  The
+file system server has read/write access to an entire disk partition,
+but gives out send rights that only allow access to individual files.
+
+The second additional structure in a Mach message is out-of-band data.
+A Mach message can include pointer/length pairs to regions of memory,
+along with a flag indicating whether those regions should be
+deallocated when the message is sent.  If a region is not deallocated,
+then it behaves much like a large block of opaque data copied in the
+Mach message.  However, if a region is deallocated, then there is no
+need to actually copy the data in the region, as hardware memory
+management tables can be used to simply map it into the receiving
+task's memory space.  This allows large blocks of memory to be
+efficiently transferred in Mach messages, and forms the basis for
+Mach's memory management system.
+
+
+
+\section{Introduction to Mach Memory Management}
+
+Mach's memory management was specifically designed to support
+multi-node clusters.  Mach's model of memory management is that memory
+is managed by user-space processes, and system memory is a cache of
+that memory.  Any user-space process that implements Mach's memory
+management protocol can be mapped into a process's address space.
+When the process attempts to access memory, a page fault is triggered
+which causes Mach to request the page from the user-space process.
+The faulting thread remains suspended until the page has been supplied
+to the kernel.
+
+Mach's ability to attach out-of-band memory to messages is thus a
+crucial component in the efficient implementation of its memory
+management.  A page is typically supplied to kernel by attaching it to
+a memory_object_data_supply message.  No copying needs be done, as the
+page is transferred to kernel control simply by adjusting bits in the
+hardware memory management tables.  Likewise, transferring a modified
+page from the kernel to a user-space memory manager is done by
+attaching it to a Mach message in a similar way.
+
+Of course, it can be inefficient to keep a copy of a page in user
+space while its also in use by the kernel.  Pages can be flagged
+``precious'', indicating to the kernel that they must be returned to
+the user-space process and can not be simply discarded.
+
+The flexibility of allowing user-space processes to implement the
+memory management protocol does create unique failure and abuse
+scenarios.  A program can implement the memory management protocol,
+map it into a region of memory, transfer that memory to another
+process, then trigger a fault by responding with
+memory_object_data_error to any access attempt.  The other program, if
+not careful, could fail with a SIGSEGV just for trying to read the
+memory it received in a message!  Thus, in Hurd, user-space programs,
+especially system servers, must exhibit the same kind of care when
+receiving memory regions in Mach messages as Linux kernel authors are
+used to considering when a kernel routine receives memory from a
+user-space program.
+
+
+\section{The NETMSG Server}
+
+To implement distributed virtual memory in Hurd, we need to transport
+Mach messages across the network.  Several programs have been written
+over the years to transport Mach messages over a network connection;
+all collectively go under the name of the ``netmsg server'', or just
+``netmsg''.
+
+I wrote Hurd's current netmsg server in 2016.  It operates over a
+single unsecured TCP/IP connection and has many limitations, but it
+works well enough to implement shared virtual memory.  In server mode,
+it presents a single node, by default the root of the filesystem, to
+any clients that connect.  In client mode, it acts as a translator,
+allowing a remote server's exported node to be mounted in the
+local filesystem.
+
+Out-of-band memory is simply
+copied across the network connection, then deallocated.
+
+
+\section{LIBPAGER}
+
+Hurd's implementation of the Mach memory management protocol is
+implemented in a library called ``libpager''.  The original libpager,
+written in the mid-1990s, only supported a single client (i.e, a
+single Mach kernel), and was thus suitable for single node operation.
+Its API, however, is flexible enough to allow a more sophisticated,
+multi-client libpager as a drop-in replacement.  For dynamically
+linked servers, all that is required is to update the system shared
+library to obtain multi-node functionality.
 
 pager_read_page() is expected to allocate memory (unless it returns an
 error) and pass it to libpager, which is responsible for deallocating
@@ -89,116 +263,128 @@ CONFIGURATION OPTIONS
   CAP theorem - timeouts would sacrifice consistency to achieve availability
 
 
-POSIX SHARED MEMORY
+\section{The Pagemap}
 
-Hurd's System V shared memory implementation, in glibc's
-sysdeps/mach/hurd, operates by mapping "files" in the /run/shm portion
-of the filesystem tree.  /run/shm is typically implemented using the
-tmpfs translator, which is linked with libpager.  Thus, a multi-client
-libpager enables the use of inter-node shared memory.  What is
-required to make this happen is a shared /run/shm - shared with full
-Mach IPC semantics, not just NFS - so netmsg is required.  unionfs can
-possibly be used to overlay the various /run/shm's on each other.
+Hurd's original \libpager had a fairly simple pagemap.  The pagemap was
+an array of 16-bit shorts; each page had a single 16-bit entry, allocated
+as follows:
 
+\begin{verbatim}
+#define PM_WRITEWAIT  0x0200   /* queue wakeup once write is done */
+#define PM_INIT       0x0100   /* data has been written */
+#define PM_INCORE     0x0080   /* kernel might have a copy */
+#define PM_PAGINGOUT  0x0040   /* being written to disk */
+#define PM_PAGEINWAIT 0x0020   /* provide data back when write done */
+#define PM_INVALID    0x0010   /* data on disk is irrevocably wrong */
 
-ON REMOVING pager_offer_page()
+#define PM_ERROR(byte) (((byte) & 0xc) >> 2)
+#define PM_NEXTERROR(byte) ((byte) & 0x3)
 
-Brent Baccala wrote:
+enum page_errors
+{
+  PAGE_NOERR,
+  PAGE_ENOSPC,
+  PAGE_EIO,
+  PAGE_EDQUOT,
+};
+\end{verbatim}
 
-> I've reviewed the existing code, and I have a problem with the
-> function pager_offer_page().
+Four bits are allocated for error code.  (all other errors get collapsed into EIO)
 
-> First, the API is problematic, since pager_offer_page() is a call from
-> the memory server (i.e, ext2fs) into the libpager library, instructing
-> the library to offer a page to the client (i.e, the kernel) that
-> hasn't been solicited by the client.  The problem is that the function
-> parameters don't indicate which client to offer the page to.
+The remaining bits indicate if the page is in core, if we're waiting
+for it to be paged in or out (typically to or from disk).
 
-> Second, I can't find anywhere in the hurd source tree where this
-> function is actually used.
+Clearly such a simple pagemap is inadequate for multi-client
+operation.  For one thing, we could have a potentially unlimited
+number of clients with read-only copies of the page, as well as a
+potentially unlimited number of clients waiting on the page, so
+a fixed-size structure seems inadequate.
 
-> Third, why would we want this feature?  Why would a memory server ever
-> want to send an unsolicited page to a client?
+Nor is a separate structure for each page desirable if there are
+a large number of pages.  Since the state of one page is often
+identical to the state of many others, a pagemap of pointers
+suggests itself.
 
-> So, I propose deprecating pager_offer_pager() by simply removing it
-> from the library.
+The new \libpager is coded in C++, so there were several implementation options:
 
-> Any objections?
+\begin{itemize}
 
-Kalle Olavi Niemitalo <kon@iki.fi> wrote:
+\item  A straight-up array of pointers
 
-> Commit 84cf9c0f312637b670cc87224ff7e7c4da659e36 on 2013-09-17
-> removed the ufs directory, in which the offer_data function used
-> to call pager_offer_page.  The last argument of pager_offer_page
-> always pointed to a page that was part of the global zeroblock,
-> which was the size of a filesystem block and filled with zeroes.
-
-> One of the offer_data calls was preceded by a comment:
-
->   /* Make sure that any pages of this block which just became allocated
->      don't get paged in from disk. */
-
-> I don't know how ext2fs makes sure of that, or whether
-> pager_offer_page might again be needed for the same purpose in
-> the future.
-
-
-C++ PAGEMAP
-
-What's not so clear is how to code the pagemap itself.  A straight-up
-array of pointers?  Easy enough to understand, but then we have to
+Easy enough to understand, but then we have to
 code reference counting to know when those dynamic structures can be
-deallocated.  An array of shared_ptr's?  Simplifies the code, because
+deallocated.
+
+\item An array of {\tt shared_ptr}'s
+
+Simplifies the code, because
 it does all the reference counting for us, but at the cost of making
-the array four times bigger than it needs to be.  A custom class with
-a clever copy constructor?  Then we just assign into the array and the
-copy constructor takes care of either finding an existing pagemap
-structure or creating a new one, at the cost of obscuring the fact
-that "pagemap[i] = new_client_list;" is far more complex than a simple
-assignment.
+the array four times bigger than it needs to be.
 
-Right now, I use the clever copy constructor.  All the queues and
-lists are private, and we've got a bunch of methods to access them,
-allowing us to change the pagemap structure later if we want.
+\item A custom class with a clever copy constructor
 
-What I want to avoid is to start looking at that code, saying "coping
-all these queues and lists is inefficient" (it is), and start adding
-all kinds of C++ tricks to speed it up.  Just write it so that it's
-simple and clear, and if performance becomes an issue, revisit it
-later.
+We just assign into the array and the copy constructor takes care of
+either finding an existing pagemap structure or creating a new one, at
+the cost of obscuring the fact that {\tt pagemap[i] = new_client_list;} is
+far more complex than a simple assignment.
 
+\end{itemize}
 
-Richard Braun <rbraun@sceen.net>:
+I used the clever copy constructor.  The pagemap is an
+array of pointers to unique pagemap structures kept in a C++ {\tt std::set}
+called {\tt pagemap_set}.  When working on a page, the main library
+code copies a pagemap entry into a temporary structure ({\tt
+  tmp_pagemap_entry}), modifies it, then assigns it back into the
+pagemap using an {\tt operator=} that either finds a matching entry in
+{\tt pagemap_set} and uses a pointer to it, or move-inserts {\tt
+  tmp_pagemap_entry} into {\tt pagemap_set} and uses a pointer to it.
 
-> From my fifteen years or so experience working in various projects with
-> C++ and other languages, my opinion is that C++ is never the best
-> choice. It makes you trade lines of code for increased complexity in
-> understanding and following the code. You should either go with C for
-> excellent control, or another higher level langguage for e.g. user
-> interfaces and tasks that don't require the highest performance.
+All the queues and lists are private, and we've got a bunch of methods
+to access them, allowing us to change the pagemap structure later if
+we want.
 
-> I really don't think the problem you describe would be so hard to solve
-> in C.
-
-
-NEW PAGETABLE
-
+\begin{verbatim}
 struct pagemap_entry {
-   /* ACCESSLIST */
+   /* ACCESSLIST
+    * A list of clients that currently have access, along
+    * with an indication if this is read-only or read-write access.
+    */
    port_t clients_with_access[];
    bool write_access_granted;
 
-   /* WAITLIST */
-   /* A list of the clients waiting for access, in order of arrival, and what kind of access they are waiting for */
+   /* WAITLIST
+    * A list of the clients waiting for access, in order of arrival,
+    * and what kind of access they are waiting for (read or write)
+    */
    port_t clients_waiting[];
    boolean clients_waiting_for_write[];
 
-   /* NEXTERROR list */
-   /* A list of outstanding error codes, paired with clients, returned during unlock requests. */
-   /* They'll be transmitted to the client that requested them. */
+   /* PAGINGOUT
+    * A flag that we set when we get a data return and start writing it
+    * to backing store, and clear when the write is finished.
+    */
+   bool pagingout;
 
-   /* WRITEWAIT list */
-   /* A list of pages waiting to be written out to disk */
+   /* ERROR
+    * the last error code returned from a backing store write operation
+    * (hopefully KERN_SUCCESS)
+    */
+   kern_return_t error;
+};
+
+Global structure {
+   /* NEXTERROR list
+    * A linked list of outstanding (error code, page, client) tuples.
+    * They'll be transmitted to the client that requested them.
+    */
+
+   /* WRITEWAIT list
+    * A linked list of pages waiting to be written out to disk
+    */
+
+    std::map<std::pair<vm_offset_t, vm_size_t>, outstanding_lock> outstanding_locks;
+
+    std::set<outstanding_change_request> outstanding_change_requests;
 
    ERROR code - a kern_return_t, so we're not limited to a small number of errors
 
@@ -207,9 +393,7 @@ struct pagemap_entry {
    INVALID - set if the data on disk is invalid because we got an error writing the page back to the filesystem
       If some clients still have copies of the data, we may be able to operate for a while, then retry the write operation
 }
-
-
-PAGEMAP FOR AN ARBITRARY NUMBER OF CLIENTS
+\end{verbatim}
 
 How to maintain the pagemap for a large number of clients?  Each page
 has a pointer to a structure indicating which clients currently hold
@@ -232,6 +416,8 @@ unordered; WAITLIST is ordered.  ACCESSLIST is stored sorted.
 What happens when either list gets a new client (or loses one)?  We
 have to search in the structures for the new combination, and create a
 new structure if the desired combination doesn't exist yet.
+
+\begin{comment}
 
 We currently use a C++ std::set and let it do the searching for us.
 
@@ -297,41 +483,54 @@ single client pointer optimizations
 
 PAGEMAP FOR A SMALL NUMBER OF CLIENTS (UNIMPLEMENTED)
 
+I've thought of a possible optimization for small numbers of clients
+that would largely avoid the need for separate pagemap structures, and
+would transition to the unlimited size structures described above when
+more clients connect that it can handle.
+
 First, steal a bit from the pointer by aligning the structure on a
 word boundary.  Then, if the least significant bit is 1, interpret the
 pagemap entry as a bitfield rather than as a pointer to a more
 complicated structure.
 
-A 32 bit field (err... make that a 31 bit field) can handle up to four
+A 32 bit field (err... make that a 31 bit field) can handle up to seven
 clients.  The new pagemap entries have an ACCESSLIST, which is an
 unsorted set of clients (those who currently have access), and a
 WAITLIST, which is a sorted list of clients that have requested
-access, and a few boolean flags.
+access, and a two boolean flags.
 
-We number our clients 0 through 3, and I'm thinking above moving their
+We number our clients 0 through 6, and I'm thinking above moving their
 ports into high port number space to easily identify them.  So, the
 first client on the first memory object would be on port 0x8000000,
 the second client would be on 0x80000001, etc.  The second memory
-object would have its ports on 0x80000004 through 0x80000007.  So we
-can just strip off the lowest 2 bits to figure out our "client
-number".  I don't think protected payloads would help, since we're not
-receiving messages on these ports; they're send ports used to
-communicate with the kernel(s).
+object would have its ports on 0x80000008 through 0x8000000f.  So we
+can just strip off the lowest 3 bits to figure out our "client
+number".
 
-ACCESSLIST entries requires two bits - one to indicate if access is
-granted, and one to indicate if it's read-only or read-write access.
-So, we use 2*4 = 8 bits for the ACCESSLIST.  The WAITLIST is sorted
-(client requests are processed FIFO) and requires four bits per slot -
-one to indicate that the slot is in use, two to identify the client,
-one to indicate if the request is for read or write access.  We need
-four slots for four clients, so 4*4 = 16 bits for the WAITLIST.  Then
-we need a few more flag bits.  It all fits.
+We need a paging out flag, and a bit to indicate if the granted access
+is read-only or read-write.  Assume that the {\tt error} field is
+always {\tt KERN_SUCCESS}.  The ACCESSLIST requires one bit per client
+to indicate if access is granted.  The WAITLIST is sorted (client
+requests are processed FIFO) and requires four bits per slot -- three
+to identify the client (all ones indicates an empty slot), and one to
+indicate if the request is for read or write access.  Thus, we need
+seven bits for the ACCESSLIST, two more flag bits (paging out and
+read/write access), one bit to indicate that this isn't a pointer,
+leaving room for five WAITLIST slots.
 
-Once we hit our fifth client, or some oddball condition (like an error
-return other than the expected EIO, ENOSPC, EDQUOT), we shift to a
-pointer that points to a more complicated, dynamically allocated
-structure.
+Once we hit our seventh client, or some oddball condition (like an
+error return other than the expected KERN_SUCCESS, or a sixth client
+on the WAITLIST), we shift to a pointer that points to a more
+complicated, dynamically allocated structure.
 
+Likewise, a 64-bit pointer (wishful thinking at the moment, since Hurd
+is currently a 32-bit system) would allow fifteen clients, with an
+eleven client WAITLIST.  Both the 32-bit and the 64-bit scheme have
+two bits left over, perhaps they could be used to allow EIO, ENOSPC,
+and EDQUOT, in addition to KERN_SUCCESS, since these seem to be the
+most likely error codes.
+
+\end{comment}
 
 ACCESS CONTENTION
 
@@ -367,8 +566,9 @@ notify the user that the page has been evicted.
 
 
 
-PSEUDOCODE
+\section{Pseudocode}
 
+\begin{verbatim}
 service_waitlist: (pass in a pagetable pointer, a data pointer, a read/write flag, a deallocate flage)
   XXX: data length must be page_size, as this logic is for a single page
   call with pager locked
@@ -378,7 +578,9 @@ service_waitlist: (pass in a pagetable pointer, a data pointer, a read/write fla
   what if WAITLIST still has clients on it after sending messages?
      [ ] use a timeout before sending more lock requests?
      [X] send lock requests right away to everything on ACCESSLIST
+\end{verbatim}
 
+\begin{verbatim}
 send_error_to_WAITLIST (pass in an error and offset):
   XXX: data length must be page_size
     ( XXX this causes a data_error to be sent for each page, when we could consolidate them, )
@@ -392,7 +594,9 @@ send_error_to_WAITLIST (pass in an error and offset):
   [X] do nothing to ACCESSLIST
   [ ] do something more clever with stuff on ACCESSLIST
      (we got a read error, but other clients have copies of the data)
+\end{verbatim}
 
+\begin{verbatim}
 finalize_unlock: (pass in a page number and an error code)
   if page not flagged ERROR:
      send m_o_lock_request to first client on WAITLIST (no reply), remove this client from WAITLIST,
@@ -407,7 +611,9 @@ finalize_unlock: (pass in a page number and an error code)
      add this client and error to NEXTERROR list
      (wait for reply and don't remove from ACCESSLIST until we get it)
      (other clients on WAITLIST will be processed when the lock is answered)
+\end{verbatim}
 
+\begin{verbatim}
 m_o_data_request: (kernel requesting a single page)
 
   if this client is on NEXTERROR list and WRITE ACCESS WAS REQUESTED, send a m_o_data_error message,
@@ -436,7 +642,9 @@ m_o_data_request: (kernel requesting a single page)
      relock pager
      if pager_read_page() returned an error, mark page with ERROR and call send_error_to_WAITLIST
      if no error, service_waitlist(deallocate=true) (read/write status supplied by filesystem), clear ERROR
+\end{verbatim}
 
+\begin{verbatim}
 m_o_lock_completed:
   m_o_lock_completed could have been sent in response to an internal lock request, or a fs flush, sync, return
   find client/offset/length in list of lock requests and decrement locks_pending
@@ -444,7 +652,9 @@ m_o_lock_completed:
     if internal_lock_outstanding, and WAITLIST is not empty, then call internal_lock_completed
     remove client/offset/length from list
   if no more clients for this offset/length, wake up any waiting thread
+\end{verbatim}
 
+\begin{verbatim}
 internal_lock_completed: (internal flush variant)
   use alloca() to allocate an array of flags, one set (in a uint8) for each page in current message:
     PAGEIN, UNLOCK, ERROR
@@ -479,7 +689,9 @@ internal_lock_completed: (internal flush variant)
        XXX: this causes multi-page operations to broken up into single page ops
     else (page flagged ERROR): call send_error_to_WAITLIST
   for each page flagged UNLOCK: call finalize_unlock
+\end{verbatim}
 
+\begin{verbatim}
 m_o_data_unlock: (kernel requesting write access when it's already got read access)
   lock pager
   alloca() an array of UNLOCK and ERROR flags, one pair for each page in message
@@ -503,7 +715,9 @@ m_o_data_unlock: (kernel requesting write access when it's already got read acce
     call pager_unlock_page() and set ERROR based on return value
   relock pager
   for all pages with UNLOCK flag set: call finalize_unlock
+\end{verbatim}
 
+\begin{verbatim}
 lock_object: (several types: flush, sync, return, response to an unlock request)
   NEW MODE NEEDED: asynchronous, but reply requested
   wrapper around m_o_data_lock message
@@ -518,7 +732,9 @@ lock_object: (several types: flush, sync, return, response to an unlock request)
     we wait for the write to finish before returning from the lock
     the data return could be triggered by the lock request (i.e, a sync or a return)
   if a lock request comes in while a write is happening, we don't do anything to synchronize them
+\end{verbatim}
 
+\begin{verbatim}
 m_o_data_return: (kernel returning pages)
   (this can not be used in liu of a lock completed message for a WRITE,
      because it doesn't indicate if the kernel still maintains WRITE access)
@@ -578,7 +794,9 @@ m_o_data_return: (kernel returning pages)
 
   else (pages are not dirty):
     munmap() data
+\end{verbatim}
 
+\begin{verbatim}
 service_first_WRITEWAIT_entry:
   use alloca() to allocated an array of flags, one set (in a uint8) for each page in current message:
     NOTIFY, ERROR, and PAGEOUT
@@ -618,25 +836,35 @@ service_first_WRITEWAIT_entry:
 
   signal wakeup on anything waiting on this WRITEWAIT entry
   remove this WRITEWAIT entry from WRITEWAIT list
+\end{verbatim}
 
+\begin{verbatim}
 pager_sync:
   only needs to do anything if a client has WRITE access
   might need to do multiple locks if different clients have WRITE access to different pages
+\end{verbatim}
 
+\begin{verbatim}
 pager_return:
   scan pagelist for specified range and form the union of all clients on the ACCESSLISTs
   send multiple locks for multiple clients
   set (or increment) locks_pending by the number of lock requests sent
+\end{verbatim}
 
+\begin{verbatim}
 pager_flush:
   scan pagelist for specified range and form the union of all clients on the ACCESSLISTs
   send multiple locks for multiple clients
   set (or increment) locks_pending by the number of lock requests sent
+\end{verbatim}
 
+\begin{verbatim}
 m_o_terminate:
   mach_port_destroy() control and name ports passed in
     (we had send rights and should have just received receive rights in the m_o_terminate message)
+\end{verbatim}
 
+\begin{verbatim}
 pager_shutdown:
   set terminating flag
   send pager_return (flush, return all, sync) to all active clients
@@ -654,6 +882,7 @@ pager_shutdown:
   [ wait for m_o_terminate replies from all clients
   call ports_destroy_right, which will blow away our receive right, and ultimately call the destructor,
     which will then call drop_client on any remaining clients
+\end{verbatim}
 
 SHUTDOWN CODE
 
@@ -662,14 +891,6 @@ destroy the receive right and ignore any final messages.  This created
 a minor race condition where clients could request a page while the
 flush was processing, which would then get dropped.
 
-
-MISTAKES AND OMISSIONS IN CURRENT INFO DOCUMENTATION:
-  - pager_notify() undocumented
-  - pager_read_page() / pager_write_page() / pager_unlock_page() don't discuss re-entrance of these routines
-  - "deallocate" argument missing in m_o_data_supply
-
-
-POTENTIAL PROBLEMS
 
 BUG IN OLD CODE (NOT):
   client has WRITE access and page is being actively changed
@@ -893,22 +1114,6 @@ Scenario A shows that ACCESSLIST, WAITLIST and a FLUSHING flag aren't enough; we
 which clients requested access during the flush to correctly compute ACCESSLIST at the end.
 
 
-USEFUL CHANGES TO THE KERNEL:
-  - m_o_data_return could specify what permissions the kernel still holds on the page.  Then
-    we could easily downgrade from WRITE to READ access without waiting for a lock completed
-    message, or (like the current code), never downgrading from WRITE to READ.
-  - m_o_lock_completed message could specify what kind of lock was completed, avoiding the
-    need to match reply ports to lock messages unless (like the current code), we just
-    wait for all outstanding locks to complete before continuing with any of them.
-  - libpager could use the ability to request a copy of a unmodified, un-precious page from the kernel,
-    so it can serve out the page to other nodes without reading again from the disk
-  - ability to notify memory manager when a non-precious page has been evicted
-    (over the network, precious is heavy weight just to get notification that a page has been evicted)
-  - a kernel name port common across all memory objects
-    this would allow sharing pagemaps between memory objects with the same usage pattern
-    (i.e, kernels A and B both map files C and D)
-
-
 PRECIOUS PAGES
 
 Flagging a page precious (so the kernel always returns it to us) isn't that big a deal
@@ -1020,18 +1225,27 @@ client A processes flush and requests WRITE access, so goes on WAITLIST again wi
 client A is now on WAITLIST twice
 
 
-**** TEST CODE ****
+\section{Random Test Code}
 
-client operations:
-1. request READ access
-2. request WRITE access
-3. request unlock READ -> WRITE
-4. flush page
-5. service a message from the memory manager
+I wrote a test program that excercises libpager by making a
+pseudo-random string of pager requests.  The idea was to run it
+repeatedly using various seed values, then if it detected a bug, it
+could be re-run with the same seed value in order to reproduce the
+bug.  It never actually found any bugs.
 
-No access - 1 2 or 5
-Read access - 3 4 or 5
-Write access - 4 or 5
+There are five possible client operations:
+
+\begin{enumerate}
+\item request READ access
+\item request WRITE access
+\item request unlock READ $\to$ WRITE
+\item flush page
+\item service a message from the memory manager
+\end{enumerate}
+
+If the client has no access to a page, then 1, 2, or 5 are possible.
+If the client has read access, then 3, 4, or 5 are allowed.  With
+write access, 4 or 5 are permissible.
 
 translator operations:
 1. discard request
@@ -1040,6 +1254,17 @@ translator operations:
 4. complete a pending pager_read, pager_write, or pager_unlock (which one? there could be several)
 
 1 2 3 can be synchronous or asynchronous
+
+The test program should check to ensure that following conditions are met:
+
+[ ] write access to a page is exclusive to a single client
+[p] pages get written back in-order (though skips are possible)
+[ ] if a page is modified, nobody ever sees an earlier version of it
+[ ] all data requests are properly answered with a data supply or a data error (or data unavailable)
+[ ] all data unlock requests are properly answered with a data lock
+[ ] if a data lock requests a reply, make sure one is received
+
+p = partially done
 
 Test for BUG 1:
   A2 T4 (the read completes) A5 (the data_supply is processed)
@@ -1071,12 +1296,116 @@ Test for BUG 3: (one client, two pages A and B)
 
 data should always be modified if possible (whenever a client's got WRITE access)
 
-Check:
-[ ] write access to a page is exclusive to a single client
-[p] pages get written back in-order (though skips are possible)
-[ ] if a page is modified, nobody ever sees an earlier version of it
-[ ] all data requests are properly answered with a data supply or a data error (or data unavailable)
-[ ] all data unlock requests are properly answered with a data lock
-[ ] if a data lock requests a reply, make sure one is received
 
-p = partially done
+
+\section{POSIX Shared Memory}
+
+Hurd's System V shared memory implementation, in glibc's
+sysdeps/mach/hurd, operates by mapping "files" in the /run/shm portion
+of the filesystem tree.  /run/shm is typically implemented using the
+tmpfs translator, which is linked with libpager.  Thus, a multi-client
+libpager enables the use of inter-node shared memory.  What is
+required to make this happen is a shared /run/shm - shared with full
+Mach IPC semantics, not just NFS - so netmsg is required.  unionfs can
+possibly be used to overlay the various /run/shm's on each other.
+
+
+\section{Distributed Tasks and Process Migration}
+
+In the Hurd architecture, processes are localized to a node, but our
+implementation of distributed shared memory allows cross-node forks
+with full POSIX semantics.  A straightforward modification to
+Hurd's C library would allow fork calls to spawn processes
+on other nodes.
+
+How can a process share threads between nodes?  Two main problems:
+sharing Mach ports, and sharing memory.  Mach allows the allocation
+of un-backed memory pages.  We need to attach a memory manager
+to the un-backed pages to allow them to be distributed across nodes.
+This requires relatively minor changes to Mach.
+
+This would allow cross-node forks, but not cross-node threads, which
+would be difficult to implement using Mach's current design.  Any
+thread in a task can listen for messages on a Mach port, and messages
+are only delivered once, so balancing the need to copy messages to
+multiple nodes (since any thread could be the only one listening to a
+given port) while guaranteeing unique delivery is quite problematic.
+
+This suggests a natural division: processes are local to each node.  A
+multi-threaded program can fork multiple times, and each forked
+process can spawn multiple threads.  The processes are distributed
+between nodes, while each process is local to a node and supports
+multiple threads.
+
+Linux's NUMA implementation uses a zonelist for memory allocation.
+Memory allocation requests are attempted locally, and if this fails,
+then we fall back into the zonelist, which gives us a list of other
+nodes to try for memory allocation.
+
+The linux scheduler (sched-domains.txt) occasionally balances
+load between scheduling domains.
+
+
+\section{Current Status and Future Work}
+
+Both the netmsg server and the new libpager have been successfully
+tested in a virtual machine running Hurd.
+
+\begin{itemize}
+
+\item 64-bit addressing and SMP
+
+This is the most important work needed on Hurd.  We've got all of the
+major pieces of a working cluster operating system, but nobody cares
+since it can only use a single processor on each node and individual
+processes are limited to a 4 GB address space.
+
+\item improved netmsg
+
+Use a reliable datagram delivery protocol, not TCP.
+
+Direct access to network hardware.  Memory-mapped PCI hardware
+accessed with a library.  This would require a network card
+to be dedicated to netmsg, but with Cisco virtual NICs, that's
+not such a big problem.
+
+\item Useful Mach kernel changes
+
+\begin{itemize}
+
+\item allow memory manager to attach to unmanaged pages
+
+  This is necessary to implement cross-node {\tt fork}'s with full POSIX semantics.
+
+\item m_o_data_return could specify what permissions the kernel still holds on the page
+
+  Then
+  we could easily downgrade from WRITE to READ access without waiting for a lock completed
+  message, or (like the current code), never downgrading from WRITE to READ.
+
+\item m_o_lock_completed message could specify what kind of lock was completed
+
+  This would avoid the
+  need to match reply ports to lock messages unless (like the current code), we just
+  wait for all outstanding locks to complete before continuing with any of them.
+
+\item the ability to request a copy of a unmodified, un-precious page from the kernel
+
+  This would allow \libpager to serve out the page to other nodes without reading it again from the disk.
+
+\item ability to notify memory manager when a non-precious page has been evicted
+
+    (over the network, precious is heavy weight just to get notification that a page has been evicted)
+
+\item Use a kernel name port common across all memory objects
+
+    this would allow sharing pagemaps between memory objects with the same usage pattern
+    (i.e, kernels A and B both map files C and D)
+
+\end{itemize}
+
+\item distributed filesystem
+
+\end{itemize}
+
+\end{document}
