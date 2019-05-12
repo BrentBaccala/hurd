@@ -5,6 +5,10 @@
 \usepackage{vmargin}
 \usepackage{comment}
 
+\usepackage{../slides/hurd}
+\usepackage{tikz}
+\usetikzlibrary{positioning, fit, backgrounds, arrows, trees, shapes}
+
 % I like smaller margins than the default
 \setmargnohfrb{0.5in}{0.5in}{0.5in}{0.5in}
 
@@ -72,27 +76,100 @@ this writing (2019), the major barriers to building a Hurd cluster are
 the 32-bit address space and the lack of SMP support, enhancements
 that are beyond the scope of the work described in this paper.
 
-
-CAP THEOREM
-
-The CAP theorem states that we can't have all three of: consistency,
-availability, partitioning.  Right now, we sacrifice availability - if
-the network partitions, libpager can deadlock.  If we introduce a
-timeout on lock requests, then we're sacrificing consistency.
+The CAP theorem states that a distributed system can't have all of
+three things: consistency, availability, partitioning.  Right now, we
+sacrifice availability -- if the network partitions, libpager can
+deadlock.  If we introduce a timeout on lock requests, then we're
+sacrificing consistency.
 
 
 \section{Introduction to Mach Port-Based IPC}
 
-In addition to opaque data (generally, but not necessarily interpreted
-as remote procedure calls), Mach messages can contain two more
-sophisticated structures.  The first are port rights.
+Mach inter-process communications is primarily done using
+variable-sized datagram messages that are transmitted reliably and
+in-order to queues from which tasks can receive them.  In addition to
+opaque data (generally, but not necessarily interpreted as remote
+procedure calls), Mach messages can contain two more sophisticated
+structures.  The first are port rights, which come in two basic
+flavors.  Send rights give a task the ability to transmit messages to
+a queue, and receive rights give a task the ability to receive
+messages from a queue.  A Mach message can transport send or receive
+rights for Mach ports.
 
-A Mach message can transport send or receive rights for Mach ports.
+\tikzstyle{message} = [draw, fill=red!20, text width=5em, text depth=3em, text centered,
+  minimum width=5em, minimum height=2em, rounded corners]
+
+\begin{figure}
+\begin{center}
+\begin{tikzpicture}[node distance = .5cm]
+
+\task{Task 1}{at (0,0)}{br}{
+% print two sendright nodes, one to fill the message1 box to the correct size,
+% and another one to actually draw it, since message1 will overwrite the
+% first sendright
+
+\node (sendright) [draw, fill=orange] {Send 41};
+\node (message1) [fit=(sendright), message] {Message 1};
+\node (sendright) [draw, fill=orange] {Send 41};
+
+\node (message3) at (0, -7em) [message] {Message 2};
+}
+
+\task{Task 2}{at (15 em,0)}{bl}{
+
+\node (sendright2) [draw, fill=orange] {Send 9};
+\node (message2) [fit=(sendright2), message] {Message 1};
+\node (sendright2) [draw, fill=orange] {Send 9};
+
+\node (message4) at (0, -7em) [message] {Message 2};
+}
+
+\node (port 41) [left of=Task 1 Port -10, anchor=south] {41};
+
+\draw [thick, color=red, dotted, ->] (node cs:name=sendright, angle=-20) -- (port 41);
+
+\node [left of=Task 1 Port 5, anchor=south] {27};
+\node [right of=Task 2 Port 5, anchor=south] {52};
+%% \only<1,2>{\draw [thick, -triangle 90] (Task 1 Port 5) -- (Task 2 Port 5);}
+
+\draw [color=violet, thick, -triangle 90] (node cs:name=message1,angle=20) -- +(.3,0) |- (Task 1 Port 5) -- (Task 2 Port 5)
+    -- +(.5,0) |- (node cs:name=message2, angle=160);
+
+\node [right of=Task 2 Port -10, anchor=south] {9};
+
+\draw [thick, triangle 90-] (Task 1 Port -10) -- (Task 2 Port -10);
+
+\draw [color=violet, thick, triangle 90-] (node cs:name=message3,angle=20) -- +(.3,0) |- (Task 1 Port -10) -- (Task 2 Port -10)
+    -- +(.5,0) |- (node cs:name=message4, angle=160);
+
+\end{tikzpicture}
+\end{center}
+\caption{Transferring a send right}
+\label{Transferring a send right}
+\end{figure}
+
+In Figure \ref{Transferring a send right}, Process 1 sends Message 1
+to Process 2 containing a send right to the queue known to Process 1
+as port 41, which could have been created by Process 1, or received
+from another task.  The Mach kernel translates this into a send right
+to a previously unused port 9 in Process 2's port number space.
+Process 2 can now send a message to its port 9, which will be received
+by Process 1 on port 41.
+
 This is basically the only way in which a process can obtain Mach
 ports since, much like POSIX file descriptors, port numbers are local
 to a process and interpreted by the kernel, so there is no way that a
 process can fabricate another process's port number, just as a POSIX
-process can not fabricate another process's file descriptor.
+process can not fabricate another process's file descriptor.  A
+process is provided a few standard ports when it is initialized, one
+of which being a port with send rights that represents the root of the
+file system.  By sending filename lookup requests to this port, the
+process can traverse the entire file system tree, each node of which
+is represented by a different port.  The hurd file system is thus a
+hierarchy of ports, most of which recognize a standard set of RPCs
+performing file operations.  The primary way for a program to
+advertise its services in Hurd is for it to listen for messages on a
+port that it attachs to a name in the file system.
 
 All Hurd authentication is based on port rights.  For example, a file
 system server may give out a send right which allows access to a
@@ -130,9 +207,9 @@ is managed by user-space processes, and system memory is a cache of
 that memory.  Any user-space process that implements Mach's memory
 management protocol can be mapped into a process's address space.
 When the process attempts to access memory, a page fault is triggered
-which causes Mach to request the page from the user-space process.
-The faulting thread remains suspended until the page has been supplied
-to the kernel.
+which causes Mach to request the page from the user-space process
+using a well documented protocol.  The faulting thread remains
+suspended until the page has been supplied to the kernel.
 
 Mach's ability to attach out-of-band memory to messages is thus a
 crucial component in the efficient implementation of its memory
@@ -146,7 +223,11 @@ attaching it to a Mach message in a similar way.
 Of course, it can be inefficient to keep a copy of a page in user
 space while its also in use by the kernel.  Pages can be flagged
 ``precious'', indicating to the kernel that they must be returned to
-the user-space process and can not be simply discarded.
+the user-space process and can not be simply discarded.  This frees
+the user-space memory manager from needing to keep a copy of a page
+that has been supplied to the kernel.  Otherwise, non-``precious''
+pages can be freely discarded by the kernel when they are no longer
+needed.
 
 The flexibility of allowing user-space processes to implement the
 memory management protocol does create unique failure and abuse
@@ -157,9 +238,8 @@ memory_object_data_error to any access attempt.  The other program, if
 not careful, could fail with a SIGSEGV just for trying to read the
 memory it received in a message!  Thus, in Hurd, user-space programs,
 especially system servers, must exhibit the same kind of care when
-receiving memory regions in Mach messages as Linux kernel authors are
-used to considering when a kernel routine receives memory from a
-user-space program.
+receiving memory regions in Mach messages as Linux kernel routines
+must consider when receiving memory from a user-space program.
 
 
 \section{The NETMSG Server}
@@ -193,19 +273,51 @@ multi-client libpager as a drop-in replacement.  For dynamically
 linked servers, all that is required is to update the system shared
 library to obtain multi-node functionality.
 
-pager_read_page() is expected to allocate memory (unless it returns an
-error) and pass it to libpager, which is responsible for deallocating
-it (actually by passing it to the kernel).
+On one side, \libpager implements the Mach memory management protocol
+interacting with the Mach kernel.  On the other side, \libpager
+presents an API to the server program, which is responsible for
+producing the pages, as follows:
 
-pager_write_page() does no memory allocation or deallocation.  It
-receives allocated memory and leaves it allocated, with libpager
-responsible for dellocation (or passing it to the kernel).
+\begin{itemize}
 
-pager_flush() and pager_flush_some() discard dirty pages!
+\item {\tt pager_read_page()}
 
-pager_return() and pager_return_some() flush and return dirty (and precious) pages.
+This routine is expected to allocate memory (unless it returns an
+error) containing the requested data and pass it to \libpager, which
+is responsible for deallocating it (typically by passing it to the
+kernel).  A common use scenario is that {\tt pager_read_page()}
+reads a page from disk and returns it.  {\tt pager_read_page()}
+can be called from multiple threads to service multiple paging
+requests, and must implement its own thread safety.
 
-pager_sync() and pager_sync_some() return dirty (and precious) pages but don't flush.
+\item {\tt pager_write_page()}
+
+This routine is expected to save a modified memory page just before
+\libpager releases its last copy of the data.  It does no memory
+allocation or deallocation.  It receives allocated memory and leaves
+it allocated, with \libpager responsible for dellocation, or passing
+it to the kernel, if a new request has arrived in the time required
+for {\tt pager_write_page()} to complete
+
+\item {\tt pager_unlock_page()}
+
+\item {\tt pager_sync()} and {\tt pager_sync_some()}
+
+This routine requests that copies of modified pages be obtained
+and submitted to {\tt pager_write_page()}.  Doesn't otherwise
+interfere with \libpager operation.
+
+\item {\tt pager_flush()} and {\tt pager_flush_some()}
+
+discard dirty pages!
+
+\item {\tt pager_return()} and {\tt pager_return_some()}
+
+ flush and return dirty (and precious) pages.
+
+\item {\tt pager_get_error()}
+
+\end{itemize}
 
 The current kernel implementation seems to request pages one at
 a time, as the process attempts to access them.
@@ -249,25 +361,80 @@ fork a process and push it to the other node, invisible to ext2fs
 proper.
 
 
-CONFIGURATION OPTIONS
+\section{Configuration Options}
 
-- do we write a page back every time we handle it?
-  perhaps always call write_page, and add a flag to write_page indicating that we still have a copy?
-- how long do we let clients hold a page if other clients are waiting for it?
-  currently: 0 (immediately send lock requests)
-  could create deadlock if the kernel returns pages without making any forward progress
-- how do we obtain pages when we can read them from multiple sources?
-  only applies to READ access; local kernel should be preferred
-- handle network partitions / failed nodes / malfunctioning kernels
-  timeout while waiting for a client?
-  CAP theorem - timeouts would sacrifice consistency to achieve availability
+Several implementation choices exist, and perhaps should be configuration options.
+
+\begin{itemize}
+
+\item How long do we let clients hold a page if other clients are waiting for it?
+
+  Currently we send a lock request immediately after supplying the
+  page, which could create deadlock if the kernel returns pages
+  without making any forward progress.  If processes on two different
+  nodes are both trying to write into a page, we might spend all of
+  our time ping-ponging the page and forth without anything actually
+  getting done.
+
+  Check Mach kernel source to see what happens in this case.  My guess
+  is that if the process can be started immediately, it is, and this
+  is only an issue if system load is high enough to prevent that.
+
+\item Do we write a page back every time we handle it?
+
+  Currently, we don't call {\tt pager_write_page()} until a page is
+  completely freed or sync'ed, but this can cause modified data to sit
+  indefinitely in RAM when we'd rather save it to disk periodically.
+
+  Note that if the server wishes to periodically sync data to disk, it
+  can call {\tt pager_sync()} on a timer thread.  The question is
+  whether we want to more proactively call {\tt pager_write_page()}
+  anytime we're handling a page that needs to be transferred between
+  two clients.
+
+\item How do we obtain pages when we can read them from multiple sources?
+
+  Currently, we read it again with {\tt pager_read_page()}, but if the
+  local kernel has a copy, it's probably faster to ask the kernel for
+  a copy.  We don't have a good way of detecting which client is the
+  local kernel, and the Mach memory management API doesn't provide a
+  way to request a copy of an unmodified, non-``precious'' page
+  from the kernel.
+
+  A corner case is what happens when the read fails with an error.
+  Currently, we propagate that error to everything waiting on the
+  page, even though we could request a copy of the page from one
+  of the clients that still has it.
+
+\item How to handle network partitions / failed nodes / malfunctioning kernels
+
+  Currently we deadlock if a client doesn't respond; perhaps we should
+  timeout while waiting for a client?  How to pick the timeout value?
+
+\item How to handle failed writes to the backing store?
+
+  Do we keep the page around in memory to service future requests, and
+  hope that maybe another write will succeed in the future, or discard
+  the page?  Perhaps keep it for a time?  How to decide when to
+  discard?  Maybe only keep it if EAGAIN is returned?
+
+  If we do discard the data, how do we handle future requests for that
+  page?  Currently, we return errors with no mechanism to recover.
+
+  If we kept failing writes around indefinitely, that would provide a
+  simple mechanism to implement a ramdisk -- the read operation always
+  returns an empty page and the write operation always fails.
+
+\end{itemize}
 
 
 \section{The Pagemap}
 
-Hurd's original \libpager had a fairly simple pagemap.  The pagemap was
-an array of 16-bit shorts; each page had a single 16-bit entry, allocated
-as follows:
+All Mach memory management operations operate on memory pages, so
+\libpager needs to maintain a table that tracks the state of each
+page, called the pagemap.  Hurd's original \libpager had a fairly
+simple pagemap.  The pagemap was an array of 16-bit shorts; each page
+had a single 16-bit entry, allocated as follows:
 
 \begin{verbatim}
 #define PM_WRITEWAIT  0x0200   /* queue wakeup once write is done */
@@ -330,14 +497,16 @@ far more complex than a simple assignment.
 
 \end{itemize}
 
-I used the clever copy constructor.  The pagemap is an
-array of pointers to unique pagemap structures kept in a C++ {\tt std::set}
+I used the clever copy constructor.  The pagemap is an array of
+pointers to unique pagemap structures kept in a C++ {\tt std::set}
 called {\tt pagemap_set}.  When working on a page, the main library
 code copies a pagemap entry into a temporary structure ({\tt
   tmp_pagemap_entry}), modifies it, then assigns it back into the
 pagemap using an {\tt operator=} that either finds a matching entry in
 {\tt pagemap_set} and uses a pointer to it, or move-inserts {\tt
   tmp_pagemap_entry} into {\tt pagemap_set} and uses a pointer to it.
+No attempt is (currently) made to free unused entries in {\tt
+  pagemap_set}.
 
 All the queues and lists are private, and we've got a bunch of methods
 to access them, allowing us to change the pagemap structure later if
@@ -366,10 +535,18 @@ struct pagemap_entry {
    bool pagingout;
 
    /* ERROR
-    * the last error code returned from a backing store write operation
+    * the last error code returned from a backing store operation
     * (hopefully KERN_SUCCESS)
     */
    kern_return_t error;
+
+   /* INVALID
+    * indicates that the backing store data is invalid because we got an
+    * error return from a write attempt
+    *
+    * error returns on read or unlock operations do not set "invalid"
+    */
+   bool invalid;
 };
 
 Global structure {
@@ -379,29 +556,22 @@ Global structure {
     */
 
    /* WRITEWAIT list
-    * A linked list of pages waiting to be written out to disk
+    * A linked list of pages waiting to be written to backing store
     */
 
     std::map<std::pair<vm_offset_t, vm_size_t>, outstanding_lock> outstanding_locks;
 
     std::set<outstanding_change_request> outstanding_change_requests;
-
-   ERROR code - a kern_return_t, so we're not limited to a small number of errors
-
-   /* Flags */
-   PAGINGOUT - set this flag when we get a data return, clear it after the write is finished
-   INVALID - set if the data on disk is invalid because we got an error writing the page back to the filesystem
-      If some clients still have copies of the data, we may be able to operate for a while, then retry the write operation
 }
 \end{verbatim}
 
 How to maintain the pagemap for a large number of clients?  Each page
 has a pointer to a structure indicating which clients currently hold
 copies of the page.  We anticipate that many pages (say, all the pages
-in a single shared library) will have the same set of clients, so
-there's one structure for each combination of clients, with multiple
-pages pointing to it.  Pagemaps can be potentially large, so a pagemap
-entry should be a single pointer.
+in a single shared library) will exist in the same state, so there's
+one structure for each combination of its entries, with multiple pages
+pointing to it.  Pagemaps can be potentially large, so a pagemap entry
+should be a single pointer.
 
 Each file corresponds to a separate memory object, and separate memory
 objects get separate control ports in the kernel.  A future
@@ -417,9 +587,9 @@ What happens when either list gets a new client (or loses one)?  We
 have to search in the structures for the new combination, and create a
 new structure if the desired combination doesn't exist yet.
 
-\begin{comment}
-
 We currently use a C++ std::set and let it do the searching for us.
+
+\begin{comment}
 
 Other possibilities:
 
@@ -564,6 +734,34 @@ When it completes, we check the queue again to see if anything is now
 waiting.  If so, we service it.  If not, we discard the data and
 notify the user that the page has been evicted.
 
+
+ERROR HANDLING
+
+The three backing store callback functions can all return an error
+code.
+
+Errors when reading from backing store are fairly straightforward --
+we got an error, so all we can do is propagate the error to the
+clients.  Actually, if there are outstanding copies of the page we
+tried to read, we could obtain a copy from another client, but we
+don't do that currently.  Errors when writing are a bit more
+complicated -- we've still got a copy of the page, do we keep it
+around and hope that the write will complete successfully at some
+point in the future?  We don't do that currently, either.  Errors
+returned from an unlock operation should probably only affect the
+unlock request.  Should they also affect future unlock operations on
+this page, or should failing unlocks be retried?  Currently, a failing
+unlock is propagated to everything waiting on the page (both read and
+write requests); probably should only be sent to write requests.
+
+Also, error returns on unlock requests are inconsistently recorded in
+the pagemap.  The error return code in the pagemap is only really used
+if a write operation failed, in which case the page is discarded and
+future requests all return the error code.  An exception is if a
+kernel kept a copy of the page whose write failed (i.e, there was a
+sync request that triggered the write), in which case future
+operations fail until something causes the kernel to send us the page
+again, when we retry the write.
 
 
 \section{Pseudocode}
@@ -906,13 +1104,6 @@ BUG IN OLD CODE (NOT):
     The second and third m_o_return_data's are both queued by the demuxer and don't
     get serviced until the first one finishes.  Then they are processed in order.
 
-BUG IN OLD CODE:
-  m_o_data_supply is called in data-return.c with precious = 0, instead of notify_on_evict
-
-BUG IN OLD CODE:
-  in pager_shutdown(), pthread_mutex_unlock() is called after ports_destroy_right(), which
-  might have free'd the struct pager
-
 CAVEAT IN OLD CODE:
   if we get a write error during a m_o_data_return, and we're flagged PAGEINWAIT because of an outstanding READ request,
   then the INVALID flag doesn't get set, but after we hand out the data, we won't get it back from the kernel
@@ -1101,14 +1292,15 @@ multi-page lock request, we need to consider the possibility that part of the pa
 might be processed, then other kernel operations happen (including VM page operations)
 before the remaining part of the page range is processed and the lock request completes.
 
-
 Scenario A
-- five clients have read access to page 50 and are on its ACCESSLIST (WAITLIST is empty)
-- pager_flush is called on pages 0-100
-- page 50 flushes on client A
-- client A re-requests access to page 50, and it is supplied (ACCESSLIST and WAITLIST don't change)
-- the flushes complete
-- only client A now has access to page 50 and should be alone on its ACCESSLIST
+\begin{itemize}
+\item five clients have read access to page 50 and are on its ACCESSLIST (WAITLIST is empty)
+\item pager_flush is called on pages 0-100
+\item page 50 flushes on client A
+\item client A re-requests access to page 50, and it is supplied (ACCESSLIST and WAITLIST don't change)
+\item the flushes complete
+\item only client A now has access to page 50 and should be alone on its ACCESSLIST
+\end{itemize}
 
 Scenario A shows that ACCESSLIST, WAITLIST and a FLUSHING flag aren't enough; we have to track
 which clients requested access during the flush to correctly compute ACCESSLIST at the end.
@@ -1247,24 +1439,28 @@ If the client has no access to a page, then 1, 2, or 5 are possible.
 If the client has read access, then 3, 4, or 5 are allowed.  With
 write access, 4 or 5 are permissible.
 
-translator operations:
-1. discard request
-2. return request
-3. sync request
-4. complete a pending pager_read, pager_write, or pager_unlock (which one? there could be several)
+There are four possible translator operations:
 
-1 2 3 can be synchronous or asynchronous
+\begin{enumerate}
+\item discard request
+\item return request
+\item sync request
+\item complete a pending pager_read, pager_write, or pager_unlock (which one? there could be several)
+\end{enumerate}
 
-The test program should check to ensure that following conditions are met:
+1, 2, and 3 can be synchronous or asynchronous.
 
-[ ] write access to a page is exclusive to a single client
-[p] pages get written back in-order (though skips are possible)
-[ ] if a page is modified, nobody ever sees an earlier version of it
-[ ] all data requests are properly answered with a data supply or a data error (or data unavailable)
-[ ] all data unlock requests are properly answered with a data lock
-[ ] if a data lock requests a reply, make sure one is received
+The test program should (but currently doesn't) check to ensure that
+following conditions are met:
 
-p = partially done
+\begin{itemize}
+\item write access to a page is exclusive to a single client
+\item pages get written back in-order (though skips are possible) (partially done)
+\item if a page is modified, nobody ever sees an earlier version of it
+\item all data requests are properly answered with a data supply or a data error (or data unavailable)
+\item all data unlock requests are properly answered with a data lock
+\item if a data lock requests a reply, make sure one is received
+\end{itemize}
 
 Test for BUG 1:
   A2 T4 (the read completes) A5 (the data_supply is processed)
@@ -1379,28 +1575,39 @@ not such a big problem.
 
 \item m_o_data_return could specify what permissions the kernel still holds on the page
 
-  Then
-  we could easily downgrade from WRITE to READ access without waiting for a lock completed
-  message, or (like the current code), never downgrading from WRITE to READ.
+  Then we could easily downgrade from WRITE to READ access without
+  waiting for a lock completed message, or (like the current code),
+  never downgrading from WRITE to READ.
 
 \item m_o_lock_completed message could specify what kind of lock was completed
 
-  This would avoid the
-  need to match reply ports to lock messages unless (like the current code), we just
-  wait for all outstanding locks to complete before continuing with any of them.
+  This would avoid the need to match reply ports to lock messages
+  unless (like the current code), we just wait for all outstanding
+  locks to complete before continuing with any of them.
 
-\item the ability to request a copy of a unmodified, un-precious page from the kernel
+\item ability to request a copy of a unmodified, un-precious page from the kernel
 
   This would allow \libpager to serve out the page to other nodes without reading it again from the disk.
 
 \item ability to notify memory manager when a non-precious page has been evicted
 
-    (over the network, precious is heavy weight just to get notification that a page has been evicted)
+  Over the network, flagging a page ``precious'' is awfully heavy
+  weight just to get notification that a page has been evicted, since
+  a ``precious'' page will be sent back to the memory manager.
+  Knowing that a page has been evicted may eliminate the need for a
+  future lock request.
 
 \item Use a kernel name port common across all memory objects
 
-    this would allow sharing pagemaps between memory objects with the same usage pattern
-    (i.e, kernels A and B both map files C and D)
+  This would allow sharing pagemaps between memory objects with the same usage pattern
+  (i.e, kernels A and B both map files C and D)
+
+\item Add the ability for a kernel to respond to a lock request by
+  sending the page directly to another kernel, rather than back to the
+  memory manager.
+
+  This would cut our network utilization roughly in half for pages
+  dominated by contention between nodes.
 
 \end{itemize}
 
