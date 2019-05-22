@@ -1158,21 +1158,30 @@ test11(mach_port_t node)
       msg->msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
       msg->msgh_id = i;
 
-      mach_call (mach_msg(msg, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msg->msgh_size,
-                          0, msg->msgh_remote_port,
-                          timeout, MACH_PORT_NULL));
+      kern_return_t err = mach_msg(msg, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msg->msgh_size,
+                                   0, msg->msgh_remote_port,
+                                   timeout, MACH_PORT_NULL);
+      assert ((err == KERN_SUCCESS) || (err = MACH_SEND_INVALID_DEST));
     }
 
 
-  /* Deallocate the send right */
+  /* Deallocate the send right.  There's a (deliberate) race condition
+   * with the server, which might have already destroyed the receive
+   * right, and the port along with it, which would cause this RPC to
+   * return KERN_INVALID_RIGHT.
+   */
 
-  mach_call (mach_port_mod_refs (mach_task_self(), testport,
-                                 MACH_PORT_RIGHT_SEND, -1));
+  kern_return_t err = mach_port_mod_refs (mach_task_self(), testport,
+                                          MACH_PORT_RIGHT_SEND, -1);
+  assert ((err == KERN_SUCCESS) || (err = KERN_INVALID_RIGHT));
 
   /* Verify that the port has completely gone away */
 
   mach_port_type_t port_type;
-  assert (mach_port_type(mach_task_self(), testport, &port_type) == KERN_INVALID_NAME);
+
+  err = mach_port_type(mach_task_self(), testport, &port_type);
+
+  assert((err == KERN_INVALID_NAME) || (port_type == MACH_PORT_TYPE_DEAD_NAME));
 }
 
 /* test13() - verify that we can send SEND_ONCE messages (they seem
