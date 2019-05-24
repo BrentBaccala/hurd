@@ -343,7 +343,7 @@ class pagemap_vector : public std::vector<pagemap_entry>
 {
   public:
 
-  pagemap_entry & operator[](int n)
+  pagemap_entry & operator[](unsigned int n)
   {
     // fprintf(stderr, "[](%d) size=%d\n", n, size());
     if (n >= size()) {
@@ -438,7 +438,7 @@ struct pager {
   // the first data object in struct pager must be struct port_info
   struct port_info port;
 
-  const int page_size = vm_page_size;
+  const vm_size_t page_size = vm_page_size;
 
   bool may_cache;
   memory_object_copy_strategy_t copy_strategy;

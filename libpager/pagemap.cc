@@ -320,7 +320,7 @@ void pager::drop_client (mach_port_t control, const char * const reason,
   }
 
   if (some_locks_cleared) {
-    fprintf(stderr, "libpager: warning: dropping client %u (%s) with outstanding locks\n", control, reason);
+    fprintf(stderr, "libpager: warning: dropping client %lu (%s) with outstanding locks\n", control, reason);
   }
 
   // check to see if this client has any outstanding pages
@@ -356,7 +356,7 @@ void pager::drop_client (mach_port_t control, const char * const reason,
   }
 
   if (removed_from_WAITLIST) {
-    fprintf(stderr, "libpager: warning: dropping client %u (%s) with outstanding waits\n", control, reason);
+    fprintf(stderr, "libpager: warning: dropping client %lu (%s) with outstanding waits\n", control, reason);
   }
 
   // pending attribute changes - signal them with "fake" change completed messages
@@ -462,7 +462,7 @@ void pager::lock_object(vm_offset_t OFFSET, vm_size_t LENGTH, int RETURN, bool F
   vm_size_t npages = LENGTH / page_size;
 
   vm_offset_t page = OFFSET / page_size;
-  for (int i = 0; i < npages; i ++, page ++) {
+  for (vm_size_t i = 0; i < npages; i ++, page ++) {
     // std::cerr << pagemap[page];
     for (auto client: pagemap[page]->ACCESSLIST_clients()) {
       if (! only_signal_WRITE_clients || pagemap[page]->get_WRITE_ACCESS_GRANTED()) {
@@ -588,7 +588,7 @@ void pager::internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
   const int UNLOCK = 2;
 
   vm_offset_t page = OFFSET / page_size;
-  for (int i = 0; i < npages; i ++, page ++) {
+  for (vm_size_t i = 0; i < npages; i ++, page ++) {
     operation[i] = 0;
     assert(! pagemap[page]->get_WRITE_ACCESS_GRANTED());
     if (pagemap[page]->is_client_on_ACCESSLIST(MEMORY_CONTROL) && ! pagemap[page]->is_WAITLIST_empty()) {
@@ -615,7 +615,7 @@ void pager::internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
   kern_return_t * err = (kern_return_t *) alloca(npages * sizeof(kern_return_t));
 
   page = OFFSET / page_size;
-  for (int i = 0; i < npages; i ++, page ++) {
+  for (vm_size_t i = 0; i < npages; i ++, page ++) {
     if (operation[i] == PAGEIN) {
       err[i] = pager_read_page(upi, page * page_size, &buffer[i], &write_lock[i]);
     } else if (operation[i] == UNLOCK) {
@@ -626,7 +626,7 @@ void pager::internal_lock_completed(memory_object_control_t MEMORY_CONTROL,
   pager_lock.lock();
 
   page = OFFSET / page_size;
-  for (int i = 0; i < npages; i ++, page ++) {
+  for (vm_size_t i = 0; i < npages; i ++, page ++) {
     if (operation[i] == PAGEIN) {
       tmp_pagemap_entry = pagemap[page];
       tmp_pagemap_entry.set_ERROR(err[i]);
@@ -694,7 +694,7 @@ void pager::data_unlock(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
   bool * do_unlock = (bool *) alloca(npages * sizeof(bool));
 
   vm_offset_t page = OFFSET / page_size;
-  for (int i = 0; i < npages; i ++, page ++) {
+  for (vm_size_t i = 0; i < npages; i ++, page ++) {
     do_unlock[i] = false;
     tmp_pagemap_entry = pagemap[page];
     assert(tmp_pagemap_entry.is_client_on_ACCESSLIST(MEMORY_CONTROL));
@@ -720,7 +720,7 @@ void pager::data_unlock(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
   kern_return_t * err = (kern_return_t *) alloca(npages * sizeof(kern_return_t));
 
   page = OFFSET / page_size;
-  for (int i = 0; i < npages; i ++, page ++) {
+  for (vm_size_t i = 0; i < npages; i ++, page ++) {
     if (do_unlock[i]) {
       err[i] = pager_unlock_page(upi, page * page_size);
     }
@@ -729,7 +729,7 @@ void pager::data_unlock(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
   pager_lock.lock();
 
   page = OFFSET / page_size;
-  for (int i = 0; i < npages; i ++, page ++) {
+  for (vm_size_t i = 0; i < npages; i ++, page ++) {
     if (do_unlock[i]) {
       tmp_pagemap_entry = pagemap[page];
       finalize_unlock(page * page_size, err[i]);
@@ -764,7 +764,7 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
   bool any_pageout_required = false;
 
   vm_offset_t page = current.OFFSET / page_size;
-  for (int i = 0; i < npages; i ++, page ++) {
+  for (vm_size_t i = 0; i < npages; i ++, page ++) {
     do_pageout[i] = (matching_page_count_on_WRITEWAIT(page) == 1);
     if (do_pageout[i]) {
       any_pageout_required = true;
@@ -780,7 +780,7 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
     pager_lock.unlock();
 
     page = current.OFFSET / page_size;
-    for (int i = 0; i < npages; i ++, page ++) {
+    for (vm_size_t i = 0; i < npages; i ++, page ++) {
       if (do_pageout[i]) {
         err[i] = pager_write_page(upi, page * page_size, current.DATA + i * page_size);
       }
@@ -794,7 +794,7 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
   bool any_notification_required = false;
 
   page = current.OFFSET / page_size;
-  for (int i = 0; i < npages; i ++, page ++) {
+  for (vm_size_t i = 0; i < npages; i ++, page ++) {
     do_notify[i] = false;
     if (do_pageout[i]) {
       tmp_pagemap_entry = pagemap[page];
@@ -844,7 +844,7 @@ void pager::service_first_WRITEWAIT_entry(std::unique_lock<std::mutex> & pager_l
     pager_lock.unlock();
 
     page = current.OFFSET / page_size;
-    for (int i = 0; i < npages; i ++, page ++) {
+    for (vm_size_t i = 0; i < npages; i ++, page ++) {
       if (do_notify[i]) {
         pager_notify_evict(upi, page * page_size);
       }
@@ -877,7 +877,7 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
   //         MEMORY_CONTROL, OFFSET, LENGTH, DIRTY, KERNEL_COPY, *((int *)DATA));
 
   vm_offset_t page = OFFSET / page_size;
-  for (int i = 0; i < npages; i ++, page ++) {
+  for (vm_size_t i = 0; i < npages; i ++, page ++) {
     do_unlock[i] = false;
     tmp_pagemap_entry = pagemap[page];
     if (! KERNEL_COPY) {
@@ -921,7 +921,7 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
     kern_return_t * err = (kern_return_t *) alloca(npages * sizeof(kern_return_t));
 
     page = OFFSET / page_size;
-    for (int i = 0; i < npages; i ++, page ++) {
+    for (vm_size_t i = 0; i < npages; i ++, page ++) {
       if (do_unlock[i]) {
         err[i] = pager_unlock_page(upi, page * page_size);
       }
@@ -933,7 +933,7 @@ void pager::data_return(memory_object_control_t MEMORY_CONTROL, vm_offset_t OFFS
     pager_lock.lock();
 
     page = OFFSET / page_size;
-    for (int i = 0; i < npages; i ++, page ++) {
+    for (vm_size_t i = 0; i < npages; i ++, page ++) {
       if (do_unlock[i]) {
         tmp_pagemap_entry = pagemap[page];
         finalize_unlock(page * page_size, err[i]);
