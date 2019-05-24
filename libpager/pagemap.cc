@@ -54,6 +54,7 @@ std::ostream& operator<< (std::ostream &out, const pagemap_entry::data &entry)
     out << client.client << ",";
   }
   out << "]\n";
+  return out;
 }
 
 /* internal_flush_request() requests a client to flush a page that is needed by
