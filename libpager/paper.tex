@@ -120,16 +120,7 @@ Hurd's \netmsg server and the \libpager library have been developed
 to the point where Hurd could be usable as a cluster operating system,
 though the current Debian distribution doesn't use this functionality.
 At the time of this writing (2019), the major barriers to building a
-Hurd cluster are the 32-bit address space and the lack of SMP support,
-enhancements that are beyond the scope of the work described in this
-paper.
-
-The CAP theorem states that a distributed system can't have all of
-three things: consistency, availability, partitioning.  Right now, we
-sacrifice availability -- if the network partitions, \libpager can
-deadlock.  If we introduce a timeout on lock requests, then we're
-sacrificing consistency.
-
+Hurd cluster are the 32-bit address space and the lack of SMP support.
 
 \section{Introduction to Mach Port-Based IPC}
 
@@ -147,7 +138,7 @@ rights for Mach ports.
 \tikzstyle{message} = [draw, fill=red!20, text width=5em, text depth=3em, text centered,
   minimum width=5em, minimum height=2em, rounded corners]
 
-\begin{figure}
+\begin{figure}[ht]
 \begin{center}
 \begin{tikzpicture}[node distance = .5cm]
 
@@ -217,7 +208,7 @@ is represented by a different port.  The hurd file system is thus a
 hierarchy of ports, most of which recognize a standard set of RPCs
 performing file operations.  The primary way for a program to
 advertise its services in Hurd is for it to listen for messages on a
-port that it attachs to a name in the file system.
+port that it attaches to a name in the file system.
 
 All Hurd authentication is based on port rights.  For example, a file
 system server may give out a send right which allows access to a
@@ -334,13 +325,14 @@ hardware memory management tables.  Likewise, transferring a modified
 page from the kernel to a user-space memory manager is done by
 attaching it to a Mach message from the kernel.
 
-For example, consider how Hurd handles an {\tt mmap()} call.  A
-program uses directory lookup calls to obtain a file port, which is a
-send right to a port managed by a file server, and corresponds to a
-standard POSIX file descriptor.  It then uses the {\tt io_map} RPC to
-obtain another send right, also to a port managed by the file server,
-which implements the Mach memory management protocol.  It passes that
-send right to the kernel, using a {\tt vm_map} RPC, indicating that it
+For example, consider how Hurd handles an {\tt mmap()} call (Figure
+\ref{Initial mapping of a Mach memory object}).  A program uses
+directory lookup calls to obtain a file port, which is a send right to
+a port managed by a file server, and corresponds to a standard POSIX
+file descriptor.  It then uses the {\tt io_map} RPC to obtain another
+send right, also to a port managed by the file server, which
+implements the Mach memory management protocol.  It passes that send
+right to the kernel, using a {\tt vm_map} RPC, indicating that it
 wishes to map that memory object (i.e, the file), into its memory
 space.  The kernel, after a \moinit / \moready handshake with the file
 server, creates a new memory region in the program's address space,
@@ -348,13 +340,14 @@ initially with no physical memory assigned to it, and returns that
 address to the program.
 
 As soon as the program attempts to access this region of memory in any
-way, a page fault is triggered, which causes the kernel to send an
-\morequest message to the file server.  The file server responds by
-reading the required page from disk (if necessary) and passing it to
-the kernel by attaching it to a \mosupply message.  The kernel, now
-managing this region of memory, maps it to the correct page in the
-previously assigned region of memory, and allows the program to
-continue execution.
+way (Figure \ref{Initial access of a Mach memory object}), a page
+fault is triggered, which causes the kernel to send an \morequest
+message to the file server.  The file server responds by reading the
+required page from disk (if necessary) and passing it to the kernel by
+attaching it to a \mosupply message.  The kernel, now managing this
+region of memory, maps it to the correct page in the previously
+assigned region of memory, and allows the program to continue
+execution.
 
 If the file server had instead replied with \modataerror, the program
 would have received a seg fault instead.  If another program maps the
@@ -369,6 +362,9 @@ flag, or will return it to the file server.
 
 \tikzstyle{kernel} = [draw, fill=blue!20, rounded corners, minimum width=30em]
 
+\tikzstyle{message} = []
+
+\begin{figure}
 \begin{center}
 \begin{tikzpicture}
 
@@ -385,20 +381,72 @@ flag, or will return it to the file server.
 %%\node (kmemory) [fill=white, minimum size=1.5cm, dashed, thick, draw] at (7.5 em, -10 em) {};
 %%\node [below] at (kernel.north) {Kernel};
 
-\draw [color=red, <-, thick] (2 em,1) -- node [midway, above] {io\_map} (13 em,1);
-\draw [color=red, ->, thick, dotted] (2 em,.9) -- node [midway, below] {\tiny port 153} (13 em,.9);
+\draw [message, <-, thick] (2 em,1) -- node [midway, above] {io\_map} (13 em,1);
+\draw [message, ->, thick] (2 em,.9) -- node [midway, below] {\tiny port 153} (13 em,.9);
 
-\draw [color=red, ->, thick] (15 em,-3 em) -- node [midway, left, align=center] {vm\_map\\{\tiny port 153}} (15 em,- 7 em);
-\draw [color=red, <-, thick, dotted] (15.2 em,-3 em) -- node [midway, right] {\tiny addr} (15.2 em,- 7 em);
+\draw [message, ->, thick] (15 em,-3 em) -- (15 em,- 7 em);
+\draw [message, <-, thick] (15.2 em,-3 em) -- node [midway, right] {\tiny addr} (15.2 em,- 6 em);
 
-\draw [color=red, <-, thick] (-2 em,-3 em) -- node [midway, left] {m\_o\_init} (-2 em,- 7 em);
-\draw [color=red, ->, thick] (-1.5 em,-3 em) -- node [midway, right] {m\_o\_ready} (-1.5 em,- 7 em);
+\node [message, left, align=center] at (15 em, - 4 em) {vm\_map\\{\tiny port 153}};
 
-%\draw [color=red, <-, thick] (0.5 em,-3 em) -- node [midway, left] {m\_o\_data\_request} (0.5 em,- 8 em);
-%  \draw [color=red, ->, thick] (1 em,-3 em) -- node [midway, right] {m\_o\_data\_supply} (1 em,- 8 em);
+\draw [message, <-, thick] (-2 em,-3 em) -- (-2 em,- 7 em);
+\draw [message, ->, thick] (-1.5 em,-3 em) -- (-1.5 em,- 7 em);
+
+\node [message, left] at (-2 em, -5.6 em) {m\_o\_init};
+\node [message, right] at (-1.5 em, -5.6 em) {m_o_ready};
+
+\node (port) at (-2 em, -1.5 em) [minimum size=1.5cm, draw, thick] {Port 153};
+
+%\draw [message, <-, thick] (0.5 em,-3 em) -- node [midway, left] {m\_o\_data\_request} (0.5 em,- 8 em);
+%  \draw [message, ->, thick] (1 em,-3 em) -- node [midway, right] {m\_o\_data\_supply} (1 em,- 8 em);
 
 \end{tikzpicture}
 \end{center}
+\caption{Initial mapping of a Mach memory object}
+\label{Initial mapping of a Mach memory object}
+\end{figure}
+
+\begin{figure}
+\begin{center}
+\begin{tikzpicture}
+
+\task{Filesystem Server}{at (0,0)}{}{
+%\node (memory1) [above left=-0.5, fill=white, minimum size=1.5cm, dashed, thick, draw] {};
+}
+\task{Program}{at (15 em,0)}{}{
+%\node (memory1) [above right=-0.5, fill=orange!40, minimum size=1.5cm, dashed, thick, draw] {};
+\node (memory2) [above right=-0.5, fill=white, minimum size=1.5cm, dashed, thick, draw] {};
+\node [below] at (memory2.north) {\tiny addr};
+}
+
+\node (kernel) [kernel] at (7.5 em, -7 em) {Kernel};
+%%\node (kmemory) [fill=white, minimum size=1.5cm, dashed, thick, draw] at (7.5 em, -10 em) {};
+%%\node [below] at (kernel.north) {Kernel};
+
+\draw [message, <-, thick] (-2 em,-3 em) -- (-2 em,- 7 em);
+\draw [message, ->, thick] (-1.5 em,-3 em) -- (-1.5 em,- 7 em);
+
+\node [message, left] at (-2 em, -5.6 em) {m\_o\_data_request};
+\node [message, right] at (-1.5 em, -5.6 em) {m_o_data_supply};
+
+%%\draw [message, ->, thick, dotted] (memory2.south) -- node [midway, right] {fault} (memory2.south |- kernel);
+
+\node (port) at (-2 em, -1.5 em) [minimum size=1.5cm, draw, thick] {Port 153};
+
+\node (instr) [right, align=center, font=\tiny] at (Program -| Program.west) {INSTR\\ READ\\ INSTR};
+\node [draw] (location) at (Program) {};
+\draw [->] (instr.east) -- (location.west);
+
+\draw [color=red, ->, thick, dotted] (location.south) -- node [midway, right] {fault} (location.south |- kernel);
+
+%\draw [message, <-, thick] (0.5 em,-3 em) -- node [midway, left] {m\_o\_data\_request} (0.5 em,- 8 em);
+%  \draw [message, ->, thick] (1 em,-3 em) -- node [midway, right] {m\_o\_data\_supply} (1 em,- 8 em);
+
+\end{tikzpicture}
+\end{center}
+\caption{Initial access of a Mach memory object}
+\label{Initial access of a Mach memory object}
+\end{figure}
 
 Of course, it can be inefficient to keep a copy of a page in user
 space while its also in use by the kernel.  Pages can be flagged
@@ -744,7 +792,8 @@ routines cover all possible combinations of two binary options:
 
 \subsection{Configuration Options}
 
-Several \libpager implementation choices exist, and perhaps should be configuration options.
+Several \libpager implementation choices exist, and perhaps should be configuration options,
+though they are currently hard-wired into the code.
 
 \begin{itemize}
 
@@ -760,6 +809,17 @@ Several \libpager implementation choices exist, and perhaps should be configurat
   Check Mach kernel source to see what happens in this case.  My guess
   is that if the process can be started immediately, it is, and this
   is only an issue if system load is high enough to prevent that.
+
+\item How to handle network partitions / failed nodes / malfunctioning kernels
+
+  The CAP theorem states that a distributed system can't have all of
+  three things: consistency, availability, partitioning.  Right now,
+  we sacrifice availability -- if the network partitions, \libpager
+  can deadlock.  If we introduce a timeout on lock requests, then
+  we're sacrificing consistency.
+
+  Currently we deadlock if a client doesn't respond; perhaps we should
+  timeout while waiting for a client?  How to pick the timeout value?
 
 \item Do we write a page back every time we handle it?
 
@@ -813,11 +873,6 @@ Several \libpager implementation choices exist, and perhaps should be configurat
   Another possible future enhancement is to track how many calls
   to \pagerreadpage are outstanding, and transition away from calling
   this routine if it appears to be overloaded.
-
-\item How to handle network partitions / failed nodes / malfunctioning kernels
-
-  Currently we deadlock if a client doesn't respond; perhaps we should
-  timeout while waiting for a client?  How to pick the timeout value?
 
 \item How to handle failed writes to the backing store?
 
@@ -983,22 +1038,17 @@ struct pagemap_entry {
 \caption{The new pagemap structure}
 \end{figure}
 
-\begin{verbatim}
-Global structure {
-   /* NEXTERROR list
-    * A linked list of outstanding (error code, page, client) tuples.
-    * They'll be transmitted to the client that requested them.
-    */
+The pagemap is organized as an array with one entry for each virtual
+memory page in the memory object.  In addition to the pagemap, there
+are several additional data structures maintained globally (i.e, for
+the entire memory object):
 
-   /* WRITEWAIT list
-    * A linked list of pages waiting to be written to backing store
-    */
-
-    std::map<std::pair<vm_offset_t, vm_size_t>, outstanding_lock> outstanding_locks;
-
-    std::set<outstanding_change_request> outstanding_change_requests;
-}
-\end{verbatim}
+\begin{itemize}[noitemsep]
+\item The NEXTERROR list, a linked list of outstanding (error code, page, client) tuples
+\item A list of pages waiting to be written to backing store
+\item A list of outstanding lock requests
+\item A list of outstanding change requests
+\end{itemize}
 
 \subsection{Access Contention}
 
@@ -1225,7 +1275,7 @@ sequence (A is the client; T is the translator):
 A2 T4 (the read completes) A5 (the data_supply is processed)
     T3 T3 T3 (the syncs) A5 A5 A5 (the syncs are processed) T4 T4 T4 (the writes complete)
 
-Another possible bug scenario (``bug3''): a single client holds two
+Another possible bug scenario runs like this: a single client holds two
 pages with write access.  It returns one (perhaps because \pagersync
 was called) which triggers a call to \pagerwritepage.  While
 \pagerwritepage is running, both pages are returned in a single
