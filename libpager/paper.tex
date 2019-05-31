@@ -8,6 +8,8 @@
 \usepackage[hyperfootnotes=false]{hyperref}
 \usepackage{mdframed}
 \usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{amssymb}
 
 \definecolor{lightblue}{rgb}{0.8,0.8,1.0}
 
@@ -40,11 +42,16 @@
 \def\libpager{{\tt libpager}\xspace}
 \def\netmsg{{\tt netmsg}\xspace}
 \def\pagersync{{\tt pager_sync()}\xspace}
+\def\pagerflush{{\tt pager_flush()}\xspace}
 \def\pagerwritepage{{\tt pager_write_page()}\xspace}
+\def\pagerunlockpage{{\tt pager_unlock_page()}\xspace}
 \def\pagerreadpage{{\tt pager_read_page()}\xspace}
 \def\moinit{{\tt memory_object_init}\xspace}
 \def\moready{{\tt memory_object_ready}\xspace}
 \def\morequest{{\tt memory_object_data_request}\xspace}
+\def\moreturn{{\tt memory_object_data_return}\xspace}
+\def\molockrequest{{\tt memory_object_lock_request}\xspace}
+\def\molockcompleted{{\tt memory_object_lock_completed}\xspace}
 \def\mosupply{{\tt memory_object_data_supply}\xspace}
 \def\modataerror{{\tt memory_object_data_error}\xspace}
 
@@ -251,6 +258,9 @@ When the process attempts to access memory, a page fault is triggered
 which causes Mach to request the page from the user-space process
 using a well documented protocol.  The faulting thread remains
 suspended until the page has been supplied to the kernel.
+The current kernel implementation requests pages one at
+a time, as the process attempts to access them, with no attempt
+to anticipate future page accesses.
 
 \begin{figure}
 \begin{center}
@@ -667,10 +677,12 @@ Hurd's root file system will almost always be implemented using a
 statically linked server, since it needs to start quite early in
 the boot process.
 
+\libpager acts as a translator between the Mach kernel and a
+server program that parses the on-disk structure of a file system.
 On one side, \libpager implements the Mach memory management protocol
 interacting with the Mach kernel.  On the other side, \libpager
 presents an API to the server program, which is responsible for
-producing the pages, as follows:
+producing the pages.  The APIs primary functions are as follows:
 
 \begin{itemize}
 
@@ -697,66 +709,38 @@ for {\tt pager_write_page()} to complete.
 
 \item {\tt pager_unlock_page()}
 
+This routine is called when a page that was previously retrieved
+for read-only access must now be promoted to read-write access.
+
 \item {\tt pager_sync()} and {\tt pager_sync_some()}
 
 This routine requests that copies of modified pages be obtained
 and submitted to {\tt pager_write_page()}.  Doesn't otherwise
 interfere with \libpager operation.
 
-\item {\tt pager_flush()} and {\tt pager_flush_some()}
-
-discard dirty pages!
-
 \item {\tt pager_return()} and {\tt pager_return_some()}
 
- flush and return dirty (and precious) pages.
+This routine is similar to {\tt pager_sync()}, but it requests that
+the kernel(s) discard their copies of the pages after returning them.
+Nothing prevents the kernels from immediately re-requesting copies
+of the pages, but those new requests will trigger calls to
+\pagerreadpage.
 
-\item {\tt pager_get_error()}
+\item {\tt pager_flush()} and {\tt pager_flush_some()}
+
+This routine instructs the kernel to discard dirty pages without
+bothering to save them!  Thus, the ``sync'', ``return'', and ``flush''
+routines cover all possible combinations of two binary options:
+``discard pages'' and ``return pages'':
+
+\begin{tabular}{lcc}
+& discard & return \\
+{\tt pager_sync()} & & \checkmark \\
+{\tt pager_return()} & \checkmark & \checkmark \\
+{\tt pager_flush()} & \checkmark &
+\end{tabular}
 
 \end{itemize}
-
-The current kernel implementation seems to request pages one at
-a time, as the process attempts to access them.
-
-If we're servicing a page read-only to multiple clients, where do we
-get the data from?  If our local kernel has a copy, we almost
-certainly want to get it there, since it's just a manner of flipping
-bits in a hardware page table to obtain a new "copy" of the data.
-Otherwise, we probably want to get the data from the local disk, but
-if the disk is very busy and we've got fast network connections, we
-might want to get that data from another node in the cluster.
-
-Mach's current memory object API makes this a lot more difficult.  You
-can't just request that the kernel hand you back an unmodified page,
-except by flagging it "precious".  That's not too bad if the kernel
-and the memory manager are both local on one node, but if you do this
-over the network, you're sending unnecessary copies of the memory
-pages around.
-
-How do we figure out which client is the local kernel?  One possible
-solution is for \netmsg to listen on /servers/netmsg for an RPC that
-accepts a send right and identifies which node currently hosts the
-corresponding receive right.  \cite{interfaces} defined the {\tt
-  norma_port_location_hint} RPC that might be useful.
-
-[[ the kernel uses different control ports for different memory objects ]]
-
-  If the kernel uses the same control port for all of its pager
-  operations, then we wouldn't have to make this query for every memory
-  object; a single ext2fs translator, for example, could globally
-  identify the location of all of the control ports, one for each node,
-  and this information could be shared amongst all of that translator's
-  pager objects.
-
-DISTRIBUTED LIBPAGER.  We could use a shim process on remote nodes, to
-allow requests for an existing page go to a node that holds a copy of
-that page, instead of to the node with the disk.  Two ways I can
-imagine this.  Either ext2fs forks off multiple processes on different
-nodes, or a mechanism is developed to detect when a port is remote,
-figure out which node it (currently) resides on, and then \libpager can
-fork a process and push it to the other node, invisible to ext2fs
-proper.
-
 
 \subsection{Configuration Options}
 
@@ -793,10 +777,33 @@ Several \libpager implementation choices exist, and perhaps should be configurat
 
   Currently, we read it again with {\tt pager_read_page()}, but if the
   local kernel has a copy, it's probably faster to ask the kernel for
-  a copy.  We don't have a good way of detecting which client is the
-  local kernel, and the Mach memory management API doesn't provide a
-  way to request a copy of an unmodified, non-``precious'' page
-  from the kernel.
+  a copy, since it's just a manner of flipping bits in a hardware page
+  table to obtain a new ``copy'' of the data.  Otherwise, we probably
+  want to get the data from the local disk, but if the disk is very
+  busy and we've got fast network connections, we might want to get
+  that data from another node in the cluster.
+
+  We don't have a good way of detecting which client is the local
+  kernel, and the Mach memory management API doesn't provide a way to
+  request a copy of an unmodified, non-``precious'' page from the
+  kernel.  You can't just request that the kernel hand you back an
+  unmodified page, except by flagging it ``precious''.  That's not too
+  bad if the kernel and the memory manager are both local on one node,
+  but if you do this over the network, you're sending unnecessary
+  copies of the memory pages around.
+
+  How do we figure out which client is the local kernel?  One possible
+  solution is for \netmsg to listen on {\tt /servers/netmsg} for an
+  RPC that accepts a send right and identifies which node currently
+  hosts the corresponding receive right.  \cite{interfaces} defined
+  the {\tt norma_port_location_hint} RPC that might be useful.
+
+  If the kernel used the same control port for all of its pager
+  operations (it currently doesn't), then we wouldn't have to make
+  this query for every memory object; a single ext2fs translator, for
+  example, could globally identify the location of all of the control
+  ports, one for each node, and this information could be shared
+  amongst all of that translator's pager objects.
 
   A corner case is what happens when the read fails with an error.
   Currently, we propagate that error to everything waiting on the
@@ -996,38 +1003,47 @@ Global structure {
 \subsection{Access Contention}
 
 The primary data structures for mediating contention between clients
-are the ACCESSLIST and the WAITLIST in the pagemap.
+are the ACCESSLIST and the WAITLIST in the pagemap.  The ACCESSLIST
+can have multiple clients on it, if they all have read-only access.
+Write access can only be issued to one client at a time.
+
+A client requesting access goes on a previously empty WAITLIST only when:
+\begin{enumerate}[noitemsep, itemsep=2pt, topsep=0pt]
+\item The client has requested any access and we have to start a page in.  This happens when
+  \begin{itemize}[label={}]
+  \item READ access requested - only READ clients on ACCESSLIST
+  \item WRITE access requested - ACCESSLIST empty
+  \end{itemize}
+\item The client has requested any access and we're waiting for the page to page out
+\item The client has requested any access and another client (on ACCESSLIST) has WRITE access
+\item The client has requested WRITE access and other clients (on ACCESSLIST) have any access
+\end{enumerate}
 
 Putting a client on an empty WAITLIST triggers lock requests to all
 clients on the ACCESSLIST, with the exception of the requesting client
-itself, if it's already got read access and is requesting write
-access.  Once the ACCESSLIST drops to zero (or one, in the exceptional
-case just described), then the original request can be satisfied.
+itself, if it's already got read access and is requesting write access
+(an unlock request).  Once the number of clients on the ACCESSLIST
+drops to zero (or one, in the unlock case), then the original request
+can be satisfied.
 
 In the meantime, additional clients can be added to the WAITLIST,
 which basically triggers nothing.  The rule is that if the WAITLIST is
 not empty, then we're already trying to revoke access to the clients
-on ACCESSLIST.  Remember, there's currently no guarantee that a client
-will have access for any period of time at all.
+on ACCESSLIST.  Thus, the wheels have already been set in motion for
+the WAITLIST to be serviced, and we are free to add additional clients
+to the end of the WAITLIST.  Remember, there's currently no guarantee
+that a client will have access for any period of time at all, so
+there's no time period when any clients will be on WAITLIST without an
+attempt being made to revoke existing access.
 
 When a client with write access returns a page, we look to see if
 anything is on the WAITLIST.  If so, the first client(s) on WAITLIST
 get the pages.  If not, we flag that a write is in progress and start
-it.  When it completes, we check the WAITLIST again to see if anything
-is now waiting.  If so, we service it.  If not, we discard the data
-and notify the user that the page has been evicted.
+it by calling \pagerwritepage.  When it completes, we check the
+WAITLIST again to see if anything is now waiting.  If so, we service
+the request.  If not, we discard the data and notify the server (if
+it requested notifications) that the page has been evicted.
 
-If multiple clients with READ access attempt to unlock near
-simultaneously, will the data_unlock logic will trigger multiple lock
-requests (a set for each client attempting to unlock)?
-
-initial client goes on WAITLIST only when:
-1. client has requested any access and page is PAGINGOUT, or
-2. client has requested any access and another client has WRITE access
-3. client has requested WRITE access (data request or unlock) and another client has any access
-4. client has requested any access and is waiting for the page to page in
-     READ access requested - only READ clients on ACCESSLIST
-     WRITE access requested - ACCESSLIST empty
 
 
 \subsection{Error Handling}
@@ -1102,9 +1118,10 @@ client A, with a queued NEXTERROR for client A.
 Mach kernels are allowed to proactively flush pages unless the
 ``precious'' flag is specified, so we can't be certain that a client
 on a page's ACCESSLIST actually possesses that page.  All we know for
-sure is that a client not on ACCESSLIST does not possess the page.
+sure is that a client not on ACCESSLIST does not possess the page.  This
+makes it somewhat difficult to compute ACCESSLIST after a \pagerflush.
 
-Examining the Mach kernel code for m_o_lock_request, we see that the kernel might block
+Examining the Mach kernel code for \molockrequest, we see that the kernel might block
 while looping over the pages (and unlocks the memory object while doing so), so for a
 multi-page lock request, we need to consider the possibility that part of the page range
 might be processed, then other kernel operations happen (including VM page operations)
@@ -1114,7 +1131,7 @@ Consider the following scenario:
 
 \begin{itemize}
 \item five clients have read access to page 50 and are on its ACCESSLIST (WAITLIST is empty)
-\item pager_flush is called on pages 0-100
+\item \pagerflush is called on pages 0-100
 \item page 50 flushes on client A
 \item client A re-requests access to page 50, and it is supplied (ACCESSLIST and WAITLIST don't change)
 \item the flushes complete
@@ -1125,19 +1142,17 @@ This scenario shows that ACCESSLIST, WAITLIST and a FLUSHING flag
 aren't enough; we have to track which clients requested access during
 the flush to correctly compute ACCESSLIST at the end.
 
-
-PRECIOUS PAGES
-
-Flagging a page precious (so the kernel always returns it to us) isn't that big a deal
-for a local client, because ``returning the page'' just means flipping bits in the VM tables,
-but it's a lot heavier operation for a remote client, since the page will be transmitted
-across the network unnecessarily.
-
-Flagging all of our pages ``precious'' is tempting.  It provides us with a mechanism
-for retrieving a local, in-memory page that we want to serve out over the network
-without having to read it again from disk.  It also simplifies the lock completed
-logic, since we don't have to worry about whether the page got returned or not
-when we get the lock completed message -- precious pages always get returned.
+Flagging all of our pages ``precious'' (so the kernel always returns
+it to us) is tempting.  It provides us with a mechanism for retrieving
+a local, in-memory page that we want to serve out over the network
+without having to read it again from disk.  It also simplifies the
+flushing logic above, since we don't have to worry about whether the
+page got returned or not when we get the lock completed message --
+precious pages always get returned.  Flagging a page ``precious''
+isn't that big a deal for a local client, because ``returning the
+page'' just means flipping bits in the VM tables, but it's a lot
+heavier operation for a remote client, since the page will be
+transmitted across the network unnecessarily, so we don't do this.
 
 
 \subsection{Random Test Code}
@@ -1210,43 +1225,19 @@ sequence (A is the client; T is the translator):
 A2 T4 (the read completes) A5 (the data_supply is processed)
     T3 T3 T3 (the syncs) A5 A5 A5 (the syncs are processed) T4 T4 T4 (the writes complete)
 
-client_request_read_access(client, start_page, end_page)
-  ASSERT: page absent in client
-  sends m_o_data_request
-client_request_write_access(client, start_page, end_page)
-  ASSERT: page absent in client
-  sends m_o_data_request
-client_request_unlock(client, start_page, end_page)
-  ASSERT: page present in client with read access
-  sends m_o_data_unlock
-client_flush(client, start_page, end_page)
-  ASSERT: pages present
-  if pages have WRITE access, modify data and data_return
-  if pages have READ access and are precious, data_return
-client_service_message(client)
-  read message
-  data_supply - save pointers, read/write and precious (reply if requested)
-  data_lock - send messages, update pointers, reply if requested
-  data_error - ??
-
 Another possible bug scenario (``bug3''): a single client holds two
 pages with write access.  It returns one (perhaps because \pagersync
 was called) which triggers a call to \pagerwritepage.  While
 \pagerwritepage is running, both pages are returned in a single
-m_o_data_return message.  Since the first page is still writing, we
+\moreturn message.  Since the first page is still writing, we
 sleep to wait for it to finish.  Then the second page is requested
 again.  We {\it should} serve the copy that's queued to write, but if
 we're not careful we'll call \pagerreadpage on the second page.
 
+The test code would test for this bug as follows: (one client, two pages A and B)
 
-
-Test for BUG 3: (one client, two pages A and B)
-  AB2 T4 (the read completes) TA3 A5 (the sync is processed) TAB2 A5 (the sync is processed)
-    B2 (page request) T4 (the read completes)
-    (now we need to close things out and see that data got discarded)
-
-data should always be modified if possible (whenever a client's got WRITE access)
-
+AB2 T4 (the read completes) TA3 A5 (the sync is processed) TAB2 A5 (the sync is processed)
+B2 (page request) T4 (the read completes)
 
 It was an interesting idea, but didn't quite pan out as well as I had
 hoped.  For one thing, the operations can't be generated with equal
@@ -1255,7 +1246,10 @@ fairly frequently, or a queue of pending messages will build up.
 Likewise, translator operation 4 (complete a pending operation), also
 has to occur fairly frequently.  On the other hand, client operation 5
 can't run if there are no pending messages, and translator operation 4
-can't run if there are no pending requests.
+can't run if there are no pending requests, so there is some
+synchronization that has to occur.  Finally, I'm not sure that
+\libpager can be fully tested using anything other than actual Mach
+kernels.
 
 \section{Distributed Shared Memory}
 
@@ -1339,11 +1333,19 @@ root@qemu-hurd-2:~#
 \end{mdframed}
 \end{figure}
 
-, but can also be implemented using the {\tt
-  tmpfs} translator (a ramdisk), which is linked with \libpager.
-
-unionfs can possibly be used to
-overlay the various /run/shm's on each other.
+This implementation services all shared memory requests by directing
+them to a single node.  Obviously, this is not ideal.  The {\tt
+  unionfs}\footnote{{\tt unionfs} is not part of the stock Hurd
+  distribution.  Its source is available from
+  \href{https://www.gnu.org/software/hurd/hurd/translator/unionfs.html}{\tt
+    https://www.gnu.org/software/hurd/hurd/translator/unionfs.html}}
+translator allows directories from different nodes to be overlaid on
+top of each other, and could possibly be used to overlay the various
+{\tt /dev/shm}'s on each other.  Then, a new shared memory segment
+would be created on the original process's node, but would immediately
+become visible to all other nodes.  A more sophisticated translator
+could be developed that would dynamically balance shared memory
+management among the nodes.
 
 {\tt mmap}, as currently implemented in Hurd's C library, only
 allocates memory on the local node.  It does not seem difficult to
@@ -1401,49 +1403,27 @@ semantics.  It's interesting that only at this point do we seem
 to need a Mach kernel function that wasn't anticipated by Mach's
 designers in the late 1980s.
 
-The linux scheduler (sched-domains.txt) occasionally balances
-load between scheduling domains.
+The same mechanisms used for cross-node forks could also be used to
+permit process migration.  After using cross-node memory maps to
+create a duplicate process on another node (without any threads
+running), the threads of the original process would be stopped, the
+Mach port rights transferred using \netmsg, duplicate threads would be
+created and started.
 
-\begin{comment}
-\section{Blocking Behavior of {\tt mach_msg()}}
-
-An issue with Mach's design caused me no little bit of grief.
-Mach's {\tt mach_msg()} (as I read the documentation),
-allows for non-blocking sends: according to \cite{interfaces}:
-
-\begin{quote}
-MACH_SEND_TIMEOUT
-
-The {\it timeout} argument should specify a maximum time (in
-milliseconds) for the call to block before giving up. If the message
-can’t be queued before the timeout interval elapses, then the call
-returns MACH_SEND_TIMED_OUT. A zero timeout is legitimate.
-\end{quote}
-
-In fact, a call to {\tt mach_msg()} can block indefinitely, even if a
-{\it timeout} value of zero is specified!  The problem occurs when the
-message is an RPC directed at the kernel which in turns triggers other
-RPCs.  The memory manager is a big offender here.  Sending a {\tt
-  vm_map} message to the kernel will cause the kernel to send a
-\moinit message to the memory manager, then block waiting for a reply.
-If both the {\tt vm_map} and the \moinit were handled by a single
-thread in \netmsg, then that thread would block indefinitely,
-requiring considerable additional complexity in \netmsg to ensure that
-additional threads are always available in case calls to {\tt
-  mach_msg()} block.
-
-The consensus on the Hurd mailing list leaned in favor of this being
-legitimate behavior, reading the documentation as guaranteeing that
-the timeout applied to the send, and not to the underlying RPC.  In
-any event, changing this behavior would require quite a bit of work on
-the Mach kernel.
-
-\end{comment}
+Some investigation would be required to see if Mach can cleanly
+transfer thread state like this.  For example, I'm not sure how Mach
+would save state for a thread currently blocked in a {\tt mach_msg()}
+system call.  I think that it saves the user-space state with the
+instruction pointer set to the system call instruction.  Restarting
+from this state would rerun the system call, which would create
+duplicate messages if, for example, the system call was the {\tt
+  mach_msg_send()} variant.
 
 \section{Current Status and Future Work}
 
 Both \netmsg and the new \libpager have been successfully
-tested in a virtual machine running Hurd, but additional work is
+tested in a virtual machine running Hurd, but their operation
+is unreliable and additional work is
 required before Hurd can be used as a viable SSI cluster operating
 system.
 
@@ -1481,6 +1461,36 @@ card to be dedicated to \netmsg, but with networking hardware such as
 Cisco's VIC 1280, that's not a problem, since a VIC 1280 can
 present itself as anywhere from one to sixteen virtual NICs, allowing
 an additional virtual NIC to be allocated solely for use by \netmsg.
+
+\end{itemize}
+
+\item Other translator improvements
+
+\begin{itemize}
+
+\item \libpager integration with {\tt tmpfs}
+
+{\tt tmpfs}, the Hurd ramdisk, currently throws {\tt SIGABRT} if any
+\libpager functions are called.
+Since {\tt tmpfs} is the most obvious choice to mount on
+{\tt /dev/shm}, fixing this is a high-priority, low-difficulty task.
+
+\item distributed filesystem
+
+Once we have the ability to run processes using distributed
+shared memory and distributed scheduling, we should enhance our file
+system translators to support replicated copies of files.  This
+suggests the need for a...
+
+\item distributed \libpager
+
+We could use a shim process on remote nodes, to allow requests for an
+existing page go to a node that holds a copy of that page, instead of
+to the node with the disk.  Two ways I can imagine this.  Either
+ext2fs forks off multiple processes on different nodes, or a mechanism
+is developed to detect when a port is remote, figure out which node it
+(currently) resides on, and then \libpager can fork a process and push
+it to the other node, invisible to ext2fs proper.
 
 \end{itemize}
 
@@ -1532,13 +1542,13 @@ Mainly allowing cross-node forks.
 
 \begin{itemize}
 
-\item m_o_data_return could specify what permissions the kernel still holds on the page
+\item \moreturn could specify what permissions the kernel still holds on the page
 
   Then we could easily downgrade from WRITE to READ access without
   waiting for a lock completed message, or (like the current code),
   never downgrading from WRITE to READ.
 
-\item m_o_lock_completed message could specify what kind of lock was completed
+\item \molockcompleted message could specify what kind of lock was completed
 
   This would avoid the need to match reply ports to lock messages
   unless (like the current code), we just wait for all outstanding
@@ -1570,8 +1580,6 @@ Mainly allowing cross-node forks.
 
 \end{itemize}
 
-\item distributed filesystem
-
 \end{itemize}
 
 \begin{thebibliography}{9}
@@ -1585,6 +1593,8 @@ Mainly allowing cross-node forks.
 \appendix
 
 \section{\libpager Pseudocode}
+
+\small
 
 \begin{verbatim}
 service_waitlist: (pass in a pagetable pointer, a data pointer, a read/write flag, a deallocate flage)
@@ -1904,13 +1914,5 @@ pager_shutdown:
   call ports_destroy_right, which will blow away our receive right, and ultimately call the destructor,
     which will then call drop_client on any remaining clients
 \end{verbatim}
-
-SHUTDOWN CODE
-
-Old \libpager would flush everything (no special flags set), then
-destroy the receive right and ignore any final messages.  This created
-a minor race condition where clients could request a page while the
-flush was processing, which would then get dropped.
-
 
 \end{document}
