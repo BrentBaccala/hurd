@@ -12,7 +12,15 @@ running in a Linux virtual machine.
 
 ## Repository Contents
 
-1. [The netmsg server](netmsg)
+1. [Documentation](doc)
+
+   [*Building an SSI Cluster with GNU/Hurd*](https://www.freesoft.org/software/hurd/building.pdf)
+   is twenty page paper describing the current status of this work.
+
+   There's also LaTeX source for the slide deck that I used for a
+   [presentation at Catholic University](https://www.youtube.com/watch?v=JwsuAEF2FYE).
+
+2. [The netmsg server](netmsg)
 
    **netmsg** is a Hurd translator that transports Mach messages over
    TCP/IP; Mach is Hurd's underlying kernel.
@@ -20,7 +28,7 @@ running in a Linux virtual machine.
    **netmsg** currently provides no encryption or authentication, and presents a
    Hurd system's root filesystem to any client connecting on TCP port 2345.
 
-2. [Multi-client libpager](libpager)
+3. [Multi-client libpager](libpager)
 
    **libpager** is the Hurd library responsible for managing access
    to memory mapped files.  The standard **libpager** only allows
@@ -36,7 +44,7 @@ running in a Linux virtual machine.
    this library, remote program execution is possible
    between machines linked via **netmsg**.
 
-3. [patches](patches)
+4. [patches](patches)
 
    This section contains patches to software in the main Hurd
    repository at git://git.sv.gnu.org/hurd/hurd.git
