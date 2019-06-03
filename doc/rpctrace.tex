@@ -60,24 +60,34 @@
 \begin{frame}
 \begin{tikzpicture}
 
-\task {rpctrace}{}{lr}{}
+\useasboundingbox (-6,-5) rectangle (6.5,5.5);
+\scope[transform canvas={scale=0.8}]
 
-\task [right = of rpctrace] {Traced Task 2}{}{sl}{}
-\task [above = of Traced Task 2] {Traced Task 1}{}{sl}{}
+\task {rpctrace}{}{blr}{}
+
+\task [above right = of rpctrace.north east] {Traced Task 1}{}{sl}{}
+\task [below = of Traced Task 1] {Traced Task 2}{}{sl}{}
 \task [below = of Traced Task 2] {Traced Task 3}{}{sl}{}
+\task [below = of Traced Task 3] {Traced Task 4}{}{sl}{}
 
-\task [above = of rpctrace] {Unknown Task}{}{sl}{}
+\task [left = of rpctrace] {Unknown Task}{}{r}{
+}
 
-\draw [port link] (rpctrace Left Port 0) -- +(-1,0) |- (Unknown Task Port 0);
-\draw [port link] (Traced Task 2 Port 0) -- (rpctrace Right Port 0);
-\draw [port link] (Traced Task 1 Port 0) -| ($(Traced Task 1 Port 0)!.5!(rpctrace Right Port 5)$) |- (rpctrace Right Port 5);
+\node [message] at (Unknown Task) {};
+
+\draw [port link] (rpctrace Left Port 0) -- (Unknown Task Port 7);
+\draw [port link] (Traced Task 1 Port 0) -| ($(Traced Task 1 Port 0)!.6!(rpctrace Right Port 5)$) |- (rpctrace Right Port 5);
+\draw [port link] (Traced Task 2 Port 0) -| ($(Traced Task 2 Port 0)!.4!(rpctrace Right Port 0)$) |- (rpctrace Right Port 0);
 \draw [port link] (Traced Task 3 Port 0) -| ($(Traced Task 3 Port 0)!.5!(rpctrace Right Port -5)$) |- (rpctrace Right Port -5);
 
 \node (Task 1 sendright) at (Traced Task 1 Port 0) [send, anchor=west] {S};
 \node (Task 2 sendright) at (Traced Task 2 Port 0) [send, anchor=west] {S};
 \node (Task 3 sendright) at (Traced Task 3 Port 0) [send, anchor=west] {S};
 
-\node (Unknown Task recvright) at (Unknown Task Port 0) [recv, anchor=west] {R};
+\node (Task 4 recvright) at (Traced Task 4 Port 0) [recv, anchor=west] {R};
+
+\node (Unknown Task recvright) at (Unknown Task Port 7) [recv, anchor=east] {R};
+\node (Unknown Task sendright) at (Unknown Task Port -6) [send, anchor=east] {S};
 
 \node (R1) at (rpctrace Right Port 5) [recv, anchor=east] {R};
 \node (R2) at (rpctrace Right Port 0) [recv, anchor=east] {R};
@@ -85,12 +95,27 @@
 
 \node (S1) at (rpctrace Left Port 0) [send, anchor=west] {S};
 
+\node (S4) at (rpctrace Right Port -16) [send, anchor=east] {S};
+\node (R4) at (rpctrace Left Port -16) [recv, anchor=west] {R};
+
+\draw [port link] (Unknown Task sendright.east) -| ($(Unknown Task sendright.east)!.5!(R4.west)$) |- (R4.west);
+\draw [internal link] (R4) -- (S4);
+
+\draw [port link] (S4) -- (Task 4 recvright);
+
 \draw [internal link] (S1) -- (R2);
 \draw [internal link] ($(S1)!.5!(R2)$) -- (R1);
 \draw [internal link] ($(S1)!.5!(R2)$) -- (R3);
 
+\node (rpctrace message) [message] at ($(R4)!.5!(S4)$) {};
+
+\node (rpctrace message recvright) [recv] at (rpctrace message) {R};
+
+\endscope
 \end{tikzpicture}
 \end{frame}
+
+\begin{comment}
 
 % illustration of rpctrace problems with mach_port_insert_right()
 
@@ -350,5 +375,7 @@ routine mach\_port\_insert\_right(
 
 \end{tikzpicture}
 \end{frame}
+
+\end{comment}
 
 \end{document}
