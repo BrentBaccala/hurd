@@ -15,7 +15,7 @@ running in a Linux virtual machine.
 1. [Documentation](doc)
 
    [*Building an SSI Cluster with GNU/Hurd*](https://www.freesoft.org/software/hurd/building.pdf)
-   is twenty page paper describing the current status of this work.
+   is a twenty page paper describing the current status of this work.
 
    There's also LaTeX source for the slide deck that I used for a
    [presentation at Catholic University](https://www.youtube.com/watch?v=JwsuAEF2FYE).
