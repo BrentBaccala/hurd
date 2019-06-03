@@ -1,0 +1,167 @@
+
+\documentclass{article}
+
+\usepackage{nopageno}
+\usepackage{vmargin}
+\usepackage{comment}
+\usepackage{xspace}
+\usepackage[hyperfootnotes=false]{hyperref}
+\usepackage{mdframed}
+\usepackage{xcolor}
+
+\definecolor{lightblue}{rgb}{0.8,0.8,1.0}
+
+\usepackage{../slides/hurd}
+%\usepackage{tikz}
+\usepackage{tkz-graph}
+\usetikzlibrary{positioning, fit, backgrounds, arrows, trees, shapes, arrows.meta}
+
+% I like smaller margins than the default
+\setmargnohfrb{0.5in}{0.5in}{0.5in}{0.5in}
+
+% I prefer unindented paragraphs with a blank line between them
+\parindent 0pt
+\parskip \baselineskip
+
+% Redefine underscore to print as a normal character
+\catcode`\_=\active
+\def_{\_}
+
+\title{Miscellaneous Notes on GNU/Hurd}
+\author{Brent Baccala}
+\date{May 2019}
+
+\pdfinfo{
+  /Title	(Miscellaneous Notes on GNU/Hurd)
+  /Author	(Brent Baccala)
+}
+
+% Shortcuts just for this document
+\def\libpager{{\tt libpager}\xspace}
+\def\rpctrace{{\tt rpctrace}\xspace}
+\def\netmsg{{\tt netmsg}\xspace}
+\def\pagersync{{\tt pager_sync()}\xspace}
+\def\pagerwritepage{{\tt pager_write_page()}\xspace}
+\def\pagerreadpage{{\tt pager_read_page()}\xspace}
+\def\moinit{{\tt memory_object_init}\xspace}
+\def\moready{{\tt memory_object_ready}\xspace}
+\def\morequest{{\tt memory_object_data_request}\xspace}
+\def\mosupply{{\tt memory_object_data_supply}\xspace}
+\def\modataerror{{\tt memory_object_data_error}\xspace}
+
+%% Disable hypertext links in table of contents
+%% https://tex.stackexchange.com/questions/55190
+
+\makeatletter
+\let\Hy@linktoc\Hy@linktoc@none
+\makeatother
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+
+\vfill\eject
+
+\section{Blocking Behavior of {\tt mach_msg()}}
+
+An issue with Mach's design caused me no little bit of grief.
+Mach's {\tt mach_msg()} (as I read the documentation),
+allows for non-blocking sends: according to \cite{interfaces}:
+
+\begin{quote}
+MACH_SEND_TIMEOUT
+
+The {\it timeout} argument should specify a maximum time (in
+milliseconds) for the call to block before giving up. If the message
+can’t be queued before the timeout interval elapses, then the call
+returns MACH_SEND_TIMED_OUT. A zero timeout is legitimate.
+\end{quote}
+
+In fact, a call to {\tt mach_msg()} can block indefinitely, even if a
+{\it timeout} value of zero is specified!  The problem occurs when the
+message is an RPC directed at the kernel which in turns triggers other
+RPCs.  The memory manager is a big offender here.  Sending a {\tt
+  vm_map} message to the kernel will cause the kernel to send a
+\moinit message to the memory manager, then block waiting for a reply.
+If both the {\tt vm_map} and the \moinit were handled by a single
+thread in \netmsg, then that thread would block indefinitely,
+requiring considerable additional complexity in \netmsg to ensure that
+additional threads are always available in case calls to {\tt
+  mach_msg()} block.
+
+The consensus on the Hurd mailing list leaned in favor of this being
+legitimate behavior, reading the documentation as guaranteeing that
+the timeout applied to the send, and not to the underlying RPC.  In
+any event, changing this behavior would require quite a bit of work on
+the Mach kernel.
+
+\section{\rpctrace}
+
+\rpctrace is Hurd's version of {\tt strace}.  It works by wrapping
+around all of a process's ports, intercepting all Mach messages send
+to and from that process, and printing them out.
+
+It's got some problems, starting with the difficulty of attaching
+and detaching running processes.
+
+Attaching -- if the process has a receive right, we want to move the
+receive right to \rpctrace (all of the send rights remain attached to
+the same queue) and insert a new receive right in the process.  If one
+of the process's threads is blocked trying to receive a message on
+that receive right at the moment of \rpctrace attachment, the {\tt
+  mach_msg} call will return with an {\tt MACH_RCV_PORT_DIED} error.
+Portsets don't cause this kind of problem, since we can move receive
+rights in and out of them without triggering errors returns from
+{\tt mach_msg}.
+
+Detaching -- there's a race condition here.  Could use a new Mach
+primitive to combine two queues together.
+
+
+\section{New Mach System Calls}
+
+\begin{itemize}
+
+\item {\tt mach_port_merge_ports}
+
+Given a send right and a receive right to two different ports, collapse
+them together so that the receive right and everything that was in its
+queue goes to the send right's port, as if all messages on the receive
+right's port were atomically removed and sent to the send right.
+
+\item {\tt mach_port_split_port}
+
+Given a receive right, split it, returning a new receive right such
+that all of the old port's send rights now point to the new receive
+right, but any {\tt mach_msg()} calls that were in progress on the
+receive right continue un-interrupted.  Messages in the old port's
+queue go to the new receive right.  In short, we just move the old
+port/queue to a new name, but continue any {\tt mach_msg()} calls
+uninterrupted.
+
+\item {\tt thread_get_state} and {\tt thread_set_state}
+
+How to handle thread state when the process is in a system call?
+
+We want to be able to save state well enough to re-create the
+thread, maybe on a different node, and restart from the point
+it was suspended.
+
+Just re-running the system call would result in messages being
+transmitted twice.
+
+\end{itemize}
+
+
+\begin{thebibliography}{9}
+
+\bibitem{interfaces} {\it Mach 3 Kernel Interfaces}.
+
+\bibitem{principles} {\it Mach 3 Kernel Principles}.
+
+\end{thebibliography}
+
+
+\end{document}
