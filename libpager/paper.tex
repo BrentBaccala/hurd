@@ -116,12 +116,17 @@ Finally, Hurd's C library needs to be modified to allow cross-node
 forks, and Hurd's authentication mechanism needs to be extended
 as well.
 
+The code described in this paper is available at
+\href{https://github.com/BrentBaccala/hurd}{\tt https://github.com/BrentBaccala/hurd}.
+
 Hurd's \netmsg server and the \libpager library have been developed
 to the point where Hurd could be usable as a cluster operating system,
 though the current Debian distribution doesn't use this functionality.
+No cluster enhancements have yet been done on the C library or the authentication mechanism.
 At the time of this writing (2019), the major barriers to building a
 Hurd cluster are the 32-bit address space and the lack of SMP support.
 
+\vfill\eject
 \section{Introduction to Mach Port-Based IPC}
 
 Mach inter-process communications is primarily done using
@@ -236,8 +241,7 @@ task's memory space.  This allows large blocks of memory to be
 efficiently transferred in Mach messages, and forms the basis for
 Mach's memory management system.
 
-
-
+\vfill\eject
 \section{Introduction to Mach Memory Management}
 
 Mach's memory management was specifically designed to support
